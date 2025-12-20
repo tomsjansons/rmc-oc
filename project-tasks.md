@@ -383,6 +383,7 @@ State schema:
 
 ```typescript
 interface ReviewState {
+  version: number // Schema version for migration support
   prNumber: number
   lastCommitSha: string
   threads: Array<{
@@ -396,12 +397,11 @@ interface ReviewState {
       assessment: string
       score: number
     }
-    history: Array<{
+    original_comment: {
       author: string
       body: string
       timestamp: string
-      is_concession?: boolean
-    }>
+    }
   }>
   passes: Array<{
     number: number
@@ -416,7 +416,11 @@ interface ReviewState {
 }
 ```
 
-Cache key format: `pr-review-state-${owner}-${repo}-${prNumber}`
+**Important:** The state stores only the agent's original review comments, NOT
+developer replies. Developer responses and code changes are reconciled during
+the re-review process, not stored in cached state.
+
+Cache key format: `v1-pr-review-state-${owner}-${repo}-${prNumber}`
 
 Implementation should:
 
@@ -452,46 +456,78 @@ is unavailable.
 
 **Changes Required:**
 
-- Fetch all review comments from GitHub API
-- Parse comment bodies to extract assessment JSON
-- Reconstruct thread history from replies
-- Determine thread status from conversation
+- Fetch all review comments from GitHub API (agent comments only, skip replies)
+- Parse comment bodies to extract embedded assessment JSON blocks
+- Reconstruct thread structure from agent's original comments
+- Set all thread status to 'PENDING' (reconciliation happens during re-review)
 
 **Technical Details:**
 
-State rebuild logic:
+**CRITICAL: Comment Format Requirements**
 
-1. Fetch all PR review comments using GitHub API
-2. Parse each comment for hidden assessment JSON (in HTML comments)
-3. Build thread structure from comment replies
-4. Infer status:
-   - PENDING: Thread has no resolution
-   - RESOLVED: Thread was explicitly resolved
-   - DISPUTED: Developer replied without agent concession
-5. Store rebuild timestamp for cache invalidation
+All agent review comments MUST include an embedded JSON assessment block to
+enable state reconstruction:
 
-Comment format should include hidden metadata:
+````markdown
+[Human-readable explanation of the issue]
 
-```markdown
-<!-- review-assessment
+```json
 {
-  "finding": "...",
-  "assessment": "...",
-  "score": 6
+  "finding": "Brief description of what was found",
+  "assessment": "Detailed analysis of why this is an issue",
+  "score": 7
 }
--->
-
-[Visible comment body for developers]
 ```
+````
+
+[Optional: Additional context, examples, or suggestions]
+
+````
+
+**JSON Schema:**
+
+- `finding` (string, required): Concise one-sentence description
+- `assessment` (string, required): Detailed explanation and impact
+- `score` (number, required): Severity score 1-10 per rubric
+
+**State Rebuild Algorithm:**
+
+1. Fetch all PR review comments via GitHub API
+2. Filter to include only top-level comments (skip `in_reply_to_id`)
+3. For each comment:
+   - Extract JSON assessment block using regex:
+     `/```json\s*(\{[\s\S]*?\})\s*```/`
+   - Parse JSON to get finding, assessment, score
+   - Skip comments with:
+     - No valid JSON assessment
+     - Default score (5)
+     - Missing finding field
+4. Create ReviewThread with:
+   - `id`: GitHub comment ID
+   - `status`: Always 'PENDING' (reconciliation in re-review)
+   - `original_comment`: Store agent's comment only
+   - No developer replies (those are handled during reconciliation)
+5. Save reconstructed state to cache
+
+**Fallback Behavior:**
+
+If JSON block is missing or malformed:
+
+- `finding`: "Unknown issue"
+- `assessment`: First 200 chars of comment body
+- `score`: 5 (defaults to threshold, usually excluded)
 
 **Acceptance Criteria:**
 
-- [ ] State can be fully rebuilt from GitHub comments
-- [ ] Thread relationships are preserved
-- [ ] Assessment data is correctly extracted
-- [ ] Thread status is accurately determined
-- [ ] Rebuild handles large numbers of comments efficiently
-- [ ] Rebuild validates data integrity
+- [x] State can be fully rebuilt from agent's GitHub comments only
+- [x] JSON assessment blocks are correctly parsed from markdown code blocks
+- [x] Comments without valid JSON assessment use fallback values
+- [x] Comments with score=5 or missing findings are excluded (non-review
+      comments)
+- [x] Thread status is always 'PENDING' on rebuild
+- [x] Developer replies are NOT included in rebuilt state
+- [x] Rebuild validates JSON schema before accepting
+- [x] State includes version field for migration support
 
 **Files to Create:**
 
@@ -556,7 +592,7 @@ export class GitHubAPI {
   ): Promise<string>
   async fileExists(owner: string, repo: string, path: string): Promise<boolean>
 }
-```
+````
 
 Implementation should:
 
@@ -578,6 +614,83 @@ Implementation should:
 **Files to Create:**
 
 - `src/github/api.ts`
+
+**Files to Modify:**
+
+- None
+
+---
+
+### Task 3.4: Implement Comment Formatting with Embedded Assessment
+
+**Objective:** Ensure all agent review comments include embedded JSON assessment
+blocks for state reconstruction.
+
+**Changes Required:**
+
+- Create comment formatter that combines body + assessment
+- Embed JSON block in markdown code fence
+- Validate JSON schema before posting
+- Document format requirements for future maintainers
+
+**Technical Details:**
+
+The `github_post_review_comment()` tool implementation must format comments as:
+
+```typescript
+function formatReviewComment(
+  body: string,
+  assessment: { finding: string; assessment: string; score: number }
+): string {
+  return `${body}
+
+\`\`\`json
+${JSON.stringify(assessment, null, 2)}
+\`\`\`
+`
+}
+```
+
+**Example Output:**
+
+````markdown
+This function has a potential race condition when accessing shared state without
+proper synchronization. Multiple concurrent calls could lead to data corruption.
+
+Consider using a mutex or atomic operations to protect the critical section.
+
+```json
+{
+  "finding": "Race condition in shared state access",
+  "assessment": "Function accesses shared state without synchronization, risking
+data corruption in concurrent scenarios",
+  "score": 8
+}
+```
+````
+
+```
+
+**Validation Requirements:**
+
+Before posting, validate that:
+
+1. Assessment object has all required fields (finding, assessment, score)
+2. Score is a number between 1-10
+3. Finding and assessment are non-empty strings
+4. JSON can be successfully parsed from the formatted comment
+
+**Acceptance Criteria:**
+
+- [ ] Comment formatter combines body and assessment correctly
+- [ ] JSON block is properly formatted in markdown code fence
+- [ ] Validation rejects invalid assessments before posting
+- [ ] Formatted comments can be successfully parsed during state rebuild
+- [ ] Documentation includes examples of valid comment format
+
+**Files to Create:**
+
+- `src/github/comments.ts`
 
 **Files to Modify:**
 
@@ -613,9 +726,11 @@ Pass-specific prompts:
 **Pass 1: Atomic Diff Review**
 
 ```
+
 You are conducting Pass 1 of 4 in a multi-pass code review.
 
 Goal: Review each changed line in isolation. Focus on:
+
 - Syntax errors and typos
 - Obvious logic errors
 - Code style violations
@@ -623,45 +738,54 @@ Goal: Review each changed line in isolation. Focus on:
 
 Do NOT suggest architectural changes in this pass.
 
-Files changed: [list]
-Diff: [diff content]
+Files changed: [list] Diff: [diff content]
+
 ```
 
 **Pass 2: Structural/Layered Review**
 
 ```
+
 You are conducting Pass 2 of 4 in a multi-pass code review.
 
-Goal: Understand how changes fit into the broader codebase. Use read/grep/glob tools to:
+Goal: Understand how changes fit into the broader codebase. Use read/grep/glob
+tools to:
+
 - Trace function call chains
 - Verify interface contracts
 - Check for unused imports/exports
 - Identify inconsistencies with similar patterns
 
 Previous pass findings: [Pass 1 summary]
+
 ```
 
 **Pass 3: Security & AGENTS.md Compliance**
 
 ```
+
 You are conducting Pass 3 of 4 in a multi-pass code review.
 
 Goal: Security audit and rule enforcement:
+
 - Access control issues
 - Data integrity risks
 - AGENTS.md violations (if file exists)
 - Architectural standards
 
-Security sensitivity: [determined from package.json/README]
-AGENTS.md content: [content if exists, or "Not found"]
+Security sensitivity: [determined from package.json/README] AGENTS.md content:
+[content if exists, or "Not found"]
+
 ```
 
 **Pass 4: Consolidation & Noise Reduction**
 
 ```
+
 You are conducting Pass 4 of 4 in a multi-pass code review.
 
 Goal: Final review of all findings:
+
 - Remove redundant comments
 - Combine related issues
 - Verify score accuracy
@@ -670,6 +794,7 @@ Goal: Final review of all findings:
 All findings from passes 1-3: [consolidated list]
 
 Submit only high-confidence, high-value feedback.
+
 ```
 
 **Acceptance Criteria:**
@@ -779,16 +904,20 @@ Verification logic:
 Agent should receive context:
 
 ```
+
 Previous review state:
+
 - 5 issues were raised in the last review
 - 2 are marked as DISPUTED
 - 3 are PENDING
 
 Your task for this review:
+
 1. Verify if any of the 5 previous issues are now fixed
 2. Review the new changes (commits: abc123..def456)
 3. Do not re-raise issues that are already tracked
-```
+
+````
 
 **Acceptance Criteria:**
 
@@ -874,7 +1003,7 @@ export async function run(): Promise<void> {
     await server?.stop()
   }
 }
-```
+````
 
 **Acceptance Criteria:**
 

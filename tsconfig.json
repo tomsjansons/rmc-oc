@@ -19,9 +19,8 @@
     "resolveJsonModule": true,
     "strict": true,
     "strictNullChecks": true,
-    "noUncheckedIndexedAccess":true,
+    "noUncheckedIndexedAccess": true,
     "target": "ES2022"
-
   },
   "exclude": ["__fixtures__", "__tests__", "coverage", "dist", "node_modules"],
   "include": ["src"]

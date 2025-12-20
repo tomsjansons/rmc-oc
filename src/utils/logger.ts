@@ -1,7 +1,3 @@
-/**
- * Logging utilities for the action
- */
-
 import * as core from '@actions/core'
 
 export const logger = {

@@ -81,6 +81,8 @@ typings/
 # vuepress build output
 .vuepress/dist
 
+dist
+
 # Serverless directories
 .serverless/
 

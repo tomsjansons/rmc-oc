@@ -1,23 +1,48 @@
-name: The name of your action here
-description: Provide a description here
-author: Your name or organization here
+name: OpenCode PR Reviewer
+description:
+  AI-powered code review agent using OpenCode SDK for comprehensive PR analysis
+author: OpenCode Team
 
 # Add your action's branding here. This will appear on the GitHub Marketplace.
 branding:
-  icon: heart
-  color: red
+  icon: check-circle
+  color: blue
 
 # Define your inputs here.
 inputs:
-  milliseconds:
-    description: Your input description here
+  opencode_api_key:
+    description: 'API key for OpenCode SDK'
     required: true
-    default: '1000'
+  model:
+    description: 'LLM model to use (e.g., google/gemini-flash-1.5)'
+    required: false
+    default: 'google/gemini-flash-1.5'
+  problem_score_threshold:
+    description: 'Minimum score (1-10) for reporting issues'
+    required: false
+    default: '5'
+  score_elevation_threshold:
+    description: 'Number of low-score issues to elevate collectively'
+    required: false
+    default: '5'
+  enable_web:
+    description: 'Enable web search and fetch capabilities'
+    required: false
+    default: 'false'
+  github_token:
+    description: 'GitHub token for API access'
+    required: true
+    default: ${{ github.token }}
 
 # Define your outputs here.
 outputs:
-  time:
-    description: Your output description here
+  review_status:
+    description:
+      'Status of the review: completed, failed, or has_blocking_issues'
+  issues_found:
+    description: 'Number of issues found and reported'
+  blocking_issues:
+    description: 'Number of blocking issues (score >= 7)'
 
 runs:
   using: node24

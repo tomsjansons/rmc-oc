@@ -1,27 +1,37 @@
 import * as core from '@actions/core'
-import { wait } from './wait.js'
+import { parseInputs, validateConfig } from './config/inputs.js'
+import { logger } from './utils/logger.js'
 
-/**
- * The main function for the action.
- *
- * @returns Resolves when the action is complete.
- */
 export async function run(): Promise<void> {
   try {
-    const ms: string = core.getInput('milliseconds')
+    logger.info('Starting OpenCode PR Reviewer...')
 
-    // Debug logs are only output if the `ACTIONS_STEP_DEBUG` secret is true
-    core.debug(`Waiting ${ms} milliseconds ...`)
+    const config = parseInputs()
+    validateConfig(config)
 
-    // Log the current timestamp, wait, then log the new timestamp
-    core.debug(new Date().toTimeString())
-    await wait(parseInt(ms, 10))
-    core.debug(new Date().toTimeString())
+    logger.info(
+      `Configuration loaded: PR #${config.github.prNumber} in ${config.github.owner}/${config.github.repo}`
+    )
+    logger.info(
+      `Model: ${config.opencode.model}, Threshold: ${config.scoring.problemThreshold}`
+    )
 
-    // Set outputs for other workflow steps to use
-    core.setOutput('time', new Date().toTimeString())
+    // TODO: Implement review logic in subsequent phases
+    logger.warning('Review logic not yet implemented - Phase 2+')
+
+    core.setOutput('review_status', 'completed')
+    core.setOutput('issues_found', '0')
+    core.setOutput('blocking_issues', '0')
+
+    logger.info('OpenCode PR Reviewer completed')
   } catch (error) {
-    // Fail the workflow run if an error occurs
-    if (error instanceof Error) core.setFailed(error.message)
+    if (error instanceof Error) {
+      logger.error(error)
+      core.setFailed(error.message)
+    } else {
+      const errorMessage = 'An unknown error occurred'
+      logger.error(errorMessage)
+      core.setFailed(errorMessage)
+    }
   }
 }

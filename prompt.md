@@ -8,187 +8,181 @@ The repo is created from the https://github.com/actions/typescript-action templa
 
 Please follow ./AGENTS.md
 
+OpenCode Docs are available here https://opencode.ai/docs/
+
 We will work on tasks within the broader poject.
 
 # Task
 
-## Phase 1: Infrastructure & Configuration Setup
+## Phase 2: OpenCode Server Integration
 
-### Task 1.1: Update Action Metadata and Inputs
+### Task 2.1: Implement OpenCode Server Lifecycle Manager
 
-**Objective:** Configure the GitHub Action with proper inputs, outputs, and
-metadata.
-
-**Changes Required:**
-
-- Update `action.yml` with proper branding, description, and inputs
-- Define configuration inputs for OpenCode API key, model selection, thresholds,
-  etc.
-- Remove template placeholders
-
-**Technical Details:** Required inputs in `action.yml`:
-
-```yaml
-inputs:
-  opencode_api_key:
-    description: 'API key for OpenCode SDK'
-    required: true
-  model:
-    description: 'LLM model to use (e.g., google/gemini-flash-1.5)'
-    required: false
-    default: 'google/gemini-flash-1.5'
-  problem_score_threshold:
-    description: 'Minimum score (1-10) for reporting issues'
-    required: false
-    default: '5'
-  score_elevation_threshold:
-    description: 'Number of low-score issues to elevate collectively'
-    required: false
-    default: '5'
-  enable_web:
-    description: 'Enable web search and fetch capabilities'
-    required: false
-    default: 'false'
-  github_token:
-    description: 'GitHub token for API access'
-    required: true
-    default: ${{ github.token }}
-```
-
-**Acceptance Criteria:**
-
-- [ ] `action.yml` contains all required inputs with proper defaults
-- [ ] Action metadata (name, description, branding) is updated
-- [ ] Inputs are properly typed and documented
-- [ ] GitHub token is configured for API access
-
-**Files to Modify:**
-
-- `action.yml`
-
----
-
-### Task 1.2: Initialize TypeScript Project Structure
-
-**Objective:** Set up the TypeScript project structure with proper modules and
-dependencies.
+**Objective:** Create a service to start, configure, and stop the OpenCode
+server within the GitHub Actions runner.
 
 **Changes Required:**
 
-- Install required dependencies (`@actions/cache`, `@actions/github`,
-  `@octokit/rest`)
-- Create module structure under `src/`
-- Set up TypeScript configuration for the new modules
+- Implement server initialization with security constraints
+- Configure read-only mode (disable file_write and shell_execute)
+- Handle server lifecycle (start, health check, stop)
+- Manage server process cleanup on action exit
 
-**Technical Details:** New directory structure:
-
-```
-src/
-├── index.ts                    # Entry point
-├── main.ts                     # Main action logic
-├── config/
-│   └── inputs.ts              # Input parsing and validation
-├── opencode/
-│   ├── server.ts              # OpenCode server lifecycle management
-│   ├── client.ts              # OpenCode SDK client wrapper
-│   └── tools.ts               # Custom tool implementations
-├── github/
-│   ├── api.ts                 # GitHub API wrapper
-│   ├── comments.ts            # Comment management
-│   └── state.ts               # State management with cache
-├── review/
-│   ├── orchestrator.ts        # Multi-pass review orchestrator
-│   ├── prompts.ts             # System prompts for each pass
-│   └── types.ts               # Type definitions
-└── utils/
-    ├── logger.ts              # Logging utilities
-    └── errors.ts              # Error handling
-```
-
-Dependencies to add:
-
-```json
-{
-  "@actions/cache": "^3.2.4",
-  "@actions/github": "^6.0.0",
-  "@octokit/rest": "^20.0.2",
-  "opencode-sdk": "latest"
-}
-```
-
-**Acceptance Criteria:**
-
-- [ ] All dependencies are installed
-- [ ] Directory structure is created
-- [ ] TypeScript compiles without errors
-- [ ] Module exports are properly configured
-
-**Files to Create:**
-
-- All files in the structure above (initially as stubs)
-
-**Files to Modify:**
-
-- `package.json` (add dependencies)
-- `tsconfig.json` (if needed for module resolution)
-
----
-
-### Task 1.3: Implement Configuration Parser
-
-**Objective:** Parse and validate GitHub Action inputs into a typed
-configuration object.
-
-**Changes Required:**
-
-- Create configuration types
-- Implement input parsing with validation
-- Handle environment variables and defaults
-
-**Technical Details:** Configuration interface:
+**Technical Details:** Server configuration must include:
 
 ```typescript
-export interface ReviewConfig {
-  opencode: {
-    apiKey: string
-    model: string
-    enableWeb: boolean
-  }
-  scoring: {
-    problemThreshold: number // 1-10
-    elevationThreshold: number // Number of issues to elevate
-  }
-  github: {
-    token: string
-    owner: string
-    repo: string
-    prNumber: number
+{
+  security: {
+    readOnly: true,
+    disableFileWrite: true,
+    disableShellExecute: true
+  },
+  tools: {
+    enableWeb: config.opencode.enableWeb
   }
 }
 ```
 
-Implementation should:
+Server manager should:
 
-- Use `@actions/core.getInput()` for all inputs
-- Validate numeric thresholds are within valid ranges
-- Extract PR context from GitHub event payload
-- Throw descriptive errors for invalid configuration
+- Start OpenCode server as a child process
+- Wait for server to be ready (health check endpoint)
+- Provide graceful shutdown on action completion or error
+- Log server output for debugging
+- Handle server crashes with retries
 
 **Acceptance Criteria:**
 
-- [ ] Configuration is parsed from action inputs
-- [ ] Validation catches invalid values with clear error messages
-- [ ] PR context (owner, repo, number) is extracted from event
-- [ ] Configuration object is properly typed
-- [ ] Unit tests cover validation logic
+- [ ] Server starts successfully in the runner environment
+- [ ] Read-only mode is enforced (file writes are blocked)
+- [ ] Server health check passes before proceeding
+- [ ] Server shuts down gracefully on action completion
+- [ ] Error handling covers server startup failures
+- [ ] Server logs are captured for debugging
 
 **Files to Create:**
 
-- `src/config/inputs.ts`
-- `src/review/types.ts`
+- `src/opencode/server.ts`
 
 **Files to Modify:**
 
 - None
 
 ---
+
+### Task 2.2: Implement OpenCode Client Wrapper
+
+**Objective:** Create a client wrapper for the OpenCode SDK with custom tool
+registration.
+
+**Changes Required:**
+
+- Initialize OpenCode SDK client
+- Register custom GitHub interaction tools
+- Configure agent with system prompts
+- Handle SDK errors and retries
+
+**Technical Details:** Client should provide:
+
+```typescript
+export class OpenCodeClient {
+  async initialize(): Promise<void>
+  async registerTools(tools: Tool[]): Promise<void>
+  async executeReview(prompt: string): Promise<ReviewResult>
+  async dispose(): Promise<void>
+}
+```
+
+Custom tools to register:
+
+- `github_get_run_state()` - Retrieve review state
+- `github_post_review_comment()` - Post new comments with scoring
+- `github_reply_to_thread()` - Reply to existing threads
+- `github_resolve_thread()` - Resolve comment threads
+- `submit_pass_results()` - Mark review pass completion
+
+**Acceptance Criteria:**
+
+- [ ] SDK client connects to the server
+- [ ] Custom tools are registered successfully
+- [ ] Agent can execute prompts with tool access
+- [ ] Tool calls are properly handled and routed
+- [ ] Error handling covers SDK failures
+- [ ] Client cleanup is handled properly
+
+**Files to Create:**
+
+- `src/opencode/client.ts`
+
+**Files to Modify:**
+
+- None
+
+---
+
+### Task 2.3: Implement Custom GitHub Tools for OpenCode Agent
+
+**Objective:** Create the custom tools that allow the OpenCode agent to interact
+with GitHub and manage review state.
+
+**Changes Required:**
+
+- Implement all 5 custom GitHub tools
+- Add scoring filter logic to comment tool
+- Integrate state management with tools
+- Add side-effect handling for state updates
+
+**Technical Details:**
+
+Tool implementations with signatures from project description:
+
+1. **`github_get_run_state()`**
+   - Retrieves state from GitHub Cache or rebuilds from comments
+   - Returns threads with status (PENDING/RESOLVED/DISPUTED)
+   - Includes developer replies in thread history
+
+2. **`github_post_review_comment(file, line, body, assessment)`**
+   - Accepts assessment JSON with score (1-10)
+   - Filters comments below `problem_score_threshold`
+   - Posts to GitHub PR review comments API
+   - Triggers state update side-effect
+   - Returns thread_id
+
+3. **`github_reply_to_thread(thread_id, body, is_concession)`**
+   - Replies to existing comment thread
+   - Marks concessions for state tracking
+   - Triggers state update side-effect
+
+4. **`github_resolve_thread(thread_id, reason)`**
+   - Resolves comment thread
+   - Records resolution reason
+   - Triggers state update side-effect
+
+5. **`submit_pass_results(pass_number, summary, has_blocking_issues)`**
+   - Marks review pass as complete
+   - Stores pass summary in state
+   - Signals orchestrator to continue to next pass
+
+Each tool should:
+
+- Have comprehensive JSDoc documentation
+- Include parameter validation
+- Handle GitHub API errors gracefully
+- Log tool invocations for debugging
+
+**Acceptance Criteria:**
+
+- [ ] All 5 tools are implemented and working
+- [ ] Comment filtering by score threshold works correctly
+- [ ] State updates are triggered on relevant tool calls
+- [ ] Tools handle GitHub API errors appropriately
+- [ ] Tool documentation is clear and complete
+- [ ] Unit tests cover tool logic
+
+**Files to Create:**
+
+- `src/opencode/tools.ts`
+
+**Files to Modify:**
+
+- None

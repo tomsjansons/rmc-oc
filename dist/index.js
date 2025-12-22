@@ -37912,27 +37912,7 @@ class StateManager {
         const lowerBody = body.toLowerCase();
         return concessionPhrases.some((phrase) => lowerBody.includes(phrase));
     }
-    async analyzeCommentSentiment(commentBody) {
-        const prompt = `You are analyzing a code review comment to determine if the developer is conceding to a reviewer's suggestion.
-
-A concession means the developer:
-- Agrees with the reviewer's point
-- Acknowledges they were wrong or missed something
-- Commits to making the suggested change
-- Accepts the feedback as valid
-
-A concession does NOT include:
-- Disagreements or rebuttals
-- Requests for clarification
-- Alternative suggestions
-- Neutral acknowledgments without commitment
-
-Comment to analyze:
-"""
-${commentBody}
-"""
-
-Respond with ONLY "true" if this is a concession, or "false" if it is not.`;
+    async callLLM(prompt) {
         const requestBody = {
             model: this.config.opencode.model,
             messages: [
@@ -37958,7 +37938,30 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`;
             throw new Error(`OpenRouter API request failed: ${response.status} ${response.statusText}`);
         }
         const data = (await response.json());
-        const content = data.choices?.[0]?.message?.content?.trim().toLowerCase();
+        return data.choices?.[0]?.message?.content?.trim().toLowerCase() ?? null;
+    }
+    async analyzeCommentSentiment(commentBody) {
+        const prompt = `You are analyzing a code review comment to determine if the developer is conceding to a reviewer's suggestion.
+
+A concession means the developer:
+- Agrees with the reviewer's point
+- Acknowledges they were wrong or missed something
+- Commits to making the suggested change
+- Accepts the feedback as valid
+
+A concession does NOT include:
+- Disagreements or rebuttals
+- Requests for clarification
+- Alternative suggestions
+- Neutral acknowledgments without commitment
+
+Comment to analyze:
+"""
+${commentBody}
+"""
+
+Respond with ONLY "true" if this is a concession, or "false" if it is not.`;
+        const content = await this.callLLM(prompt);
         if (content === 'true') {
             return true;
         }
@@ -38050,35 +38053,8 @@ Classify the response as ONE of the following:
 - "out_of_scope": Developer acknowledges but will fix later (e.g., "will fix in next sprint", "out of scope for this PR")
 
 Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`;
-        const requestBody = {
-            model: this.config.opencode.model,
-            messages: [
-                {
-                    role: 'user',
-                    content: prompt
-                }
-            ],
-            temperature: 0.1,
-            max_tokens: 10
-        };
         try {
-            const response = await fetch(OPENROUTER_API_URL, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${this.config.opencode.apiKey}`,
-                    'HTTP-Referer': 'https://github.com/opencode-pr-reviewer',
-                    'X-Title': 'OpenCode PR Reviewer'
-                },
-                body: JSON.stringify(requestBody)
-            });
-            if (!response.ok) {
-                throw new Error(`OpenRouter API request failed: ${response.status} ${response.statusText}`);
-            }
-            const data = (await response.json());
-            const content = data.choices?.[0]?.message?.content
-                ?.trim()
-                .toLowerCase();
+            const content = await this.callLLM(prompt);
             if (content === 'acknowledgment' ||
                 content === 'dispute' ||
                 content === 'question' ||

@@ -319,28 +319,7 @@ export class StateManager {
     return concessionPhrases.some((phrase) => lowerBody.includes(phrase))
   }
 
-  private async analyzeCommentSentiment(commentBody: string): Promise<boolean> {
-    const prompt = `You are analyzing a code review comment to determine if the developer is conceding to a reviewer's suggestion.
-
-A concession means the developer:
-- Agrees with the reviewer's point
-- Acknowledges they were wrong or missed something
-- Commits to making the suggested change
-- Accepts the feedback as valid
-
-A concession does NOT include:
-- Disagreements or rebuttals
-- Requests for clarification
-- Alternative suggestions
-- Neutral acknowledgments without commitment
-
-Comment to analyze:
-"""
-${commentBody}
-"""
-
-Respond with ONLY "true" if this is a concession, or "false" if it is not.`
-
+  private async callLLM(prompt: string): Promise<string | null> {
     const requestBody = {
       model: this.config.opencode.model,
       messages: [
@@ -374,7 +353,32 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
       choices?: Array<{ message?: { content?: string } }>
     }
 
-    const content = data.choices?.[0]?.message?.content?.trim().toLowerCase()
+    return data.choices?.[0]?.message?.content?.trim().toLowerCase() ?? null
+  }
+
+  private async analyzeCommentSentiment(commentBody: string): Promise<boolean> {
+    const prompt = `You are analyzing a code review comment to determine if the developer is conceding to a reviewer's suggestion.
+
+A concession means the developer:
+- Agrees with the reviewer's point
+- Acknowledges they were wrong or missed something
+- Commits to making the suggested change
+- Accepts the feedback as valid
+
+A concession does NOT include:
+- Disagreements or rebuttals
+- Requests for clarification
+- Alternative suggestions
+- Neutral acknowledgments without commitment
+
+Comment to analyze:
+"""
+${commentBody}
+"""
+
+Respond with ONLY "true" if this is a concession, or "false" if it is not.`
+
+    const content = await this.callLLM(prompt)
 
     if (content === 'true') {
       return true
@@ -504,48 +508,8 @@ Classify the response as ONE of the following:
 
 Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`
 
-    const requestBody = {
-      model: this.config.opencode.model,
-      messages: [
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
-      temperature: 0.1,
-      max_tokens: 10
-    }
-
     try {
-      const response = await fetch(OPENROUTER_API_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.config.opencode.apiKey}`,
-          'HTTP-Referer': 'https://github.com/opencode-pr-reviewer',
-          'X-Title': 'OpenCode PR Reviewer'
-        },
-        body: JSON.stringify(requestBody)
-      })
-
-      if (!response.ok) {
-        throw new Error(
-          `OpenRouter API request failed: ${response.status} ${response.statusText}`
-        )
-      }
-
-      const data = (await response.json()) as {
-        choices?: Array<{ message?: { content?: string } }>
-      }
-
-      const content = data.choices?.[0]?.message?.content
-        ?.trim()
-        .toLowerCase() as
-        | 'acknowledgment'
-        | 'dispute'
-        | 'question'
-        | 'out_of_scope'
-        | undefined
+      const content = await this.callLLM(prompt)
 
       if (
         content === 'acknowledgment' ||

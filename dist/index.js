@@ -37178,23 +37178,24 @@ class OpenCodeClientImpl {
                 }
             });
             logger.debug(`Prompt queued, waiting for LLM to complete via events...`);
-            await this.waitForSessionIdleViaEvents(sessionId);
+            await this.waitForPromptCompletion(sessionId);
             logger.debug(`Prompt completed successfully for session ${sessionId}`);
         }
         catch (error) {
             throw new OpenCodeError(`Failed to send prompt: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
-    async waitForSessionIdleViaEvents(sessionId) {
+    async waitForPromptCompletion(sessionId) {
         const startTime = Date.now();
         const abortController = new AbortController();
+        let sawBusy = false;
         return new Promise((resolve, reject) => {
             let resolved = false;
             const timeoutId = setTimeout(() => {
                 if (!resolved) {
                     resolved = true;
                     abortController.abort();
-                    reject(new OpenCodeError(`Timeout waiting for session ${sessionId} to become idle after ${this.timeoutMs}ms`));
+                    reject(new OpenCodeError(`Timeout waiting for session ${sessionId} to complete after ${this.timeoutMs}ms`));
                 }
             }, this.timeoutMs);
             const cleanup = () => {
@@ -37211,67 +37212,48 @@ class OpenCodeClientImpl {
                             break;
                         }
                         this.logEvent(event, sessionId);
-                        if (event.type === 'session.idle' &&
-                            event.properties.sessionID === sessionId) {
+                        const props = event.properties;
+                        if (props.sessionID !== sessionId) {
+                            continue;
+                        }
+                        if (event.type === 'session.status' &&
+                            props.status &&
+                            props.status.type !== 'idle') {
+                            sawBusy = true;
+                        }
+                        const isIdle = event.type === 'session.idle' ||
+                            (event.type === 'session.status' && props.status?.type === 'idle');
+                        if (isIdle && sawBusy) {
                             const duration = Date.now() - startTime;
-                            logger.info(`Session ${sessionId} is idle after ${duration}ms`);
+                            logger.info(`Session ${sessionId} completed after ${duration}ms`);
                             resolved = true;
                             cleanup();
                             resolve();
                             return;
                         }
                         if (event.type === 'session.status' &&
-                            event.properties.sessionID === sessionId) {
-                            const status = event.properties.status;
-                            if (status.type === 'idle') {
-                                const duration = Date.now() - startTime;
-                                logger.info(`Session ${sessionId} status is idle after ${duration}ms`);
-                                resolved = true;
-                                cleanup();
-                                resolve();
-                                return;
-                            }
-                            if (status.type === 'retry') {
-                                logger.warning(`Session ${sessionId} is retrying (attempt ${status.attempt}): ${status.message}`);
-                            }
+                            props.status?.type === 'retry') {
+                            logger.warning(`Session ${sessionId} is retrying (attempt ${props.status.attempt}): ${props.status.message}`);
                         }
                         if (event.type === 'session.error') {
-                            if (event.properties.sessionID === sessionId ||
-                                !event.properties.sessionID) {
-                                const errorInfo = event.properties.error;
-                                const errorMessage = errorInfo
-                                    ? `${errorInfo.name}: ${JSON.stringify(errorInfo.data)}`
-                                    : 'Unknown error';
-                                logger.error(`Session error: ${errorMessage}`);
-                                resolved = true;
-                                cleanup();
-                                reject(new OpenCodeError(`Session error: ${errorMessage}`));
-                                return;
-                            }
+                            resolved = true;
+                            cleanup();
+                            reject(new OpenCodeError(`Session error: ${JSON.stringify(event.properties)}`));
+                            return;
                         }
+                    }
+                    if (!resolved) {
+                        reject(new OpenCodeError('Event stream ended unexpectedly'));
                     }
                 }
                 catch (error) {
-                    if (abortController.signal.aborted) {
-                        return;
-                    }
-                    if (!resolved) {
-                        resolved = true;
+                    if (!resolved && !abortController.signal.aborted) {
                         cleanup();
-                        reject(new OpenCodeError(`Event stream error: ${error instanceof Error ? error.message : String(error)}`));
+                        reject(new OpenCodeError(`Error processing events: ${error instanceof Error ? error.message : String(error)}`));
                     }
                 }
             };
-            processEvents().catch((error) => {
-                if (abortController.signal.aborted) {
-                    return;
-                }
-                if (!resolved) {
-                    resolved = true;
-                    cleanup();
-                    reject(error);
-                }
-            });
+            processEvents();
         });
     }
     logEvent(event, targetSessionId) {

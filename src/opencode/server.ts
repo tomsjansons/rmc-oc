@@ -1,8 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 
 import {
   OPENCODE_SERVER_HOST,
@@ -12,10 +11,13 @@ import type { ReviewConfig } from '../review/types.js'
 import { OpenCodeError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
 
-function getOpenCodeCLIPath(): string {
-  const __filename = fileURLToPath(import.meta.url)
-  const __dirname = dirname(__filename)
-  return join(__dirname, '..', '..', 'node_modules', '.bin', 'opencode')
+function getOpenCodeCLICommand(): { command: string; args: string[] } {
+  // Use npx to run opencode-ai CLI - this works in GitHub Actions
+  // without needing node_modules to be present
+  return {
+    command: 'npx',
+    args: ['opencode-ai']
+  }
 }
 
 type ServerStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
@@ -146,32 +148,30 @@ export class OpenCodeServer {
 
     this.configFilePath = this.createConfigFile()
 
-    const opencodePath = getOpenCodeCLIPath()
+    const { command, args } = getOpenCodeCLICommand()
+    const serveArgs = [
+      ...args,
+      'serve',
+      '--port',
+      String(OPENCODE_SERVER_PORT),
+      '--hostname',
+      OPENCODE_SERVER_HOST
+    ]
 
     logger.debug(
       `Starting OpenCode server on port ${OPENCODE_SERVER_PORT} with model ${this.config.opencode.model}`
     )
-    logger.debug(`Using CLI path: ${opencodePath}`)
+    logger.debug(`Running: ${command} ${serveArgs.join(' ')}`)
     logger.debug(`Using config file: ${this.configFilePath}`)
 
-    this.serverProcess = spawn(
-      opencodePath,
-      [
-        'serve',
-        '--port',
-        String(OPENCODE_SERVER_PORT),
-        '--hostname',
-        OPENCODE_SERVER_HOST
-      ],
-      {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          OPENCODE_CONFIG: this.configFilePath
-        },
-        detached: false
-      }
-    )
+    this.serverProcess = spawn(command, serveArgs, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        OPENCODE_CONFIG: this.configFilePath
+      },
+      detached: false
+    })
 
     this.attachProcessHandlers()
   }

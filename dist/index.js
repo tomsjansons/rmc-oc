@@ -31,7 +31,6 @@ import { spawn } from 'node:child_process';
 import require$$1$a, { mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import require$$1$7, { tmpdir, homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { mkdir, writeFile, readFile, readdir, copyFile } from 'node:fs/promises';
 import require$$2$4 from 'node:process';
 import require$$1$8, { IncomingMessage } from 'node:http';
@@ -40,6 +39,7 @@ import require$$3$2 from 'node:zlib';
 import require$$1$9 from 'tty';
 import require$$0$f from 'node:crypto';
 import require$$2$6 from 'node:buffer';
+import { fileURLToPath } from 'node:url';
 
 var commonjsGlobal = typeof globalThis !== 'undefined' ? globalThis : typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : typeof self !== 'undefined' ? self : {};
 
@@ -37155,10 +37155,13 @@ class OpenCodeClientImpl {
     }
 }
 
-function getOpenCodeCLIPath() {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    return join(__dirname, '..', '..', 'node_modules', '.bin', 'opencode');
+function getOpenCodeCLICommand() {
+    // Use npx to run opencode-ai CLI - this works in GitHub Actions
+    // without needing node_modules to be present
+    return {
+        command: 'npx',
+        args: ['opencode-ai']
+    };
 }
 class OpenCodeServer {
     config;
@@ -37240,17 +37243,19 @@ class OpenCodeServer {
     async startServerProcess() {
         this.status = 'starting';
         this.configFilePath = this.createConfigFile();
-        const opencodePath = getOpenCodeCLIPath();
-        logger$2.debug(`Starting OpenCode server on port ${OPENCODE_SERVER_PORT} with model ${this.config.opencode.model}`);
-        logger$2.debug(`Using CLI path: ${opencodePath}`);
-        logger$2.debug(`Using config file: ${this.configFilePath}`);
-        this.serverProcess = spawn(opencodePath, [
+        const { command, args } = getOpenCodeCLICommand();
+        const serveArgs = [
+            ...args,
             'serve',
             '--port',
             String(OPENCODE_SERVER_PORT),
             '--hostname',
             OPENCODE_SERVER_HOST
-        ], {
+        ];
+        logger$2.debug(`Starting OpenCode server on port ${OPENCODE_SERVER_PORT} with model ${this.config.opencode.model}`);
+        logger$2.debug(`Running: ${command} ${serveArgs.join(' ')}`);
+        logger$2.debug(`Using config file: ${this.configFilePath}`);
+        this.serverProcess = spawn(command, serveArgs, {
             stdio: ['ignore', 'pipe', 'pipe'],
             env: {
                 ...process.env,

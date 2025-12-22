@@ -28,7 +28,7 @@ export async function run(): Promise<void> {
     logger.info('Setting up OpenCode tools...')
     await setupToolsInWorkspace()
 
-    const github = new GitHubAPI()
+    const github = new GitHubAPI(config)
     const opencode = new OpenCodeClientImpl(OPENCODE_SERVER_URL)
     const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd()
 

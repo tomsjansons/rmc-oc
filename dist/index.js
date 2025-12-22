@@ -37560,39 +37560,48 @@ class OpenCodeServer {
         }
     }
     async killServerProcess() {
+        logger$2.debug('killServerProcess: Starting');
         if (!this.serverProcess) {
+            logger$2.debug('killServerProcess: No server process to kill');
             return;
         }
         return new Promise((resolve) => {
             if (!this.serverProcess) {
+                logger$2.debug('killServerProcess: Server process is null in promise');
                 resolve();
                 return;
             }
             const pid = this.serverProcess.pid;
             if (!pid) {
+                logger$2.debug('killServerProcess: No PID found');
                 this.serverProcess = null;
                 resolve();
                 return;
             }
+            logger$2.debug(`killServerProcess: Will kill PID ${pid}`);
             const forceKillTimeout = setTimeout(() => {
+                logger$2.debug('killServerProcess: Force kill timeout reached');
                 if (this.serverProcess && this.serverProcess.pid) {
                     logger$2.warning(`Server did not terminate gracefully, sending SIGKILL to PID ${this.serverProcess.pid}`);
                     try {
                         this.serverProcess.kill('SIGKILL');
                     }
                     catch {
-                        // Process may already be dead
+                        logger$2.debug('killServerProcess: SIGKILL failed (process may be dead)');
                     }
                 }
                 this.serverProcess = null;
+                logger$2.debug('killServerProcess: Resolving after force kill');
                 resolve();
             }, this.shutdownTimeoutMs);
-            this.serverProcess.once('exit', () => {
+            this.serverProcess.once('exit', (code, signal) => {
+                logger$2.debug(`killServerProcess: Process exited with code=${code}, signal=${signal}`);
                 clearTimeout(forceKillTimeout);
                 this.serverProcess = null;
+                logger$2.debug('killServerProcess: Resolving after exit event');
                 resolve();
             });
-            // Remove all listeners to prevent keeping the process alive
+            logger$2.debug('killServerProcess: Removing stdout/stderr listeners');
             if (this.serverProcess.stdout) {
                 this.serverProcess.stdout.removeAllListeners();
                 this.serverProcess.stdout.destroy();
@@ -37601,12 +37610,14 @@ class OpenCodeServer {
                 this.serverProcess.stderr.removeAllListeners();
                 this.serverProcess.stderr.destroy();
             }
+            logger$2.debug('killServerProcess: Listeners removed');
             logger$2.info(`Sending SIGTERM to server process (PID: ${pid})`);
             try {
                 this.serverProcess.kill('SIGTERM');
+                logger$2.debug('killServerProcess: SIGTERM sent, waiting for exit event');
             }
             catch {
-                // Process may already be dead
+                logger$2.debug('killServerProcess: SIGTERM failed (process may be dead)');
                 clearTimeout(forceKillTimeout);
                 this.serverProcess = null;
                 resolve();
@@ -106550,6 +106561,7 @@ async function run() {
     let openCodeServer = null;
     let trpcServer = null;
     let orchestrator = null;
+    let exitCode = 0;
     try {
         logger$2.info('Starting OpenCode PR Reviewer...');
         const config = parseInputs();
@@ -106596,7 +106608,7 @@ ${answer}
                     ? `Review found ${result.issuesFound} issue(s), including ${result.blockingIssues} blocking issue(s). Please address the review comments before merging.`
                     : `Review found ${result.issuesFound} issue(s). Please address the review comments before merging.`;
                 coreExports.setFailed(message);
-                return;
+                exitCode = 1;
             }
         }
         else if (config.execution.mode === 'dispute-resolution') {
@@ -106618,18 +106630,46 @@ ${answer}
             logger$2.error(errorMessage);
             coreExports.setFailed(errorMessage);
         }
+        exitCode = 1;
     }
     finally {
+        await cleanup(orchestrator, trpcServer, openCodeServer);
+        process.exit(exitCode);
+    }
+}
+async function cleanup(orchestrator, trpcServer, openCodeServer) {
+    logger$2.debug('Cleanup: Starting cleanup sequence');
+    try {
         if (orchestrator) {
+            logger$2.debug('Cleanup: Cleaning up orchestrator...');
             await orchestrator.cleanup();
-        }
-        if (trpcServer) {
-            await trpcServer.stop();
-        }
-        if (openCodeServer) {
-            await openCodeServer.stop();
+            logger$2.debug('Cleanup: Orchestrator cleanup complete');
         }
     }
+    catch (error) {
+        logger$2.warning(`Error during orchestrator cleanup: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
+        if (trpcServer) {
+            logger$2.debug('Cleanup: Stopping tRPC server...');
+            await trpcServer.stop();
+            logger$2.debug('Cleanup: tRPC server stopped');
+        }
+    }
+    catch (error) {
+        logger$2.warning(`Error during tRPC server cleanup: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
+        if (openCodeServer) {
+            logger$2.debug('Cleanup: Stopping OpenCode server...');
+            await openCodeServer.stop();
+            logger$2.debug('Cleanup: OpenCode server stopped');
+        }
+    }
+    catch (error) {
+        logger$2.warning(`Error during OpenCode server cleanup: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    logger$2.debug('Cleanup: All cleanup complete, calling process.exit()');
 }
 
 run();

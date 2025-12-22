@@ -377,12 +377,16 @@ export class OpenCodeServer {
   }
 
   private async killServerProcess(): Promise<void> {
+    logger.debug('killServerProcess: Starting')
+
     if (!this.serverProcess) {
+      logger.debug('killServerProcess: No server process to kill')
       return
     }
 
     return new Promise((resolve) => {
       if (!this.serverProcess) {
+        logger.debug('killServerProcess: Server process is null in promise')
         resolve()
         return
       }
@@ -390,12 +394,16 @@ export class OpenCodeServer {
       const pid = this.serverProcess.pid
 
       if (!pid) {
+        logger.debug('killServerProcess: No PID found')
         this.serverProcess = null
         resolve()
         return
       }
 
+      logger.debug(`killServerProcess: Will kill PID ${pid}`)
+
       const forceKillTimeout = setTimeout(() => {
+        logger.debug('killServerProcess: Force kill timeout reached')
         if (this.serverProcess && this.serverProcess.pid) {
           logger.warning(
             `Server did not terminate gracefully, sending SIGKILL to PID ${this.serverProcess.pid}`
@@ -403,20 +411,27 @@ export class OpenCodeServer {
           try {
             this.serverProcess.kill('SIGKILL')
           } catch {
-            // Process may already be dead
+            logger.debug(
+              'killServerProcess: SIGKILL failed (process may be dead)'
+            )
           }
         }
         this.serverProcess = null
+        logger.debug('killServerProcess: Resolving after force kill')
         resolve()
       }, this.shutdownTimeoutMs)
 
-      this.serverProcess.once('exit', () => {
+      this.serverProcess.once('exit', (code, signal) => {
+        logger.debug(
+          `killServerProcess: Process exited with code=${code}, signal=${signal}`
+        )
         clearTimeout(forceKillTimeout)
         this.serverProcess = null
+        logger.debug('killServerProcess: Resolving after exit event')
         resolve()
       })
 
-      // Remove all listeners to prevent keeping the process alive
+      logger.debug('killServerProcess: Removing stdout/stderr listeners')
       if (this.serverProcess.stdout) {
         this.serverProcess.stdout.removeAllListeners()
         this.serverProcess.stdout.destroy()
@@ -425,12 +440,14 @@ export class OpenCodeServer {
         this.serverProcess.stderr.removeAllListeners()
         this.serverProcess.stderr.destroy()
       }
+      logger.debug('killServerProcess: Listeners removed')
 
       logger.info(`Sending SIGTERM to server process (PID: ${pid})`)
       try {
         this.serverProcess.kill('SIGTERM')
+        logger.debug('killServerProcess: SIGTERM sent, waiting for exit event')
       } catch {
-        // Process may already be dead
+        logger.debug('killServerProcess: SIGTERM failed (process may be dead)')
         clearTimeout(forceKillTimeout)
         this.serverProcess = null
         resolve()

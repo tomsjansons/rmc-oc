@@ -14,6 +14,7 @@ export async function run(): Promise<void> {
   let openCodeServer: OpenCodeServer | null = null
   let trpcServer: TRPCServer | null = null
   let orchestrator: ReviewOrchestrator | null = null
+  let exitCode = 0
 
   try {
     logger.info('Starting OpenCode PR Reviewer...')
@@ -92,7 +93,7 @@ ${answer}
             ? `Review found ${result.issuesFound} issue(s), including ${result.blockingIssues} blocking issue(s). Please address the review comments before merging.`
             : `Review found ${result.issuesFound} issue(s). Please address the review comments before merging.`
         core.setFailed(message)
-        return
+        exitCode = 1
       }
     } else if (config.execution.mode === 'dispute-resolution') {
       logger.info('Execution mode: Dispute Resolution Only')
@@ -114,15 +115,55 @@ ${answer}
       logger.error(errorMessage)
       core.setFailed(errorMessage)
     }
+    exitCode = 1
   } finally {
-    if (orchestrator) {
-      await orchestrator.cleanup()
-    }
-    if (trpcServer) {
-      await trpcServer.stop()
-    }
-    if (openCodeServer) {
-      await openCodeServer.stop()
-    }
+    await cleanup(orchestrator, trpcServer, openCodeServer)
+    process.exit(exitCode)
   }
+}
+
+async function cleanup(
+  orchestrator: ReviewOrchestrator | null,
+  trpcServer: TRPCServer | null,
+  openCodeServer: OpenCodeServer | null
+): Promise<void> {
+  logger.debug('Cleanup: Starting cleanup sequence')
+
+  try {
+    if (orchestrator) {
+      logger.debug('Cleanup: Cleaning up orchestrator...')
+      await orchestrator.cleanup()
+      logger.debug('Cleanup: Orchestrator cleanup complete')
+    }
+  } catch (error) {
+    logger.warning(
+      `Error during orchestrator cleanup: ${error instanceof Error ? error.message : String(error)}`
+    )
+  }
+
+  try {
+    if (trpcServer) {
+      logger.debug('Cleanup: Stopping tRPC server...')
+      await trpcServer.stop()
+      logger.debug('Cleanup: tRPC server stopped')
+    }
+  } catch (error) {
+    logger.warning(
+      `Error during tRPC server cleanup: ${error instanceof Error ? error.message : String(error)}`
+    )
+  }
+
+  try {
+    if (openCodeServer) {
+      logger.debug('Cleanup: Stopping OpenCode server...')
+      await openCodeServer.stop()
+      logger.debug('Cleanup: OpenCode server stopped')
+    }
+  } catch (error) {
+    logger.warning(
+      `Error during OpenCode server cleanup: ${error instanceof Error ? error.message : String(error)}`
+    )
+  }
+
+  logger.debug('Cleanup: All cleanup complete, calling process.exit()')
 }

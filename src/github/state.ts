@@ -69,9 +69,14 @@ export class StateManager {
     this.sentimentCache = new Map()
   }
 
-  private getCacheKey(): string {
+  private getCacheKeyPrefix(): string {
     const { owner, repo, prNumber } = this.config.github
     return `${CACHE_VERSION}-pr-review-state-${owner}-${repo}-${prNumber}`
+  }
+
+  private getCacheKey(): string {
+    const runId = process.env.GITHUB_RUN_ID || Date.now().toString()
+    return `${this.getCacheKeyPrefix()}-${runId}`
   }
 
   private async ensureTempDir(): Promise<void> {
@@ -86,17 +91,23 @@ export class StateManager {
     return join(this.tempDir, STATE_FILE_NAME)
   }
 
-  async saveState(state: ReviewState): Promise<void> {
+  updateState(state: ReviewState): void {
+    state.version = STATE_SCHEMA_VERSION
+    state.metadata.updated_at = new Date().toISOString()
+    this.cachedState = state
+  }
+
+  async persistStateToCache(): Promise<void> {
+    if (!this.cachedState) {
+      core.warning('No state to persist')
+      return
+    }
+
     try {
       await this.ensureTempDir()
       const statePath = this.getStatePath()
 
-      state.version = STATE_SCHEMA_VERSION
-      state.metadata.updated_at = new Date().toISOString()
-
-      this.cachedState = state
-
-      const serialized = JSON.stringify(state, null, 2)
+      const serialized = JSON.stringify(this.cachedState, null, 2)
       await writeFile(statePath, serialized, 'utf-8')
 
       core.info(`State written to ${statePath}`)
@@ -120,14 +131,23 @@ export class StateManager {
     }
   }
 
+  async saveState(state: ReviewState): Promise<void> {
+    this.updateState(state)
+    await this.persistStateToCache()
+  }
+
   async restoreState(): Promise<ReviewState | null> {
     try {
       await this.ensureTempDir()
-      const cacheKey = this.getCacheKey()
+      const cacheKeyPrefix = this.getCacheKeyPrefix()
 
-      core.info(`Attempting to restore cache with key: ${cacheKey}`)
+      core.info(`Attempting to restore cache with prefix: ${cacheKeyPrefix}`)
 
-      const restoredKey = await cache.restoreCache([this.tempDir], cacheKey)
+      const restoredKey = await cache.restoreCache(
+        [this.tempDir],
+        cacheKeyPrefix,
+        [cacheKeyPrefix]
+      )
 
       if (!restoredKey) {
         core.info('Cache miss - will rebuild state from GitHub comments')
@@ -293,7 +313,7 @@ export class StateManager {
       }
 
       core.info(`Rebuilt state with ${threads.length} threads`)
-      await this.saveState(state)
+      this.updateState(state)
 
       return state
     } catch (error) {
@@ -481,7 +501,7 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
     if (status === 'ESCALATED') {
       thread.escalated_at = new Date().toISOString()
     }
-    await this.saveState(state)
+    this.updateState(state)
   }
 
   async addThread(thread: ReviewThread): Promise<void> {
@@ -494,7 +514,7 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
       state.threads.push(thread)
     }
 
-    await this.saveState(state)
+    this.updateState(state)
   }
 
   async recordPassCompletion(passResult: PassResult): Promise<void> {
@@ -509,7 +529,7 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
       state.passes.push(passResult)
     }
 
-    await this.saveState(state)
+    this.updateState(state)
   }
 
   async fetchDeveloperReplies(threadId: string): Promise<

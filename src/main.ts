@@ -37,7 +37,8 @@ export async function run(): Promise<void> {
     const github = new GitHubAPI(config)
     const opencode = new OpenCodeClientImpl(
       OPENCODE_SERVER_URL,
-      config.opencode.debugLogging
+      config.opencode.debugLogging,
+      config.review.timeoutMs
     )
     const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd()
 
@@ -84,6 +85,15 @@ ${answer}
       core.setOutput('review_status', result.status)
       core.setOutput('issues_found', String(result.issuesFound))
       core.setOutput('blocking_issues', String(result.blockingIssues))
+
+      if (result.issuesFound > 0) {
+        const message =
+          result.blockingIssues > 0
+            ? `Review found ${result.issuesFound} issue(s), including ${result.blockingIssues} blocking issue(s). Please address the review comments before merging.`
+            : `Review found ${result.issuesFound} issue(s). Please address the review comments before merging.`
+        core.setFailed(message)
+        return
+      }
     } else if (config.execution.mode === 'dispute-resolution') {
       logger.info('Execution mode: Dispute Resolution Only')
 

@@ -53,4 +53,4 @@ jobs:
           max_review_retries: 1
           enable_web: false
           enable_human_escalation: false
-          debug_loggin: true
+          debug_logging: true

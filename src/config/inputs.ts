@@ -24,13 +24,18 @@ export function parseInputs(): ReviewConfig {
     'Problem score threshold must be between 1 and 10'
   )
 
-  const elevationThreshold = parseNumericInput(
-    'score_elevation_threshold',
-    5,
-    1,
-    100,
-    'Score elevation threshold must be between 1 and 100'
-  )
+  const blockingThresholdInput = core.getInput('blocking_score_threshold', {
+    required: false
+  })
+  const blockingThreshold = blockingThresholdInput
+    ? parseNumericInput(
+        'blocking_score_threshold',
+        problemThreshold,
+        1,
+        10,
+        'Blocking score threshold must be between 1 and 10'
+      )
+    : problemThreshold
 
   const reviewTimeoutMinutes = parseNumericInput(
     'review_timeout_minutes',
@@ -88,7 +93,7 @@ export function parseInputs(): ReviewConfig {
     },
     scoring: {
       problemThreshold,
-      elevationThreshold
+      blockingThreshold
     },
     review: {
       timeoutMs: reviewTimeoutMinutes * 60 * 1000,
@@ -240,8 +245,15 @@ export function validateConfig(config: ReviewConfig): void {
     throw new Error('Problem threshold must be between 1 and 10')
   }
 
-  if (config.scoring.elevationThreshold < 1) {
-    throw new Error('Elevation threshold must be at least 1')
+  if (
+    config.scoring.blockingThreshold < 1 ||
+    config.scoring.blockingThreshold > 10
+  ) {
+    throw new Error('Blocking threshold must be between 1 and 10')
+  }
+
+  if (config.scoring.blockingThreshold < config.scoring.problemThreshold) {
+    throw new Error('Blocking threshold cannot be lower than problem threshold')
   }
 
   if (config.review.timeoutMs < 5 * 60 * 1000) {

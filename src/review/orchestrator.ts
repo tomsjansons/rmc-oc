@@ -107,24 +107,30 @@ export class ReviewOrchestrator {
       }, timeoutMs)
     })
 
-    await Promise.race([this.executeFourPassReview(), timeoutPromise])
+    await Promise.race([this.executeMultiPassReview(), timeoutPromise])
   }
 
-  private async executeFourPassReview(): Promise<void> {
+  private async executeMultiPassReview(): Promise<void> {
     const files = await this.github.getPRFiles()
     const securitySensitivity = await this.detectSecuritySensitivity()
 
     logger.info(`Fetched ${files.length} changed files`)
     logger.info(
-      'Starting 4-pass review in single OpenCode session (context preserved across all passes)'
+      'Starting 3-pass review in single OpenCode session (context preserved across all passes)'
     )
 
     await this.executePass(1, REVIEW_PROMPTS.PASS_1(files))
     await this.executePass(2, REVIEW_PROMPTS.PASS_2())
     await this.executePass(3, REVIEW_PROMPTS.PASS_3(securitySensitivity))
-    await this.executePass(4, REVIEW_PROMPTS.PASS_4())
 
-    logger.info('All 4 passes completed in single session')
+    logger.info('All 3 passes completed in single session')
+
+    await this.persistState()
+  }
+
+  private async persistState(): Promise<void> {
+    logger.info('Persisting review state to cache')
+    await this.stateManager.persistStateToCache()
   }
 
   private async executeFixVerification(): Promise<void> {
@@ -415,7 +421,7 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
     )
 
     const blockingCount = activeThreads.filter(
-      (t) => t.score >= this.config.scoring.problemThreshold && t.score >= 8
+      (t) => t.score >= this.config.scoring.blockingThreshold
     ).length
 
     const hasBlocking =

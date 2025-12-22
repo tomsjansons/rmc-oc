@@ -5,7 +5,7 @@ import { OpenCodeError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
 import type { Session } from './types.js'
 
-export interface OpenCodeClient {
+export type OpenCodeClient = {
   createSession(title: string): Promise<Session>
   deleteSession(sessionId: string): Promise<void>
   sendSystemPrompt(sessionId: string, systemPrompt: string): Promise<void>
@@ -20,13 +20,19 @@ export class OpenCodeClientImpl implements OpenCodeClient {
   private currentSessionId: string | null = null
   private client: OpenCodeSDKClient
   private debugLogging: boolean
+  private timeoutMs: number
 
-  constructor(serverUrl: string, debugLogging: boolean = false) {
+  constructor(
+    serverUrl: string,
+    debugLogging: boolean = false,
+    timeoutMs: number = 600000
+  ) {
     this.client = createOpencodeClient({
       baseUrl: serverUrl,
       throwOnError: true
     })
     this.debugLogging = debugLogging
+    this.timeoutMs = timeoutMs
   }
 
   async createSession(title: string): Promise<Session> {
@@ -142,7 +148,6 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
   private async waitForSessionIdleViaEvents(sessionId: string): Promise<void> {
     const startTime = Date.now()
-    const timeout = 600000
     const abortController = new AbortController()
 
     return new Promise<void>((resolve, reject) => {
@@ -154,11 +159,11 @@ export class OpenCodeClientImpl implements OpenCodeClient {
           abortController.abort()
           reject(
             new OpenCodeError(
-              `Timeout waiting for session ${sessionId} to become idle after ${timeout}ms`
+              `Timeout waiting for session ${sessionId} to become idle after ${this.timeoutMs}ms`
             )
           )
         }
-      }, timeout)
+      }, this.timeoutMs)
 
       const cleanup = (): void => {
         clearTimeout(timeoutId)

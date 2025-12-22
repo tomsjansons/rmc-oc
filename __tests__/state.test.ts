@@ -59,7 +59,7 @@ describe('StateManager', () => {
       },
       scoring: {
         problemThreshold: 5,
-        elevationThreshold: 5
+          blockingThreshold: 5,
       },
       github: {
         token: 'test-token',

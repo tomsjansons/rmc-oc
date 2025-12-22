@@ -23,10 +23,12 @@ inputs:
     description: 'Minimum score (1-10) for reporting issues'
     required: false
     default: '5'
-  score_elevation_threshold:
-    description: 'Number of low-score issues to elevate collectively'
+  blocking_score_threshold:
+    description:
+      'Minimum score (1-10) for issues to be considered blocking and fail the
+      check (defaults to problem_score_threshold)'
     required: false
-    default: '5'
+    default: ''
   review_timeout_minutes:
     description: 'Total timeout for entire review in minutes (5-120)'
     required: false
@@ -69,7 +71,7 @@ outputs:
   issues_found:
     description: 'Number of issues found and reported'
   blocking_issues:
-    description: 'Number of blocking issues (score >= 7)'
+    description: 'Number of blocking issues (score >= blocking_score_threshold)'
 
 runs:
   using: node24

@@ -101,6 +101,34 @@ Every \`github_post_review_comment\` must include:
    \`\`\`
 3. Optional: Additional context, examples, or suggestions
 
+### Comment Formatting for Coding Agents
+
+Format your comments so developers can copy-paste them directly into a coding agent. Each comment should:
+
+1. **Always specify the file path** at the start of actionable suggestions
+2. **Be self-contained** - include enough context to understand the issue without reading the PR
+3. **Provide concrete instructions** - describe exactly what to change, not just what's wrong
+
+**Good Example:**
+\`\`\`
+In \`src/utils/auth.ts\`, the \`validateToken\` function at line 42 doesn't handle expired tokens.
+
+Add an expiration check before the signature validation:
+\`\`\`typescript
+// src/utils/auth.ts - validateToken function
+if (token.exp < Date.now() / 1000) {
+  throw new TokenExpiredError('Token has expired')
+}
+\`\`\`
+
+This prevents the security vulnerability where expired tokens could still be accepted.
+\`\`\`
+
+**Bad Example:**
+\`\`\`
+This function has a bug with token expiration.
+\`\`\`
+
 **IMPORTANT:** Never create GitHub's native "Suggestions" (committable code blocks). Only use markdown code blocks and pseudo-code for illustration.`
 
 const SYSTEM_PROMPT = `# OpenCode PR Review Agent
@@ -148,14 +176,13 @@ Always verify developer claims using OpenCode tools (read, grep, glob) before de
 
 ## Multi-Pass Review Process
 
-You will conduct 4 passes in sequence within a **single OpenCode session**. After each pass, call \`submit_pass_results()\` to proceed to the next pass.
+You will conduct 3 passes in sequence within a **single OpenCode session**. After each pass, call \`submit_pass_results()\` to proceed to the next pass.
 
-**IMPORTANT:** All 4 passes run in the same session with full context preservation. You do NOT need to re-read files or diffs between passes - you maintain complete memory of everything you've reviewed.
+**IMPORTANT:** All 3 passes run in the same session with full context preservation. You do NOT need to re-read files or diffs between passes - you maintain complete memory of everything you've reviewed.
 
 **Pass 1:** Atomic Diff Review - Focus on individual lines
 **Pass 2:** Structural/Layered Review - Understand broader codebase context  
 **Pass 3:** Security & Compliance Audit - Check for security issues and rule violations
-**Pass 4:** Final Consolidation - Eliminate noise and ensure quality
 
 Your context is preserved across all passes - you maintain your memory throughout the entire review session.`
 
@@ -219,7 +246,7 @@ export const REVIEW_PROMPTS = {
 
   QUESTION_ANSWERING_SYSTEM,
 
-  PASS_1: (files: string[]) => `## Pass 1 of 4: Atomic Diff Review
+  PASS_1: (files: string[]) => `## Pass 1 of 3: Atomic Diff Review
 
 **Goal:** Review each changed line in isolation. Focus on:
 - Syntax errors and typos
@@ -247,7 +274,7 @@ ${files.map((f) => `- ${f}`).join('\n')}
 
 When you have completed this pass, call \`submit_pass_results(1, summary, has_blocking_issues)\`.`,
 
-  PASS_2: () => `## Pass 2 of 4: Structural/Layered Review
+  PASS_2: () => `## Pass 2 of 3: Structural/Layered Review
 
 **Goal:** Understand how changes fit into the broader codebase. Use OpenCode tools to:
 - Trace function call chains
@@ -272,7 +299,7 @@ When you have completed this pass, call \`submit_pass_results(2, summary, has_bl
 
   PASS_3: (
     securitySensitivity: string
-  ) => `## Pass 3 of 4: Security & Compliance Audit
+  ) => `## Pass 3 of 3: Security & Compliance Audit
 
 **Goal:** Security audit and rule enforcement:
 - Access control issues
@@ -296,26 +323,7 @@ Conduct a thorough security review of the changes. Remember to elevate security 
 
 Post comments for any security or compliance issues using \`github_post_review_comment\`.
 
-When you have completed this pass, call \`submit_pass_results(3, summary, has_blocking_issues)\`.`,
-
-  PASS_4: () => `## Pass 4 of 4: Final Consolidation & Noise Reduction
-
-**Goal:** Final review of all findings:
-- Remove redundant comments by calling \`github_resolve_thread\`
-- Combine related issues if multiple comments address the same root cause
-- Verify score accuracy - ensure scores match the rubric
-- Ensure proportionality of suggestions (don't suggest refactoring entire modules for minor issues)
-- Filter out low-value noise
-
-**Important:** You maintain full context from all previous passes. Review the comments you've already posted in this session.
-
-Use \`github_get_run_state\` to see all threads, then:
-- Call \`github_resolve_thread\` for any redundant or low-value comments
-- Verify that remaining comments are high-confidence and proportional
-
-Submit only high-confidence, high-value feedback.
-
-When you have completed this pass, call \`submit_pass_results(4, summary, has_blocking_issues)\` to finalize the review.`,
+When you have completed this pass, call \`submit_pass_results(3, summary, has_blocking_issues)\` to finalize the review.`,
 
   FIX_VERIFICATION: (
     previousIssues: string,

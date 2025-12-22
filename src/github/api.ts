@@ -4,7 +4,7 @@ import type { ReviewConfig } from '../review/types.js'
 import { GitHubAPIError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
 
-export interface PostReviewCommentArgs {
+export type PostReviewCommentArgs = {
   path: string
   line: number
   body: string

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -247,7 +247,11 @@ export class OpenCodeServer {
     }
 
     try {
-      writeFileSync(authPath, JSON.stringify(auth, null, 2), 'utf8')
+      writeFileSync(authPath, JSON.stringify(auth, null, 2), {
+        encoding: 'utf8',
+        mode: 0o600
+      })
+      chmodSync(authPath, 0o600)
       logger.debug(`Created OpenCode auth file: ${authPath}`)
     } catch (error) {
       throw new OpenCodeError(
@@ -377,7 +381,7 @@ export class OpenCodeServer {
       return
     }
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       if (!this.serverProcess) {
         resolve()
         return
@@ -391,28 +395,46 @@ export class OpenCodeServer {
         return
       }
 
-      const timeoutId = setTimeout(() => {
+      const forceKillTimeout = setTimeout(() => {
         if (this.serverProcess && this.serverProcess.pid) {
           logger.warning(
             `Server did not terminate gracefully, sending SIGKILL to PID ${this.serverProcess.pid}`
           )
-          this.serverProcess.kill('SIGKILL')
+          try {
+            this.serverProcess.kill('SIGKILL')
+          } catch {
+            // Process may already be dead
+          }
         }
-        reject(
-          new OpenCodeError(
-            `Server process did not terminate within ${this.shutdownTimeoutMs}ms`
-          )
-        )
+        this.serverProcess = null
+        resolve()
       }, this.shutdownTimeoutMs)
 
       this.serverProcess.once('exit', () => {
-        clearTimeout(timeoutId)
+        clearTimeout(forceKillTimeout)
         this.serverProcess = null
         resolve()
       })
 
+      // Remove all listeners to prevent keeping the process alive
+      if (this.serverProcess.stdout) {
+        this.serverProcess.stdout.removeAllListeners()
+        this.serverProcess.stdout.destroy()
+      }
+      if (this.serverProcess.stderr) {
+        this.serverProcess.stderr.removeAllListeners()
+        this.serverProcess.stderr.destroy()
+      }
+
       logger.info(`Sending SIGTERM to server process (PID: ${pid})`)
-      this.serverProcess.kill('SIGTERM')
+      try {
+        this.serverProcess.kill('SIGTERM')
+      } catch {
+        // Process may already be dead
+        clearTimeout(forceKillTimeout)
+        this.serverProcess = null
+        resolve()
+      }
     })
   }
 

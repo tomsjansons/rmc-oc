@@ -28,7 +28,7 @@ import require$$0$e from 'diagnostics_channel';
 import require$$2$3 from 'child_process';
 import require$$6 from 'timers';
 import { spawn } from 'node:child_process';
-import require$$1$a, { mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
+import require$$1$a, { mkdirSync, writeFileSync, chmodSync, unlinkSync } from 'node:fs';
 import require$$1$7, { tmpdir, homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { mkdir, writeFile, readFile, readdir, copyFile } from 'node:fs/promises';
@@ -31270,7 +31270,12 @@ function parseInputs() {
         required: false
     });
     const problemThreshold = parseNumericInput('problem_score_threshold', 5, 1, 10, 'Problem score threshold must be between 1 and 10');
-    const elevationThreshold = parseNumericInput('score_elevation_threshold', 5, 1, 100, 'Score elevation threshold must be between 1 and 100');
+    const blockingThresholdInput = coreExports.getInput('blocking_score_threshold', {
+        required: false
+    });
+    const blockingThreshold = blockingThresholdInput
+        ? parseNumericInput('blocking_score_threshold', problemThreshold, 1, 10, 'Blocking score threshold must be between 1 and 10')
+        : problemThreshold;
     const reviewTimeoutMinutes = parseNumericInput('review_timeout_minutes', 40, 5, 120, 'Review timeout must be between 5 and 120 minutes');
     const maxRetries = parseNumericInput('max_review_retries', 1, 0, 3, 'Max review retries must be between 0 and 3');
     const githubToken = coreExports.getInput('github_token', { required: true });
@@ -31302,7 +31307,7 @@ function parseInputs() {
         },
         scoring: {
             problemThreshold,
-            elevationThreshold
+            blockingThreshold
         },
         review: {
             timeoutMs: reviewTimeoutMinutes * 60 * 1000,
@@ -31404,8 +31409,12 @@ function validateConfig(config) {
         config.scoring.problemThreshold > 10) {
         throw new Error('Problem threshold must be between 1 and 10');
     }
-    if (config.scoring.elevationThreshold < 1) {
-        throw new Error('Elevation threshold must be at least 1');
+    if (config.scoring.blockingThreshold < 1 ||
+        config.scoring.blockingThreshold > 10) {
+        throw new Error('Blocking threshold must be between 1 and 10');
+    }
+    if (config.scoring.blockingThreshold < config.scoring.problemThreshold) {
+        throw new Error('Blocking threshold cannot be lower than problem threshold');
     }
     if (config.review.timeoutMs < 5 * 60 * 1000) {
         throw new Error('Review timeout must be at least 5 minutes');
@@ -37010,12 +37019,14 @@ class OpenCodeClientImpl {
     currentSessionId = null;
     client;
     debugLogging;
-    constructor(serverUrl, debugLogging = false) {
+    timeoutMs;
+    constructor(serverUrl, debugLogging = false, timeoutMs = 600000) {
         this.client = createOpencodeClient({
             baseUrl: serverUrl,
             throwOnError: true
         });
         this.debugLogging = debugLogging;
+        this.timeoutMs = timeoutMs;
     }
     async createSession(title) {
         try {
@@ -37101,7 +37112,6 @@ class OpenCodeClientImpl {
     }
     async waitForSessionIdleViaEvents(sessionId) {
         const startTime = Date.now();
-        const timeout = 600000;
         const abortController = new AbortController();
         return new Promise((resolve, reject) => {
             let resolved = false;
@@ -37109,9 +37119,9 @@ class OpenCodeClientImpl {
                 if (!resolved) {
                     resolved = true;
                     abortController.abort();
-                    reject(new OpenCodeError(`Timeout waiting for session ${sessionId} to become idle after ${timeout}ms`));
+                    reject(new OpenCodeError(`Timeout waiting for session ${sessionId} to become idle after ${this.timeoutMs}ms`));
                 }
-            }, timeout);
+            }, this.timeoutMs);
             const cleanup = () => {
                 clearTimeout(timeoutId);
                 abortController.abort();
@@ -37448,7 +37458,11 @@ class OpenCodeServer {
             openrouter: { type: 'api', key: this.config.opencode.apiKey }
         };
         try {
-            writeFileSync(authPath, JSON.stringify(auth, null, 2), 'utf8');
+            writeFileSync(authPath, JSON.stringify(auth, null, 2), {
+                encoding: 'utf8',
+                mode: 0o600
+            });
+            chmodSync(authPath, 0o600);
             logger$2.debug(`Created OpenCode auth file: ${authPath}`);
         }
         catch (error) {
@@ -37549,7 +37563,7 @@ class OpenCodeServer {
         if (!this.serverProcess) {
             return;
         }
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve) => {
             if (!this.serverProcess) {
                 resolve();
                 return;
@@ -37560,20 +37574,43 @@ class OpenCodeServer {
                 resolve();
                 return;
             }
-            const timeoutId = setTimeout(() => {
+            const forceKillTimeout = setTimeout(() => {
                 if (this.serverProcess && this.serverProcess.pid) {
                     logger$2.warning(`Server did not terminate gracefully, sending SIGKILL to PID ${this.serverProcess.pid}`);
-                    this.serverProcess.kill('SIGKILL');
+                    try {
+                        this.serverProcess.kill('SIGKILL');
+                    }
+                    catch {
+                        // Process may already be dead
+                    }
                 }
-                reject(new OpenCodeError(`Server process did not terminate within ${this.shutdownTimeoutMs}ms`));
+                this.serverProcess = null;
+                resolve();
             }, this.shutdownTimeoutMs);
             this.serverProcess.once('exit', () => {
-                clearTimeout(timeoutId);
+                clearTimeout(forceKillTimeout);
                 this.serverProcess = null;
                 resolve();
             });
+            // Remove all listeners to prevent keeping the process alive
+            if (this.serverProcess.stdout) {
+                this.serverProcess.stdout.removeAllListeners();
+                this.serverProcess.stdout.destroy();
+            }
+            if (this.serverProcess.stderr) {
+                this.serverProcess.stderr.removeAllListeners();
+                this.serverProcess.stderr.destroy();
+            }
             logger$2.info(`Sending SIGTERM to server process (PID: ${pid})`);
-            this.serverProcess.kill('SIGTERM');
+            try {
+                this.serverProcess.kill('SIGTERM');
+            }
+            catch {
+                // Process may already be dead
+                clearTimeout(forceKillTimeout);
+                this.serverProcess = null;
+                resolve();
+            }
         });
     }
     delay(ms) {
@@ -97114,9 +97151,13 @@ class StateManager {
         this.tempDir = join(tmpdir(), `pr-review-${config.github.prNumber}`);
         this.sentimentCache = new Map();
     }
-    getCacheKey() {
+    getCacheKeyPrefix() {
         const { owner, repo, prNumber } = this.config.github;
         return `${CACHE_VERSION}-pr-review-state-${owner}-${repo}-${prNumber}`;
+    }
+    getCacheKey() {
+        const runId = process.env.GITHUB_RUN_ID || Date.now().toString();
+        return `${this.getCacheKeyPrefix()}-${runId}`;
     }
     async ensureTempDir() {
         try {
@@ -97129,14 +97170,20 @@ class StateManager {
     getStatePath() {
         return join(this.tempDir, STATE_FILE_NAME);
     }
-    async saveState(state) {
+    updateState(state) {
+        state.version = STATE_SCHEMA_VERSION;
+        state.metadata.updated_at = new Date().toISOString();
+        this.cachedState = state;
+    }
+    async persistStateToCache() {
+        if (!this.cachedState) {
+            coreExports.warning('No state to persist');
+            return;
+        }
         try {
             await this.ensureTempDir();
             const statePath = this.getStatePath();
-            state.version = STATE_SCHEMA_VERSION;
-            state.metadata.updated_at = new Date().toISOString();
-            this.cachedState = state;
-            const serialized = JSON.stringify(state, null, 2);
+            const serialized = JSON.stringify(this.cachedState, null, 2);
             await writeFile(statePath, serialized, 'utf-8');
             coreExports.info(`State written to ${statePath}`);
             const cacheKey = this.getCacheKey();
@@ -97156,12 +97203,16 @@ class StateManager {
             throw error;
         }
     }
+    async saveState(state) {
+        this.updateState(state);
+        await this.persistStateToCache();
+    }
     async restoreState() {
         try {
             await this.ensureTempDir();
-            const cacheKey = this.getCacheKey();
-            coreExports.info(`Attempting to restore cache with key: ${cacheKey}`);
-            const restoredKey = await cacheExports.restoreCache([this.tempDir], cacheKey);
+            const cacheKeyPrefix = this.getCacheKeyPrefix();
+            coreExports.info(`Attempting to restore cache with prefix: ${cacheKeyPrefix}`);
+            const restoredKey = await cacheExports.restoreCache([this.tempDir], cacheKeyPrefix, [cacheKeyPrefix]);
             if (!restoredKey) {
                 coreExports.info('Cache miss - will rebuild state from GitHub comments');
                 return null;
@@ -97289,7 +97340,7 @@ class StateManager {
                 }
             };
             coreExports.info(`Rebuilt state with ${threads.length} threads`);
-            await this.saveState(state);
+            this.updateState(state);
             return state;
         }
         catch (error) {
@@ -97440,7 +97491,7 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`;
         if (status === 'ESCALATED') {
             thread.escalated_at = new Date().toISOString();
         }
-        await this.saveState(state);
+        this.updateState(state);
     }
     async addThread(thread) {
         const state = await this.getOrCreateState();
@@ -97451,7 +97502,7 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`;
         else {
             state.threads.push(thread);
         }
-        await this.saveState(state);
+        this.updateState(state);
     }
     async recordPassCompletion(passResult) {
         const state = await this.getOrCreateState();
@@ -97462,7 +97513,7 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`;
         else {
             state.passes.push(passResult);
         }
-        await this.saveState(state);
+        this.updateState(state);
     }
     async fetchDeveloperReplies(threadId) {
         try {
@@ -97710,6 +97761,34 @@ Every \`github_post_review_comment\` must include:
    \`\`\`
 3. Optional: Additional context, examples, or suggestions
 
+### Comment Formatting for Coding Agents
+
+Format your comments so developers can copy-paste them directly into a coding agent. Each comment should:
+
+1. **Always specify the file path** at the start of actionable suggestions
+2. **Be self-contained** - include enough context to understand the issue without reading the PR
+3. **Provide concrete instructions** - describe exactly what to change, not just what's wrong
+
+**Good Example:**
+\`\`\`
+In \`src/utils/auth.ts\`, the \`validateToken\` function at line 42 doesn't handle expired tokens.
+
+Add an expiration check before the signature validation:
+\`\`\`typescript
+// src/utils/auth.ts - validateToken function
+if (token.exp < Date.now() / 1000) {
+  throw new TokenExpiredError('Token has expired')
+}
+\`\`\`
+
+This prevents the security vulnerability where expired tokens could still be accepted.
+\`\`\`
+
+**Bad Example:**
+\`\`\`
+This function has a bug with token expiration.
+\`\`\`
+
 **IMPORTANT:** Never create GitHub's native "Suggestions" (committable code blocks). Only use markdown code blocks and pseudo-code for illustration.`;
 const SYSTEM_PROMPT = `# OpenCode PR Review Agent
 
@@ -97756,14 +97835,13 @@ Always verify developer claims using OpenCode tools (read, grep, glob) before de
 
 ## Multi-Pass Review Process
 
-You will conduct 4 passes in sequence within a **single OpenCode session**. After each pass, call \`submit_pass_results()\` to proceed to the next pass.
+You will conduct 3 passes in sequence within a **single OpenCode session**. After each pass, call \`submit_pass_results()\` to proceed to the next pass.
 
-**IMPORTANT:** All 4 passes run in the same session with full context preservation. You do NOT need to re-read files or diffs between passes - you maintain complete memory of everything you've reviewed.
+**IMPORTANT:** All 3 passes run in the same session with full context preservation. You do NOT need to re-read files or diffs between passes - you maintain complete memory of everything you've reviewed.
 
 **Pass 1:** Atomic Diff Review - Focus on individual lines
 **Pass 2:** Structural/Layered Review - Understand broader codebase context  
 **Pass 3:** Security & Compliance Audit - Check for security issues and rule violations
-**Pass 4:** Final Consolidation - Eliminate noise and ensure quality
 
 Your context is preserved across all passes - you maintain your memory throughout the entire review session.`;
 const QUESTION_ANSWERING_SYSTEM = `# OpenCode Code Assistant
@@ -97823,7 +97901,7 @@ Do NOT use tools to post the response - just provide your answer as text and it 
 const REVIEW_PROMPTS = {
     SYSTEM: SYSTEM_PROMPT,
     QUESTION_ANSWERING_SYSTEM,
-    PASS_1: (files) => `## Pass 1 of 4: Atomic Diff Review
+    PASS_1: (files) => `## Pass 1 of 3: Atomic Diff Review
 
 **Goal:** Review each changed line in isolation. Focus on:
 - Syntax errors and typos
@@ -97850,7 +97928,7 @@ ${files.map((f) => `- ${f}`).join('\n')}
 **Tip:** Start by reading the most critical files first (e.g., source code over config files).
 
 When you have completed this pass, call \`submit_pass_results(1, summary, has_blocking_issues)\`.`,
-    PASS_2: () => `## Pass 2 of 4: Structural/Layered Review
+    PASS_2: () => `## Pass 2 of 3: Structural/Layered Review
 
 **Goal:** Understand how changes fit into the broader codebase. Use OpenCode tools to:
 - Trace function call chains
@@ -97872,7 +97950,7 @@ Use \`read\`, \`grep\`, \`glob\`, and \`list\` tools to explore the codebase and
 Post comments for any structural issues you find using \`github_post_review_comment\`.
 
 When you have completed this pass, call \`submit_pass_results(2, summary, has_blocking_issues)\`.`,
-    PASS_3: (securitySensitivity) => `## Pass 3 of 4: Security & Compliance Audit
+    PASS_3: (securitySensitivity) => `## Pass 3 of 3: Security & Compliance Audit
 
 **Goal:** Security audit and rule enforcement:
 - Access control issues
@@ -97896,25 +97974,7 @@ Conduct a thorough security review of the changes. Remember to elevate security 
 
 Post comments for any security or compliance issues using \`github_post_review_comment\`.
 
-When you have completed this pass, call \`submit_pass_results(3, summary, has_blocking_issues)\`.`,
-    PASS_4: () => `## Pass 4 of 4: Final Consolidation & Noise Reduction
-
-**Goal:** Final review of all findings:
-- Remove redundant comments by calling \`github_resolve_thread\`
-- Combine related issues if multiple comments address the same root cause
-- Verify score accuracy - ensure scores match the rubric
-- Ensure proportionality of suggestions (don't suggest refactoring entire modules for minor issues)
-- Filter out low-value noise
-
-**Important:** You maintain full context from all previous passes. Review the comments you've already posted in this session.
-
-Use \`github_get_run_state\` to see all threads, then:
-- Call \`github_resolve_thread\` for any redundant or low-value comments
-- Verify that remaining comments are high-confidence and proportional
-
-Submit only high-confidence, high-value feedback.
-
-When you have completed this pass, call \`submit_pass_results(4, summary, has_blocking_issues)\` to finalize the review.`,
+When you have completed this pass, call \`submit_pass_results(3, summary, has_blocking_issues)\` to finalize the review.`,
     FIX_VERIFICATION: (previousIssues, newCommits) => `## Fix Verification for New Commits
 
 **Previous Review State:**
@@ -98232,18 +98292,22 @@ class ReviewOrchestrator {
                 reject(new OrchestratorError(`Review timeout: did not complete within ${timeoutMs / 1000}s`));
             }, timeoutMs);
         });
-        await Promise.race([this.executeFourPassReview(), timeoutPromise]);
+        await Promise.race([this.executeMultiPassReview(), timeoutPromise]);
     }
-    async executeFourPassReview() {
+    async executeMultiPassReview() {
         const files = await this.github.getPRFiles();
         const securitySensitivity = await this.detectSecuritySensitivity();
         logger$2.info(`Fetched ${files.length} changed files`);
-        logger$2.info('Starting 4-pass review in single OpenCode session (context preserved across all passes)');
+        logger$2.info('Starting 3-pass review in single OpenCode session (context preserved across all passes)');
         await this.executePass(1, REVIEW_PROMPTS.PASS_1(files));
         await this.executePass(2, REVIEW_PROMPTS.PASS_2());
         await this.executePass(3, REVIEW_PROMPTS.PASS_3(securitySensitivity));
-        await this.executePass(4, REVIEW_PROMPTS.PASS_4());
-        logger$2.info('All 4 passes completed in single session');
+        logger$2.info('All 3 passes completed in single session');
+        await this.persistState();
+    }
+    async persistState() {
+        logger$2.info('Persisting review state to cache');
+        await this.stateManager.persistStateToCache();
     }
     async executeFixVerification() {
         await logger$2.group('Fix Verification', async () => {
@@ -98444,7 +98508,7 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
             };
         }
         const activeThreads = this.reviewState.threads.filter((t) => t.status !== 'RESOLVED');
-        const blockingCount = activeThreads.filter((t) => t.score >= this.config.scoring.problemThreshold && t.score >= 8).length;
+        const blockingCount = activeThreads.filter((t) => t.score >= this.config.scoring.blockingThreshold).length;
         const hasBlocking = blockingCount > 0 || this.passResults.some((p) => p.hasBlockingIssues);
         return {
             status: hasBlocking ? 'has_blocking_issues' : 'completed',
@@ -106427,7 +106491,7 @@ const appRouter = router({
                 summary: input.summary,
                 hasBlockingIssues: input.hasBlockingIssues
             });
-            const nextPass = input.passNumber < 4 ? input.passNumber + 1 : null;
+            const nextPass = input.passNumber < 3 ? input.passNumber + 1 : null;
             logger$2.info(`Pass ${input.passNumber} completed. Next: ${nextPass || 'done'}`);
             return {
                 success: true,
@@ -106497,7 +106561,7 @@ async function run() {
         openCodeServer = new OpenCodeServer(config);
         await openCodeServer.start();
         const github = new GitHubAPI(config);
-        const opencode = new OpenCodeClientImpl(OPENCODE_SERVER_URL, config.opencode.debugLogging);
+        const opencode = new OpenCodeClientImpl(OPENCODE_SERVER_URL, config.opencode.debugLogging, config.review.timeoutMs);
         const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
         orchestrator = new ReviewOrchestrator(opencode, github, config, workspaceRoot);
         trpcServer = new TRPCServer(orchestrator, github);
@@ -106527,6 +106591,13 @@ ${answer}
             coreExports.setOutput('review_status', result.status);
             coreExports.setOutput('issues_found', String(result.issuesFound));
             coreExports.setOutput('blocking_issues', String(result.blockingIssues));
+            if (result.issuesFound > 0) {
+                const message = result.blockingIssues > 0
+                    ? `Review found ${result.issuesFound} issue(s), including ${result.blockingIssues} blocking issue(s). Please address the review comments before merging.`
+                    : `Review found ${result.issuesFound} issue(s). Please address the review comments before merging.`;
+                coreExports.setFailed(message);
+                return;
+            }
         }
         else if (config.execution.mode === 'dispute-resolution') {
             logger$2.info('Execution mode: Dispute Resolution Only');

@@ -174,7 +174,7 @@ export const appRouter = router({
           hasBlockingIssues: input.hasBlockingIssues
         })
 
-        const nextPass = input.passNumber < 4 ? input.passNumber + 1 : null
+        const nextPass = input.passNumber < 3 ? input.passNumber + 1 : null
 
         logger.info(
           `Pass ${input.passNumber} completed. Next: ${nextPass || 'done'}`

@@ -3,7 +3,7 @@ export type ExecutionMode =
   | 'dispute-resolution'
   | 'question-answering'
 
-export interface QuestionContext {
+export type QuestionContext = {
   commentId: string
   question: string
   author: string
@@ -13,7 +13,7 @@ export interface QuestionContext {
   }
 }
 
-export interface ReviewConfig {
+export type ReviewConfig = {
   opencode: {
     apiKey: string
     model: string
@@ -21,12 +21,12 @@ export interface ReviewConfig {
     debugLogging: boolean
   }
   scoring: {
-    problemThreshold: number // 1-10
-    elevationThreshold: number // Number of issues to elevate
+    problemThreshold: number
+    blockingThreshold: number
   }
   review: {
-    timeoutMs: number // Total timeout for entire review in milliseconds
-    maxRetries: number // Maximum number of retry attempts
+    timeoutMs: number
+    maxRetries: number
   }
   github: {
     token: string
@@ -36,7 +36,7 @@ export interface ReviewConfig {
   }
   dispute: {
     enableHumanEscalation: boolean
-    humanReviewers: string[] // GitHub usernames to tag on unresolved disputes
+    humanReviewers: string[]
   }
   execution: {
     mode: ExecutionMode
@@ -46,13 +46,13 @@ export interface ReviewConfig {
 
 export type ThreadStatus = 'PENDING' | 'RESOLVED' | 'DISPUTED' | 'ESCALATED'
 
-export interface ThreadComment {
+export type ThreadComment = {
   author: string
   body: string
   createdAt: string
 }
 
-export interface ReviewThread {
+export type ReviewThread = {
   id: string
   file: string
   line: number
@@ -60,24 +60,24 @@ export interface ReviewThread {
   history: ThreadComment[]
 }
 
-export interface IssueAssessment {
+export type IssueAssessment = {
   finding: string
   assessment: string
-  score: number // 1-10
+  score: number
 }
 
-export interface ReviewState {
+export type ReviewState = {
   threads: ReviewThread[]
   metadata: Record<string, unknown>
 }
 
-export interface PassResult {
+export type PassResult = {
   passNumber: number
   summary: string
   hasBlockingIssues: boolean
 }
 
-export interface ReviewOutput {
+export type ReviewOutput = {
   status: 'completed' | 'failed' | 'has_blocking_issues'
   issuesFound: number
   blockingIssues: number

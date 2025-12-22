@@ -83,8 +83,45 @@ export class GitHubAPI {
 
       return commentId
     } catch (error) {
+      const isUnprocessableEntity =
+        error instanceof Error &&
+        (error.message.includes('422') ||
+          error.message.includes('Unprocessable Entity'))
+
+      if (isUnprocessableEntity) {
+        logger.warning(
+          `Line ${args.line} not in PR diff for ${args.path}, falling back to PR-level comment`
+        )
+        return this.postPRLevelComment(args)
+      }
+
       throw new GitHubAPIError(
         `Failed to post review comment: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  private async postPRLevelComment(
+    args: PostReviewCommentArgs
+  ): Promise<string> {
+    try {
+      const bodyWithLocation = `📍 **Location:** \`${args.path}:${args.line}\`\n\n${args.body}`
+
+      const response = await this.octokit.issues.createComment({
+        owner: this.owner,
+        repo: this.repo,
+        issue_number: this.prNumber,
+        body: bodyWithLocation
+      })
+
+      const commentId = String(response.data.id)
+
+      logger.info(`Posted PR-level comment: ID ${commentId}`)
+
+      return commentId
+    } catch (error) {
+      throw new GitHubAPIError(
+        `Failed to post PR-level comment: ${error instanceof Error ? error.message : String(error)}`
       )
     }
   }
@@ -121,11 +158,101 @@ export class GitHubAPI {
         body: `✅ **Issue Resolved**\n\n${reason}`
       })
 
+      await this.resolveReviewThread(threadId)
+
       logger.info(`Resolved thread ${threadId}`)
     } catch (error) {
       throw new GitHubAPIError(
         `Failed to resolve thread: ${error instanceof Error ? error.message : String(error)}`
       )
+    }
+  }
+
+  private async resolveReviewThread(commentId: string): Promise<void> {
+    try {
+      const threadId = await this.getReviewThreadId(commentId)
+
+      if (!threadId) {
+        logger.warning(
+          `Could not find thread ID for comment ${commentId}, thread will remain unresolved`
+        )
+        return
+      }
+
+      await this.octokit.graphql(
+        `mutation ResolveThread($threadId: ID!) {
+          resolveReviewThread(input: { threadId: $threadId }) {
+            thread {
+              isResolved
+            }
+          }
+        }`,
+        { threadId }
+      )
+
+      logger.debug(`GraphQL: Resolved review thread ${threadId}`)
+    } catch (error) {
+      logger.warning(
+        `Failed to resolve review thread via GraphQL: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  private async getReviewThreadId(commentId: string): Promise<string | null> {
+    try {
+      const result = await this.octokit.graphql<{
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: Array<{
+                id: string
+                comments: {
+                  nodes: Array<{
+                    databaseId: number
+                  }>
+                }
+              }>
+            }
+          }
+        }
+      }>(
+        `query GetThreadId($owner: String!, $repo: String!, $prNumber: Int!) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $prNumber) {
+              reviewThreads(first: 100) {
+                nodes {
+                  id
+                  comments(first: 1) {
+                    nodes {
+                      databaseId
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }`,
+        {
+          owner: this.owner,
+          repo: this.repo,
+          prNumber: this.prNumber
+        }
+      )
+
+      const threads = result.repository.pullRequest.reviewThreads.nodes
+      for (const thread of threads) {
+        const firstComment = thread.comments.nodes[0]
+        if (firstComment && String(firstComment.databaseId) === commentId) {
+          return thread.id
+        }
+      }
+
+      return null
+    } catch (error) {
+      logger.warning(
+        `Failed to get review thread ID: ${error instanceof Error ? error.message : String(error)}`
+      )
+      return null
     }
   }
 

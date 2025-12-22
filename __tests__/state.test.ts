@@ -6,12 +6,7 @@ import {
   it,
   jest
 } from '@jest/globals'
-import { mkdir, readFile, rmdir, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 
-const mockSaveCache = jest.fn<typeof import('@actions/cache').saveCache>()
-const mockRestoreCache = jest.fn<typeof import('@actions/cache').restoreCache>()
 const mockInfo = jest.fn()
 const mockWarning = jest.fn()
 const mockDebug = jest.fn()
@@ -26,11 +21,6 @@ const mockOctokit = {
 
 global.fetch = mockFetch as typeof global.fetch
 
-jest.unstable_mockModule('@actions/cache', () => ({
-  saveCache: mockSaveCache,
-  restoreCache: mockRestoreCache
-}))
-
 jest.unstable_mockModule('@actions/core', () => ({
   info: mockInfo,
   warning: mockWarning,
@@ -43,12 +33,11 @@ jest.unstable_mockModule('@octokit/rest', () => ({
 
 const { StateManager, StateError } = await import('../src/github/state.js')
 import type { ReviewConfig } from '../src/review/types.js'
-import type { ReviewState } from '../src/github/state.js'
+import type { ReviewState, ReviewThread } from '../src/github/state.js'
 
 describe('StateManager', () => {
   let stateManager: StateManager
   let mockConfig: ReviewConfig
-  let tempDir: string
 
   beforeEach(() => {
     mockConfig = {
@@ -59,7 +48,7 @@ describe('StateManager', () => {
       },
       scoring: {
         problemThreshold: 5,
-          blockingThreshold: 5,
+        blockingThreshold: 5
       },
       github: {
         token: 'test-token',
@@ -70,10 +59,7 @@ describe('StateManager', () => {
     }
 
     stateManager = new StateManager(mockConfig)
-    tempDir = join(tmpdir(), `pr-review-${mockConfig.github.prNumber}`)
 
-    mockSaveCache.mockClear()
-    mockRestoreCache.mockClear()
     mockInfo.mockClear()
     mockWarning.mockClear()
     mockDebug.mockClear()
@@ -82,54 +68,12 @@ describe('StateManager', () => {
     mockOctokit.pulls.listReviewComments.mockClear()
   })
 
-  afterEach(async () => {
-    try {
-      await rmdir(tempDir, { recursive: true })
-    } catch {
-      // Ignore errors
-    }
+  afterEach(() => {
+    jest.clearAllMocks()
   })
 
-  describe('getCacheKey', () => {
-    it('should generate correct cache key format', () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const key = (stateManager as any).getCacheKey()
-      expect(key).toBe('v1-pr-review-state-test-owner-test-repo-123')
-    })
-  })
-
-  describe('saveState', () => {
-    it('should save state to file and cache', async () => {
-      const state: ReviewState = {
-        version: 1,
-        prNumber: 123,
-        lastCommitSha: 'abc123',
-        threads: [],
-        passes: [],
-        metadata: {
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        }
-      }
-
-      mockSaveCache.mockResolvedValue(1)
-
-      await stateManager.saveState(state)
-
-      const statePath = join(tempDir, 'review-state.json')
-      const savedContent = await readFile(statePath, 'utf-8')
-      const savedState = JSON.parse(savedContent)
-
-      expect(savedState.version).toBe(1)
-      expect(savedState.prNumber).toBe(123)
-      expect(savedState.lastCommitSha).toBe('abc123')
-      expect(mockSaveCache).toHaveBeenCalledWith(
-        [tempDir],
-        'v1-pr-review-state-test-owner-test-repo-123'
-      )
-    })
-
-    it('should update metadata timestamp on save', async () => {
+  describe('updateState', () => {
+    it('should update metadata timestamp', () => {
       const state: ReviewState = {
         version: 1,
         prNumber: 123,
@@ -142,23 +86,17 @@ describe('StateManager', () => {
         }
       }
 
-      mockSaveCache.mockResolvedValue(1)
+      stateManager.updateState(state)
 
-      await stateManager.saveState(state)
-
-      const statePath = join(tempDir, 'review-state.json')
-      const savedContent = await readFile(statePath, 'utf-8')
-      const savedState = JSON.parse(savedContent)
-
-      expect(savedState.metadata.updated_at).not.toBe(
-        '2024-01-01T00:00:00.000Z'
+      expect(state.metadata.updated_at).not.toBe('2024-01-01T00:00:00.000Z')
+      expect(new Date(state.metadata.updated_at).getTime()).toBeGreaterThan(
+        new Date('2024-01-01T00:00:00.000Z').getTime()
       )
-      expect(
-        new Date(savedState.metadata.updated_at).getTime()
-      ).toBeGreaterThan(new Date('2024-01-01T00:00:00.000Z').getTime())
     })
+  })
 
-    it('should warn when cache save fails', async () => {
+  describe('getOrCreateState', () => {
+    it('should return cached state if available', async () => {
       const state: ReviewState = {
         version: 1,
         prNumber: 123,
@@ -171,259 +109,198 @@ describe('StateManager', () => {
         }
       }
 
-      mockSaveCache.mockResolvedValue(-1)
+      stateManager.updateState(state)
 
-      await stateManager.saveState(state)
+      const result = await stateManager.getOrCreateState()
 
-      expect(mockWarning).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to save cache')
-      )
+      expect(result).toBe(state)
+      expect(mockOctokit.pulls.get).not.toHaveBeenCalled()
     })
 
-    it('should throw StateError on write failure', async () => {
-      await mkdir(tempDir, { recursive: true })
-      const statePath = join(tempDir, 'review-state.json')
-      await writeFile(statePath, 'invalid', 'utf-8')
-
-      const readOnlyDir = join(tempDir, 'readonly')
-      await mkdir(readOnlyDir, { recursive: true, mode: 0o444 })
-
-      const readOnlyStateManager = new StateManager({
-        ...mockConfig,
-        github: { ...mockConfig.github, prNumber: 999 }
+    it('should rebuild state from comments if no cached state', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: {
+          head: { sha: 'new-sha-123' }
+        }
       })
 
-      const state: ReviewState = {
-        prNumber: 999,
-        lastCommitSha: 'abc123',
-        threads: [],
-        passes: [],
-        metadata: {
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        }
-      }
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: []
+      })
 
-      mockSaveCache.mockRejectedValue(new Error('Write failed'))
+      const result = await stateManager.getOrCreateState()
 
-      await expect(readOnlyStateManager.saveState(state)).rejects.toThrow(
-        StateError
-      )
+      expect(result.lastCommitSha).toBe('new-sha-123')
+      expect(result.prNumber).toBe(123)
+      expect(mockOctokit.pulls.get).toHaveBeenCalled()
     })
   })
 
-  describe('restoreState', () => {
-    it('should restore state from cache', async () => {
-      const state: ReviewState = {
-        version: 1,
-        prNumber: 123,
-        lastCommitSha: 'abc123',
-        threads: [
+  describe('rebuildStateFromComments', () => {
+    it('should rebuild state from GitHub comments', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: {
+          head: { sha: 'test-sha' }
+        }
+      })
+
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: [
           {
-            id: 'thread-1',
-            file: 'test.ts',
-            line: 10,
-            status: 'PENDING',
-            score: 5,
-            assessment: {
-              finding: 'Test issue',
-              assessment: 'Test assessment',
-              score: 5
-            },
-            original_comment: {
-              author: 'bot',
-              body: 'Test comment',
-              timestamp: new Date().toISOString()
-            }
+            id: 1001,
+            path: 'src/test.ts',
+            line: 42,
+            body: '```json\n{"finding": "Test issue", "assessment": "Test assessment", "score": 7}\n```',
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T00:00:00.000Z',
+            in_reply_to_id: undefined
           }
-        ],
-        passes: [],
-        metadata: {
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+        ]
+      })
+
+      const state = await stateManager.rebuildStateFromComments()
+
+      expect(state.prNumber).toBe(123)
+      expect(state.lastCommitSha).toBe('test-sha')
+      expect(state.threads).toHaveLength(1)
+      expect(state.threads[0].file).toBe('src/test.ts')
+      expect(state.threads[0].line).toBe(42)
+      expect(state.threads[0].score).toBe(7)
+    })
+
+    it('should skip comments without valid assessments', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: {
+          head: { sha: 'test-sha' }
         }
-      }
+      })
 
-      await mkdir(tempDir, { recursive: true })
-      const statePath = join(tempDir, 'review-state.json')
-      await writeFile(statePath, JSON.stringify(state), 'utf-8')
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: [
+          {
+            id: 1001,
+            path: 'src/test.ts',
+            line: 42,
+            body: 'Just a regular comment',
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T00:00:00.000Z',
+            in_reply_to_id: undefined
+          }
+        ]
+      })
 
-      mockRestoreCache.mockResolvedValue(
-        'v1-pr-review-state-test-owner-test-repo-123'
-      )
+      const state = await stateManager.rebuildStateFromComments()
 
-      const restored = await stateManager.restoreState()
-
-      expect(restored).not.toBeNull()
-      expect(restored?.prNumber).toBe(123)
-      expect(restored?.threads.length).toBe(1)
-      expect(restored?.threads[0].id).toBe('thread-1')
+      expect(state.threads).toHaveLength(0)
     })
 
-    it('should return null on cache miss', async () => {
-      mockRestoreCache.mockResolvedValue(undefined)
-
-      const restored = await stateManager.restoreState()
-
-      expect(restored).toBeNull()
-    })
-
-    it('should return null if state validation fails', async () => {
-      const invalidState = {
-        prNumber: 999,
-        threads: [],
-        passes: []
-      }
-
-      await mkdir(tempDir, { recursive: true })
-      const statePath = join(tempDir, 'review-state.json')
-      await writeFile(statePath, JSON.stringify(invalidState), 'utf-8')
-
-      mockRestoreCache.mockResolvedValue(
-        'v1-pr-review-state-test-owner-test-repo-123'
-      )
-
-      const restored = await stateManager.restoreState()
-
-      expect(restored).toBeNull()
-    })
-  })
-
-  describe('validateState', () => {
-    it('should validate correct state', () => {
-      const state: ReviewState = {
-        version: 1,
-        prNumber: 123,
-        lastCommitSha: 'abc123',
-        threads: [],
-        passes: [],
-        metadata: {
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+    it('should include developer replies in threads', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: {
+          head: { sha: 'test-sha' }
         }
-      }
+      })
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const isValid = (stateManager as any).validateState(state)
-      expect(isValid).toBe(true)
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: [
+          {
+            id: 1001,
+            path: 'src/test.ts',
+            line: 42,
+            body: '```json\n{"finding": "Test issue", "assessment": "Test assessment", "score": 7}\n```',
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T00:00:00.000Z',
+            in_reply_to_id: undefined
+          },
+          {
+            id: 1002,
+            path: 'src/test.ts',
+            line: 42,
+            body: 'I disagree with this',
+            user: { login: 'developer' },
+            created_at: '2024-01-01T01:00:00.000Z',
+            in_reply_to_id: 1001
+          }
+        ]
+      })
+
+      const state = await stateManager.rebuildStateFromComments()
+
+      expect(state.threads).toHaveLength(1)
+      expect(state.threads[0].developer_replies).toHaveLength(1)
+      expect(state.threads[0].developer_replies?.[0].author).toBe('developer')
     })
 
-    it('should reject state with wrong PR number', () => {
-      const state: ReviewState = {
-        version: 1,
-        prNumber: 999,
-        lastCommitSha: 'abc123',
-        threads: [],
-        passes: [],
-        metadata: {
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+    it('should detect RESOLVED status from bot replies', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: {
+          head: { sha: 'test-sha' }
         }
-      }
+      })
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const isValid = (stateManager as any).validateState(state)
-      expect(isValid).toBe(false)
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: [
+          {
+            id: 1001,
+            path: 'src/test.ts',
+            line: 42,
+            body: '```json\n{"finding": "Test issue", "assessment": "Test assessment", "score": 7}\n```',
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T00:00:00.000Z',
+            in_reply_to_id: undefined
+          },
+          {
+            id: 1002,
+            path: 'src/test.ts',
+            line: 42,
+            body: '✅ **Issue Resolved**\n\nThe typo has been fixed.',
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T01:00:00.000Z',
+            in_reply_to_id: 1001
+          }
+        ]
+      })
+
+      const state = await stateManager.rebuildStateFromComments()
+
+      expect(state.threads).toHaveLength(1)
+      expect(state.threads[0].status).toBe('RESOLVED')
     })
 
-    it('should reject state with missing fields', () => {
-      const invalidStates = [
-        null,
-        {},
-        { prNumber: 123 },
-        { prNumber: 123, threads: 'invalid' },
-        { prNumber: 123, threads: [], passes: 'invalid' },
-        { prNumber: 123, threads: [], passes: [], metadata: {} }
-      ]
-
-      for (const state of invalidStates) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const isValid = (stateManager as any).validateState(state)
-        expect(isValid).toBe(false)
-      }
-    })
-
-    it('should reject state with missing version', () => {
-      const state = {
-        prNumber: 123,
-        lastCommitSha: 'abc123',
-        threads: [],
-        passes: [],
-        metadata: {
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+    it('should detect ESCALATED status from bot replies', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: {
+          head: { sha: 'test-sha' }
         }
-      }
+      })
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const isValid = (stateManager as any).validateState(state)
-      expect(isValid).toBe(false)
-    })
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: [
+          {
+            id: 1001,
+            path: 'src/test.ts',
+            line: 42,
+            body: '```json\n{"finding": "Test issue", "assessment": "Test assessment", "score": 7}\n```',
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T00:00:00.000Z',
+            in_reply_to_id: undefined
+          },
+          {
+            id: 1002,
+            path: 'src/test.ts',
+            line: 42,
+            body: '🔺 **Escalated to Human Review**\n\nThis needs human judgment.',
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T01:00:00.000Z',
+            in_reply_to_id: 1001
+          }
+        ]
+      })
 
-    it('should reject state with incompatible version', () => {
-      const state: ReviewState = {
-        version: 999,
-        prNumber: 123,
-        lastCommitSha: 'abc123',
-        threads: [],
-        passes: [],
-        metadata: {
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        }
-      }
+      const state = await stateManager.rebuildStateFromComments()
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const isValid = (stateManager as any).validateState(state)
-      expect(isValid).toBe(false)
-    })
-  })
-
-  describe('version management', () => {
-    it('should set version on new state', async () => {
-      const state: ReviewState = {
-        version: 1,
-        prNumber: 123,
-        lastCommitSha: 'abc123',
-        threads: [],
-        passes: [],
-        metadata: {
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        }
-      }
-
-      mockSaveCache.mockResolvedValue(1)
-      await stateManager.saveState(state)
-
-      const statePath = join(tempDir, 'review-state.json')
-      const savedContent = await readFile(statePath, 'utf-8')
-      const savedState = JSON.parse(savedContent)
-
-      expect(savedState.version).toBe(1)
-    })
-
-    it('should preserve version when saving existing state', async () => {
-      const state: ReviewState = {
-        version: 1,
-        prNumber: 123,
-        lastCommitSha: 'abc123',
-        threads: [],
-        passes: [],
-        metadata: {
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        }
-      }
-
-      mockSaveCache.mockResolvedValue(1)
-      await stateManager.saveState(state)
-
-      const statePath = join(tempDir, 'review-state.json')
-      const savedContent = await readFile(statePath, 'utf-8')
-      const savedState = JSON.parse(savedContent)
-
-      expect(savedState.version).toBe(1)
+      expect(state.threads).toHaveLength(1)
+      expect(state.threads[0].status).toBe('ESCALATED')
     })
   })
 
@@ -443,43 +320,232 @@ Some text before
 Some text after
       `
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const assessment = (stateManager as any).extractAssessmentFromComment(
-        comment
-      )
+      const assessment = (
+        stateManager as unknown as {
+          extractAssessmentFromComment: (body: string) => {
+            finding: string
+            assessment: string
+            score: number
+          }
+        }
+      ).extractAssessmentFromComment(comment)
 
       expect(assessment.finding).toBe('Test finding')
       expect(assessment.assessment).toBe('Test assessment')
       expect(assessment.score).toBe(7)
     })
 
-    it('should return default assessment for invalid JSON', () => {
+    it('should return null for comment without JSON', () => {
       const comment = 'Just a regular comment without JSON'
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const assessment = (stateManager as any).extractAssessmentFromComment(
-        comment
-      )
+      const assessment = (
+        stateManager as unknown as {
+          extractAssessmentFromComment: (body: string) => {
+            finding: string
+            assessment: string
+            score: number
+          } | null
+        }
+      ).extractAssessmentFromComment(comment)
 
-      expect(assessment.finding).toBe('Unknown issue')
-      expect(assessment.score).toBe(5)
-      expect(assessment.assessment).toContain('Just a regular comment')
+      expect(assessment).toBeNull()
     })
 
-    it('should return default assessment for malformed JSON block', () => {
+    it('should return null for malformed JSON block', () => {
       const comment = `
 \`\`\`json
 { invalid json }
 \`\`\`
       `
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const assessment = (stateManager as any).extractAssessmentFromComment(
-        comment
-      )
+      const assessment = (
+        stateManager as unknown as {
+          extractAssessmentFromComment: (body: string) => {
+            finding: string
+            assessment: string
+            score: number
+          } | null
+        }
+      ).extractAssessmentFromComment(comment)
 
-      expect(assessment.finding).toBe('Unknown issue')
-      expect(assessment.score).toBe(5)
+      expect(assessment).toBeNull()
+    })
+  })
+
+  describe('addThread', () => {
+    it('should add a new thread to state', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: { head: { sha: 'test-sha' } }
+      })
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({ data: [] })
+
+      const thread: ReviewThread = {
+        id: 'thread-1',
+        file: 'test.ts',
+        line: 10,
+        status: 'PENDING',
+        score: 7,
+        assessment: {
+          finding: 'Test finding',
+          assessment: 'Test assessment',
+          score: 7
+        },
+        original_comment: {
+          author: 'bot',
+          body: 'Test comment',
+          timestamp: new Date().toISOString()
+        }
+      }
+
+      await stateManager.addThread(thread)
+
+      const state = await stateManager.getOrCreateState()
+      expect(state.threads).toHaveLength(1)
+      expect(state.threads[0].id).toBe('thread-1')
+    })
+
+    it('should update existing thread', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: { head: { sha: 'test-sha' } }
+      })
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({ data: [] })
+
+      const thread: ReviewThread = {
+        id: 'thread-1',
+        file: 'test.ts',
+        line: 10,
+        status: 'PENDING',
+        score: 7,
+        assessment: {
+          finding: 'Test finding',
+          assessment: 'Test assessment',
+          score: 7
+        },
+        original_comment: {
+          author: 'bot',
+          body: 'Test comment',
+          timestamp: new Date().toISOString()
+        }
+      }
+
+      await stateManager.addThread(thread)
+
+      const updatedThread = { ...thread, status: 'RESOLVED' as const }
+      await stateManager.addThread(updatedThread)
+
+      const state = await stateManager.getOrCreateState()
+      expect(state.threads).toHaveLength(1)
+      expect(state.threads[0].status).toBe('RESOLVED')
+    })
+  })
+
+  describe('updateThreadStatus', () => {
+    it('should update thread status', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: { head: { sha: 'test-sha' } }
+      })
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: [
+          {
+            id: 1001,
+            path: 'src/test.ts',
+            line: 42,
+            body: '```json\n{"finding": "Test issue", "assessment": "Test assessment", "score": 7}\n```',
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T00:00:00.000Z',
+            in_reply_to_id: undefined
+          }
+        ]
+      })
+
+      await stateManager.getOrCreateState()
+      await stateManager.updateThreadStatus('1001', 'RESOLVED')
+
+      const state = await stateManager.getOrCreateState()
+      expect(state.threads[0].status).toBe('RESOLVED')
+    })
+
+    it('should throw error for non-existent thread', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: { head: { sha: 'test-sha' } }
+      })
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({ data: [] })
+
+      await expect(
+        stateManager.updateThreadStatus('non-existent', 'RESOLVED')
+      ).rejects.toThrow(StateError)
+    })
+
+    it('should set escalated_at timestamp when escalating', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: { head: { sha: 'test-sha' } }
+      })
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({
+        data: [
+          {
+            id: 1001,
+            path: 'src/test.ts',
+            line: 42,
+            body: '```json\n{"finding": "Test issue", "assessment": "Test assessment", "score": 7}\n```',
+            user: { login: 'github-actions[bot]' },
+            created_at: '2024-01-01T00:00:00.000Z',
+            in_reply_to_id: undefined
+          }
+        ]
+      })
+
+      await stateManager.getOrCreateState()
+      await stateManager.updateThreadStatus('1001', 'ESCALATED')
+
+      const state = await stateManager.getOrCreateState()
+      expect(state.threads[0].status).toBe('ESCALATED')
+      expect(state.threads[0].escalated_at).toBeDefined()
+    })
+  })
+
+  describe('recordPassCompletion', () => {
+    it('should record pass completion', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: { head: { sha: 'test-sha' } }
+      })
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({ data: [] })
+
+      await stateManager.recordPassCompletion({
+        number: 1,
+        summary: 'Pass 1 completed',
+        completed: true,
+        has_blocking_issues: false
+      })
+
+      const state = await stateManager.getOrCreateState()
+      expect(state.passes).toHaveLength(1)
+      expect(state.passes[0].number).toBe(1)
+    })
+
+    it('should update existing pass record', async () => {
+      mockOctokit.pulls.get.mockResolvedValue({
+        data: { head: { sha: 'test-sha' } }
+      })
+      mockOctokit.pulls.listReviewComments.mockResolvedValue({ data: [] })
+
+      await stateManager.recordPassCompletion({
+        number: 1,
+        summary: 'Pass 1 initial',
+        completed: false,
+        has_blocking_issues: false
+      })
+
+      await stateManager.recordPassCompletion({
+        number: 1,
+        summary: 'Pass 1 completed',
+        completed: true,
+        has_blocking_issues: true
+      })
+
+      const state = await stateManager.getOrCreateState()
+      expect(state.passes).toHaveLength(1)
+      expect(state.passes[0].completed).toBe(true)
+      expect(state.passes[0].has_blocking_issues).toBe(true)
     })
   })
 
@@ -498,8 +564,7 @@ Some text after
         })
       } as Response)
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const isConcession = await (stateManager as any).detectConcession(
+      const isConcession = await stateManager.detectConcession(
         'You are absolutely right, I will fix this'
       )
       expect(isConcession).toBe(true)
@@ -520,8 +585,7 @@ Some text after
         })
       } as Response)
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const isConcession = await (stateManager as any).detectConcession(
+      const isConcession = await stateManager.detectConcession(
         'I disagree with this suggestion'
       )
       expect(isConcession).toBe(false)
@@ -530,37 +594,12 @@ Some text after
     it('should fallback to keyword detection on API failure', async () => {
       mockFetch.mockRejectedValue(new Error('API error'))
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const isConcession = await (stateManager as any).detectConcession(
+      const isConcession = await stateManager.detectConcession(
         'You are correct about this'
       )
       expect(isConcession).toBe(true)
       expect(mockWarning).toHaveBeenCalledWith(
         expect.stringContaining('Failed to analyze sentiment')
-      )
-    })
-
-    it('should use fallback for unexpected API response', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          choices: [
-            {
-              message: {
-                content: 'maybe'
-              }
-            }
-          ]
-        })
-      } as Response)
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const isConcession = await (stateManager as any).detectConcession(
-        'You are correct'
-      )
-      expect(isConcession).toBe(false)
-      expect(mockDebug).toHaveBeenCalledWith(
-        expect.stringContaining('Unexpected sentiment analysis response')
       )
     })
 
@@ -580,10 +619,8 @@ Some text after
 
       const comment = 'You are absolutely right'
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result1 = await (stateManager as any).detectConcession(comment)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result2 = await (stateManager as any).detectConcession(comment)
+      const result1 = await stateManager.detectConcession(comment)
+      const result2 = await stateManager.detectConcession(comment)
 
       expect(result1).toBe(true)
       expect(result2).toBe(true)
@@ -592,58 +629,59 @@ Some text after
         expect.stringContaining('Using cached sentiment result')
       )
     })
-
-    it('should cache fallback results on API failure', async () => {
-      mockFetch.mockRejectedValue(new Error('API error'))
-
-      const comment = 'You are correct'
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result1 = await (stateManager as any).detectConcession(comment)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result2 = await (stateManager as any).detectConcession(comment)
-
-      expect(result1).toBe(true)
-      expect(result2).toBe(true)
-      expect(mockFetch).toHaveBeenCalledTimes(1)
-    })
   })
 
-  describe('detectConcessionFallback', () => {
-    it('should detect concession phrases', () => {
-      const concessionPhrases = [
-        'You are correct about this',
-        'I concede the point',
-        "You're right, I missed that",
-        'Fair point indeed',
-        'Good catch!',
-        'Agreed, will fix',
-        'Makes sense to me'
-      ]
+  describe('classifyDeveloperReply', () => {
+    it('should classify acknowledgment via API', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: 'acknowledgment'
+              }
+            }
+          ]
+        })
+      } as Response)
 
-      for (const phrase of concessionPhrases) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const isConcession = (stateManager as any).detectConcessionFallback(
-          phrase
-        )
-        expect(isConcession).toBe(true)
-      }
+      const classification = await stateManager.classifyDeveloperReply(
+        'Missing null check',
+        'Good catch, will fix!'
+      )
+      expect(classification).toBe('acknowledgment')
     })
 
-    it('should not detect non-concession text', () => {
-      const nonConcession = [
-        'I disagree with this suggestion',
-        'This is incorrect',
-        'Not sure about this approach'
-      ]
+    it('should classify dispute via API', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: 'dispute'
+              }
+            }
+          ]
+        })
+      } as Response)
 
-      for (const text of nonConcession) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const isConcession = (stateManager as any).detectConcessionFallback(
-          text
-        )
-        expect(isConcession).toBe(false)
-      }
+      const classification = await stateManager.classifyDeveloperReply(
+        'Missing null check',
+        'This is intentional, the middleware handles this case'
+      )
+      expect(classification).toBe('dispute')
+    })
+
+    it('should fallback on API failure', async () => {
+      mockFetch.mockRejectedValue(new Error('API error'))
+
+      const classification = await stateManager.classifyDeveloperReply(
+        'Missing null check',
+        'Good catch!'
+      )
+      expect(classification).toBe('acknowledgment')
     })
   })
 

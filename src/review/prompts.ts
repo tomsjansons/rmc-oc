@@ -328,7 +328,7 @@ When you have completed this pass, call \`submit_pass_results(3, summary, has_bl
   FIX_VERIFICATION: (
     previousIssues: string,
     newCommits: string
-  ) => `## Fix Verification for New Commits
+  ) => `## Fix Verification for Existing Issues
 
 **Previous Review State:**
 ${previousIssues}
@@ -338,10 +338,14 @@ ${newCommits}
 
 **Your Tasks:**
 1. Verify if any of the previous issues are now fixed in the new commits
-2. For each fixed issue, call \`github_resolve_thread(thread_id, reason)\` with explanation
-3. For issues that remain unaddressed, add a follow-up comment
-4. Review the new changes (don't re-raise issues already tracked)
-5. Avoid duplicating existing issues
+2. For each fixed issue, call \`github_resolve_thread(thread_id, reason)\` with a clear explanation of how it was fixed
+3. For issues that remain unaddressed, leave them as-is (do NOT add follow-up comments)
+
+**IMPORTANT:**
+- This pass is ONLY for verifying existing issues - do NOT look for new issues
+- Do NOT post any new review comments using \`github_post_review_comment\`
+- Only use \`github_resolve_thread\` to mark fixed issues as resolved
+- New issue discovery will happen in the subsequent review passes
 
 Use OpenCode tools to verify cross-file fixes (e.g., issue in file_A.ts fixed by change in file_B.ts).`,
 

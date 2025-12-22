@@ -1,18 +1,12 @@
-import * as cache from '@actions/cache'
 import * as core from '@actions/core'
 import { Octokit } from '@octokit/rest'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 
 import type { ReviewConfig } from '../review/types.js'
 
-const CACHE_VERSION = 'v1'
 const STATE_SCHEMA_VERSION = 1
-const STATE_FILE_NAME = 'review-state.json'
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
 
-export interface ReviewThread {
+export type ReviewThread = {
   id: string
   file: string
   line: number
@@ -36,14 +30,14 @@ export interface ReviewThread {
   escalated_at?: string
 }
 
-export interface PassResult {
+export type PassResult = {
   number: number
   summary: string
   completed: boolean
   has_blocking_issues: boolean
 }
 
-export interface ReviewState {
+export type ReviewState = {
   version: number
   prNumber: number
   lastCommitSha: string
@@ -57,172 +51,20 @@ export interface ReviewState {
 
 export class StateManager {
   private octokit: Octokit
-  private tempDir: string
   private sentimentCache: Map<string, boolean>
-  private cachedState: ReviewState | null = null
+  private currentState: ReviewState | null = null
 
   constructor(private config: ReviewConfig) {
     this.octokit = new Octokit({
       auth: config.github.token
     })
-    this.tempDir = join(tmpdir(), `pr-review-${config.github.prNumber}`)
     this.sentimentCache = new Map()
-  }
-
-  private getCacheKeyPrefix(): string {
-    const { owner, repo, prNumber } = this.config.github
-    return `${CACHE_VERSION}-pr-review-state-${owner}-${repo}-${prNumber}`
-  }
-
-  private getCacheKey(): string {
-    const runId = process.env.GITHUB_RUN_ID || Date.now().toString()
-    return `${this.getCacheKeyPrefix()}-${runId}`
-  }
-
-  private async ensureTempDir(): Promise<void> {
-    try {
-      await mkdir(this.tempDir, { recursive: true })
-    } catch (error) {
-      core.warning(`Failed to create temp directory: ${error}`)
-    }
-  }
-
-  private getStatePath(): string {
-    return join(this.tempDir, STATE_FILE_NAME)
   }
 
   updateState(state: ReviewState): void {
     state.version = STATE_SCHEMA_VERSION
     state.metadata.updated_at = new Date().toISOString()
-    this.cachedState = state
-  }
-
-  async persistStateToCache(): Promise<void> {
-    if (!this.cachedState) {
-      core.warning('No state to persist')
-      return
-    }
-
-    try {
-      await this.ensureTempDir()
-      const statePath = this.getStatePath()
-
-      const serialized = JSON.stringify(this.cachedState, null, 2)
-      await writeFile(statePath, serialized, 'utf-8')
-
-      core.info(`State written to ${statePath}`)
-
-      const cacheKey = this.getCacheKey()
-      const cacheId = await cache.saveCache([this.tempDir], cacheKey)
-
-      if (cacheId === -1) {
-        core.warning(
-          'Failed to save cache. State is persisted locally but will not be available across runs.'
-        )
-      } else {
-        core.info(`State saved to GitHub Cache with key: ${cacheKey}`)
-      }
-    } catch (error) {
-      if (error instanceof Error) {
-        core.warning(`Failed to save state: ${error.message}`)
-        throw new StateError('Failed to save review state', error)
-      }
-      throw error
-    }
-  }
-
-  async saveState(state: ReviewState): Promise<void> {
-    this.updateState(state)
-    await this.persistStateToCache()
-  }
-
-  async restoreState(): Promise<ReviewState | null> {
-    try {
-      await this.ensureTempDir()
-      const cacheKeyPrefix = this.getCacheKeyPrefix()
-
-      core.info(`Attempting to restore cache with prefix: ${cacheKeyPrefix}`)
-
-      const restoredKey = await cache.restoreCache(
-        [this.tempDir],
-        cacheKeyPrefix,
-        [cacheKeyPrefix]
-      )
-
-      if (!restoredKey) {
-        core.info('Cache miss - will rebuild state from GitHub comments')
-        return null
-      }
-
-      core.info(`Cache hit with key: ${restoredKey}`)
-
-      const statePath = this.getStatePath()
-      const stateContent = await readFile(statePath, 'utf-8')
-      const state = JSON.parse(stateContent) as ReviewState
-
-      const isValid = this.validateState(state)
-      if (!isValid) {
-        core.warning(
-          'Restored state failed validation - rebuilding from GitHub'
-        )
-        return null
-      }
-
-      core.info(
-        `State restored successfully with ${state.threads.length} threads`
-      )
-      return state
-    } catch (error) {
-      if (error instanceof Error) {
-        core.warning(`Failed to restore state: ${error.message}`)
-      }
-      return null
-    }
-  }
-
-  private validateState(state: ReviewState): boolean {
-    if (!state || typeof state !== 'object') {
-      return false
-    }
-
-    if (typeof state.version !== 'number') {
-      core.warning('State missing version field')
-      return false
-    }
-
-    if (!this.isVersionCompatible(state.version)) {
-      core.warning(
-        `State version ${state.version} is incompatible with current version ${STATE_SCHEMA_VERSION}`
-      )
-      return false
-    }
-
-    if (state.prNumber !== this.config.github.prNumber) {
-      core.warning('State PR number mismatch')
-      return false
-    }
-
-    if (!Array.isArray(state.threads)) {
-      return false
-    }
-
-    if (!Array.isArray(state.passes)) {
-      return false
-    }
-
-    if (!state.metadata || !state.metadata.created_at) {
-      return false
-    }
-
-    return true
-  }
-
-  private isVersionCompatible(version: number): boolean {
-    if (version === STATE_SCHEMA_VERSION) {
-      return true
-    }
-
-    return false
+    this.currentState = state
   }
 
   async rebuildStateFromComments(): Promise<ReviewState> {
@@ -266,11 +108,14 @@ export class StateManager {
         const threadId = String(comment.id)
         const assessment = this.extractAssessmentFromComment(comment.body)
 
-        if (!assessment.finding || assessment.score === 5) {
+        if (!assessment) {
           continue
         }
 
         const replies = commentMap.get(comment.id) || []
+
+        const status = this.determineThreadStatus(replies)
+
         const developerReplies = replies
           .filter(
             (r) =>
@@ -287,7 +132,7 @@ export class StateManager {
           id: threadId,
           file: comment.path,
           line: comment.line || comment.original_line || 1,
-          status: 'PENDING',
+          status,
           score: assessment.score,
           assessment,
           original_comment: {
@@ -324,14 +169,38 @@ export class StateManager {
     }
   }
 
+  private determineThreadStatus(
+    replies: Array<{ body: string; user?: { login?: string } | null }>
+  ): 'PENDING' | 'RESOLVED' | 'DISPUTED' | 'ESCALATED' {
+    for (const reply of replies) {
+      const isBot =
+        reply.user?.login === 'opencode-reviewer[bot]' ||
+        reply.user?.login === 'github-actions[bot]'
+
+      if (!isBot) {
+        continue
+      }
+
+      if (reply.body.includes('✅ **Issue Resolved**')) {
+        return 'RESOLVED'
+      }
+
+      if (reply.body.includes('🔺 **Escalated to Human Review**')) {
+        return 'ESCALATED'
+      }
+    }
+
+    return 'PENDING'
+  }
+
   private extractAssessmentFromComment(body: string): {
     finding: string
     assessment: string
     score: number
-  } {
+  } | null {
     try {
       const jsonMatch = body.match(/```json\s*(\{[\s\S]*?\})\s*```/)
-      if (jsonMatch && jsonMatch[1]) {
+      if (jsonMatch?.[1]) {
         const parsed = JSON.parse(jsonMatch[1])
         if (
           parsed.finding &&
@@ -345,19 +214,16 @@ export class StateManager {
       core.debug(`Failed to extract assessment from comment: ${error}`)
     }
 
-    return {
-      finding: 'Unknown issue',
-      assessment: body.substring(0, 200),
-      score: 5
-    }
+    return null
   }
 
   async detectConcession(body: string): Promise<boolean> {
-    const cacheKey = this.generateCacheKey(body)
+    const cacheKey = this.generateSentimentCacheKey(body)
 
-    if (this.sentimentCache.has(cacheKey)) {
+    const cachedResult = this.sentimentCache.get(cacheKey)
+    if (cachedResult !== undefined) {
       core.debug(`Using cached sentiment result for comment`)
-      return this.sentimentCache.get(cacheKey)!
+      return cachedResult
     }
 
     try {
@@ -372,7 +238,7 @@ export class StateManager {
     }
   }
 
-  private generateCacheKey(body: string): string {
+  private generateSentimentCacheKey(body: string): string {
     const normalized = body.trim().toLowerCase()
     let hash = 0
     for (let i = 0; i < normalized.length; i++) {
@@ -470,20 +336,11 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
   }
 
   async getOrCreateState(): Promise<ReviewState> {
-    if (this.cachedState) {
-      return this.cachedState
+    if (this.currentState) {
+      return this.currentState
     }
 
-    const restored = await this.restoreState()
-
-    if (restored) {
-      this.cachedState = restored
-      return restored
-    }
-
-    const rebuilt = await this.rebuildStateFromComments()
-    this.cachedState = rebuilt
-    return rebuilt
+    return await this.rebuildStateFromComments()
   }
 
   async updateThreadStatus(

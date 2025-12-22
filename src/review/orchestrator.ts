@@ -124,13 +124,6 @@ export class ReviewOrchestrator {
     await this.executePass(3, REVIEW_PROMPTS.PASS_3(securitySensitivity))
 
     logger.info('All 3 passes completed in single session')
-
-    await this.persistState()
-  }
-
-  private async persistState(): Promise<void> {
-    logger.info('Persisting review state to cache')
-    await this.stateManager.persistStateToCache()
   }
 
   private async executeFixVerification(): Promise<void> {

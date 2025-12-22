@@ -35,7 +35,10 @@ export async function run(): Promise<void> {
     await openCodeServer.start()
 
     const github = new GitHubAPI(config)
-    const opencode = new OpenCodeClientImpl(OPENCODE_SERVER_URL)
+    const opencode = new OpenCodeClientImpl(
+      OPENCODE_SERVER_URL,
+      config.opencode.debugLogging
+    )
     const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd()
 
     orchestrator = new ReviewOrchestrator(

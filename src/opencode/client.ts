@@ -1,7 +1,8 @@
+import type { Event } from '@opencode-ai/sdk'
 import { createOpencodeClient } from '@opencode-ai/sdk'
 
-import { logger } from '../utils/logger.js'
 import { OpenCodeError } from '../utils/errors.js'
+import { logger } from '../utils/logger.js'
 import type { Session } from './types.js'
 
 export interface OpenCodeClient {
@@ -13,15 +14,19 @@ export interface OpenCodeClient {
   getCurrentSessionId(): string | null
 }
 
+type OpenCodeSDKClient = ReturnType<typeof createOpencodeClient>
+
 export class OpenCodeClientImpl implements OpenCodeClient {
   private currentSessionId: string | null = null
-  private client: ReturnType<typeof createOpencodeClient>
+  private client: OpenCodeSDKClient
+  private debugLogging: boolean
 
-  constructor(serverUrl: string) {
+  constructor(serverUrl: string, debugLogging: boolean = false) {
     this.client = createOpencodeClient({
       baseUrl: serverUrl,
       throwOnError: true
     })
+    this.debugLogging = debugLogging
   }
 
   async createSession(title: string): Promise<Session> {
@@ -111,7 +116,7 @@ export class OpenCodeClientImpl implements OpenCodeClient {
         `Sending prompt to session ${sessionId} (${prompt.length} chars)`
       )
 
-      const response = await this.client.session.prompt({
+      await this.client.session.promptAsync({
         path: { id: sessionId },
         body: {
           parts: [
@@ -123,15 +128,190 @@ export class OpenCodeClientImpl implements OpenCodeClient {
         }
       })
 
-      if (!response.data) {
-        throw new OpenCodeError('Failed to send prompt: no response data')
-      }
+      logger.debug(`Prompt queued, waiting for LLM to complete via events...`)
 
-      logger.debug(`Prompt sent successfully to session ${sessionId}`)
+      await this.waitForSessionIdleViaEvents(sessionId)
+
+      logger.debug(`Prompt completed successfully for session ${sessionId}`)
     } catch (error) {
       throw new OpenCodeError(
         `Failed to send prompt: ${error instanceof Error ? error.message : String(error)}`
       )
+    }
+  }
+
+  private async waitForSessionIdleViaEvents(sessionId: string): Promise<void> {
+    const startTime = Date.now()
+    const timeout = 600000
+
+    return new Promise<void>((resolve, reject) => {
+      let resolved = false
+      let eventSubscription: AsyncGenerator<Event> | null = null
+
+      const timeoutId = setTimeout(() => {
+        if (!resolved) {
+          resolved = true
+          reject(
+            new OpenCodeError(
+              `Timeout waiting for session ${sessionId} to become idle after ${timeout}ms`
+            )
+          )
+        }
+      }, timeout)
+
+      const cleanup = (): void => {
+        clearTimeout(timeoutId)
+      }
+
+      const processEvents = async (): Promise<void> => {
+        try {
+          const eventResult = await this.client.event.subscribe({})
+          eventSubscription = eventResult.stream
+
+          for await (const event of eventSubscription) {
+            if (resolved) {
+              break
+            }
+
+            this.logEvent(event, sessionId)
+
+            if (
+              event.type === 'session.idle' &&
+              event.properties.sessionID === sessionId
+            ) {
+              const duration = Date.now() - startTime
+              logger.info(`Session ${sessionId} is idle after ${duration}ms`)
+              resolved = true
+              cleanup()
+              resolve()
+              return
+            }
+
+            if (
+              event.type === 'session.status' &&
+              event.properties.sessionID === sessionId
+            ) {
+              const status = event.properties.status
+              if (status.type === 'idle') {
+                const duration = Date.now() - startTime
+                logger.info(
+                  `Session ${sessionId} status is idle after ${duration}ms`
+                )
+                resolved = true
+                cleanup()
+                resolve()
+                return
+              }
+
+              if (status.type === 'retry') {
+                logger.warning(
+                  `Session ${sessionId} is retrying (attempt ${status.attempt}): ${status.message}`
+                )
+              }
+            }
+
+            if (event.type === 'session.error') {
+              if (
+                event.properties.sessionID === sessionId ||
+                !event.properties.sessionID
+              ) {
+                const errorInfo = event.properties.error
+                const errorMessage = errorInfo
+                  ? `${errorInfo.name}: ${JSON.stringify(errorInfo.data)}`
+                  : 'Unknown error'
+                logger.error(`Session error: ${errorMessage}`)
+                resolved = true
+                cleanup()
+                reject(new OpenCodeError(`Session error: ${errorMessage}`))
+                return
+              }
+            }
+          }
+        } catch (error) {
+          if (!resolved) {
+            resolved = true
+            cleanup()
+            reject(
+              new OpenCodeError(
+                `Event stream error: ${error instanceof Error ? error.message : String(error)}`
+              )
+            )
+          }
+        }
+      }
+
+      processEvents().catch((error) => {
+        if (!resolved) {
+          resolved = true
+          cleanup()
+          reject(error)
+        }
+      })
+    })
+  }
+
+  private logEvent(event: Event, targetSessionId: string): void {
+    if (!this.debugLogging) {
+      return
+    }
+
+    const sessionId =
+      'sessionID' in event.properties
+        ? event.properties.sessionID
+        : 'properties' in event &&
+            typeof event.properties === 'object' &&
+            event.properties !== null &&
+            'info' in event.properties &&
+            typeof event.properties.info === 'object' &&
+            event.properties.info !== null &&
+            'sessionID' in event.properties.info
+          ? (event.properties.info as { sessionID: string }).sessionID
+          : null
+
+    if (sessionId && sessionId !== targetSessionId) {
+      return
+    }
+
+    switch (event.type) {
+      case 'message.part.updated': {
+        const part = event.properties.part
+        const delta = event.properties.delta
+        if (part.type === 'text' && delta) {
+          process.stdout.write(delta)
+        } else if (part.type === 'tool') {
+          logger.debug(`[LLM] Tool call: ${part.tool} (${part.state.status})`)
+        }
+        break
+      }
+      case 'message.updated': {
+        const msg = event.properties.info
+        logger.debug(`[LLM] Message updated: ${msg.role} (${msg.id})`)
+        break
+      }
+      case 'session.status': {
+        const status = event.properties.status
+        logger.debug(`[LLM] Session status: ${status.type}`)
+        break
+      }
+      case 'session.idle': {
+        logger.debug(`[LLM] Session idle`)
+        break
+      }
+      case 'session.error': {
+        const err = event.properties.error
+        logger.error(
+          `[LLM] Session error: ${err ? JSON.stringify(err) : 'unknown'}`
+        )
+        break
+      }
+      case 'todo.updated': {
+        const todos = event.properties.todos
+        logger.debug(`[LLM] Todos updated: ${todos.length} items`)
+        break
+      }
+      default: {
+        logger.debug(`[LLM] Event: ${event.type}`)
+      }
     }
   }
 

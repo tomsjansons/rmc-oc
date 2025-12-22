@@ -55,6 +55,11 @@ inputs:
       (e.g., "alice,bob")'
     required: false
     default: ''
+  debug_logging:
+    description:
+      'Enable verbose debug logging of LLM activity, events, and responses'
+    required: false
+    default: 'false'
 
 # Define your outputs here.
 outputs:

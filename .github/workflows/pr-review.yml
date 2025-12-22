@@ -48,8 +48,9 @@ jobs:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           model: 'anthropic/claude-sonnet-4-20250514'
-          problem_score_threshold: '5'
-          review_timeout_minutes: '30'
-          max_review_retries: '1'
-          enable_web: 'false'
-          enable_human_escalation: 'false'
+          problem_score_threshold: 5
+          review_timeout_minutes: 30
+          max_review_retries: 1
+          enable_web: false
+          enable_human_escalation: false
+          debug_loggin: true

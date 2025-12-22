@@ -18,6 +18,7 @@ export interface ReviewConfig {
     apiKey: string
     model: string
     enableWeb: boolean
+    debugLogging: boolean
   }
   scoring: {
     problemThreshold: number // 1-10

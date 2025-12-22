@@ -31266,6 +31266,9 @@ function parseInputs() {
     const model = coreExports.getInput('model', { required: false }) ||
         'anthropic/claude-sonnet-4-20250514';
     const enableWeb = coreExports.getBooleanInput('enable_web', { required: false });
+    const debugLogging = coreExports.getBooleanInput('debug_logging', {
+        required: false
+    });
     const problemThreshold = parseNumericInput('problem_score_threshold', 5, 1, 10, 'Problem score threshold must be between 1 and 10');
     const elevationThreshold = parseNumericInput('score_elevation_threshold', 5, 1, 100, 'Score elevation threshold must be between 1 and 100');
     const reviewTimeoutMinutes = parseNumericInput('review_timeout_minutes', 40, 5, 120, 'Review timeout must be between 5 and 120 minutes');
@@ -31294,7 +31297,8 @@ function parseInputs() {
         opencode: {
             apiKey,
             model,
-            enableWeb
+            enableWeb,
+            debugLogging
         },
         scoring: {
             problemThreshold,
@@ -37033,11 +37037,13 @@ function createOpencodeClient(config) {
 class OpenCodeClientImpl {
     currentSessionId = null;
     client;
-    constructor(serverUrl) {
+    debugLogging;
+    constructor(serverUrl, debugLogging = false) {
         this.client = createOpencodeClient({
             baseUrl: serverUrl,
             throwOnError: true
         });
+        this.debugLogging = debugLogging;
     }
     async createSession(title) {
         try {
@@ -37102,7 +37108,7 @@ class OpenCodeClientImpl {
     async sendPrompt(sessionId, prompt) {
         try {
             logger$2.debug(`Sending prompt to session ${sessionId} (${prompt.length} chars)`);
-            const response = await this.client.session.prompt({
+            await this.client.session.promptAsync({
                 path: { id: sessionId },
                 body: {
                     parts: [
@@ -37113,13 +37119,152 @@ class OpenCodeClientImpl {
                     ]
                 }
             });
-            if (!response.data) {
-                throw new OpenCodeError('Failed to send prompt: no response data');
-            }
-            logger$2.debug(`Prompt sent successfully to session ${sessionId}`);
+            logger$2.debug(`Prompt queued, waiting for LLM to complete via events...`);
+            await this.waitForSessionIdleViaEvents(sessionId);
+            logger$2.debug(`Prompt completed successfully for session ${sessionId}`);
         }
         catch (error) {
             throw new OpenCodeError(`Failed to send prompt: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    async waitForSessionIdleViaEvents(sessionId) {
+        const startTime = Date.now();
+        const timeout = 600000;
+        return new Promise((resolve, reject) => {
+            let resolved = false;
+            let eventSubscription = null;
+            const timeoutId = setTimeout(() => {
+                if (!resolved) {
+                    resolved = true;
+                    reject(new OpenCodeError(`Timeout waiting for session ${sessionId} to become idle after ${timeout}ms`));
+                }
+            }, timeout);
+            const cleanup = () => {
+                clearTimeout(timeoutId);
+            };
+            const processEvents = async () => {
+                try {
+                    const eventResult = await this.client.event.subscribe({});
+                    eventSubscription = eventResult.stream;
+                    for await (const event of eventSubscription) {
+                        if (resolved) {
+                            break;
+                        }
+                        this.logEvent(event, sessionId);
+                        if (event.type === 'session.idle' &&
+                            event.properties.sessionID === sessionId) {
+                            const duration = Date.now() - startTime;
+                            logger$2.info(`Session ${sessionId} is idle after ${duration}ms`);
+                            resolved = true;
+                            cleanup();
+                            resolve();
+                            return;
+                        }
+                        if (event.type === 'session.status' &&
+                            event.properties.sessionID === sessionId) {
+                            const status = event.properties.status;
+                            if (status.type === 'idle') {
+                                const duration = Date.now() - startTime;
+                                logger$2.info(`Session ${sessionId} status is idle after ${duration}ms`);
+                                resolved = true;
+                                cleanup();
+                                resolve();
+                                return;
+                            }
+                            if (status.type === 'retry') {
+                                logger$2.warning(`Session ${sessionId} is retrying (attempt ${status.attempt}): ${status.message}`);
+                            }
+                        }
+                        if (event.type === 'session.error') {
+                            if (event.properties.sessionID === sessionId ||
+                                !event.properties.sessionID) {
+                                const errorInfo = event.properties.error;
+                                const errorMessage = errorInfo
+                                    ? `${errorInfo.name}: ${JSON.stringify(errorInfo.data)}`
+                                    : 'Unknown error';
+                                logger$2.error(`Session error: ${errorMessage}`);
+                                resolved = true;
+                                cleanup();
+                                reject(new OpenCodeError(`Session error: ${errorMessage}`));
+                                return;
+                            }
+                        }
+                    }
+                }
+                catch (error) {
+                    if (!resolved) {
+                        resolved = true;
+                        cleanup();
+                        reject(new OpenCodeError(`Event stream error: ${error instanceof Error ? error.message : String(error)}`));
+                    }
+                }
+            };
+            processEvents().catch((error) => {
+                if (!resolved) {
+                    resolved = true;
+                    cleanup();
+                    reject(error);
+                }
+            });
+        });
+    }
+    logEvent(event, targetSessionId) {
+        if (!this.debugLogging) {
+            return;
+        }
+        const sessionId = 'sessionID' in event.properties
+            ? event.properties.sessionID
+            : 'properties' in event &&
+                typeof event.properties === 'object' &&
+                event.properties !== null &&
+                'info' in event.properties &&
+                typeof event.properties.info === 'object' &&
+                event.properties.info !== null &&
+                'sessionID' in event.properties.info
+                ? event.properties.info.sessionID
+                : null;
+        if (sessionId && sessionId !== targetSessionId) {
+            return;
+        }
+        switch (event.type) {
+            case 'message.part.updated': {
+                const part = event.properties.part;
+                const delta = event.properties.delta;
+                if (part.type === 'text' && delta) {
+                    process.stdout.write(delta);
+                }
+                else if (part.type === 'tool') {
+                    logger$2.debug(`[LLM] Tool call: ${part.tool} (${part.state.status})`);
+                }
+                break;
+            }
+            case 'message.updated': {
+                const msg = event.properties.info;
+                logger$2.debug(`[LLM] Message updated: ${msg.role} (${msg.id})`);
+                break;
+            }
+            case 'session.status': {
+                const status = event.properties.status;
+                logger$2.debug(`[LLM] Session status: ${status.type}`);
+                break;
+            }
+            case 'session.idle': {
+                logger$2.debug(`[LLM] Session idle`);
+                break;
+            }
+            case 'session.error': {
+                const err = event.properties.error;
+                logger$2.error(`[LLM] Session error: ${err ? JSON.stringify(err) : 'unknown'}`);
+                break;
+            }
+            case 'todo.updated': {
+                const todos = event.properties.todos;
+                logger$2.debug(`[LLM] Todos updated: ${todos.length} items`);
+                break;
+            }
+            default: {
+                logger$2.debug(`[LLM] Event: ${event.type}`);
+            }
         }
     }
     async sendPromptAndGetResponse(sessionId, prompt) {
@@ -106375,7 +106520,7 @@ async function run() {
         openCodeServer = new OpenCodeServer(config);
         await openCodeServer.start();
         const github = new GitHubAPI(config);
-        const opencode = new OpenCodeClientImpl(OPENCODE_SERVER_URL);
+        const opencode = new OpenCodeClientImpl(OPENCODE_SERVER_URL, config.opencode.debugLogging);
         const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
         orchestrator = new ReviewOrchestrator(opencode, github, config, workspaceRoot);
         trpcServer = new TRPCServer(orchestrator, github);

@@ -12,6 +12,9 @@ export function parseInputs(): ReviewConfig {
     core.getInput('model', { required: false }) ||
     'anthropic/claude-sonnet-4-20250514'
   const enableWeb = core.getBooleanInput('enable_web', { required: false })
+  const debugLogging = core.getBooleanInput('debug_logging', {
+    required: false
+  })
 
   const problemThreshold = parseNumericInput(
     'problem_score_threshold',
@@ -80,7 +83,8 @@ export function parseInputs(): ReviewConfig {
     opencode: {
       apiKey,
       model,
-      enableWeb
+      enableWeb,
+      debugLogging
     },
     scoring: {
       problemThreshold,

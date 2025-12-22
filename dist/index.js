@@ -35250,11 +35250,6 @@ const logger$2 = {
     }
 };
 
-function assertDiffIsString(val) {
-    if (typeof val !== 'string') {
-        throw new GitHubAPIError('Unexpected response type: expected string diff data');
-    }
-}
 class GitHubAPI {
     octokit;
     owner;
@@ -35267,26 +35262,6 @@ class GitHubAPI {
         this.owner = config.github.owner;
         this.repo = config.github.repo;
         this.prNumber = config.github.prNumber;
-    }
-    async getPRDiff() {
-        try {
-            logger$2.debug(`Fetching PR diff for ${this.owner}/${this.repo}#${this.prNumber}`);
-            const response = await this.octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-                owner: this.owner,
-                repo: this.repo,
-                pull_number: this.prNumber,
-                headers: {
-                    accept: 'application/vnd.github.v3.diff'
-                }
-            });
-            const diff = response.data;
-            assertDiffIsString(diff);
-            logger$2.info(`Fetched PR diff: ${diff.length} characters`);
-            return diff;
-        }
-        catch (error) {
-            throw new GitHubAPIError(`Failed to fetch PR diff: ${error instanceof Error ? error.message : String(error)}`);
-        }
     }
     async getPRFiles() {
         try {
@@ -35412,15 +35387,12 @@ ${reviewerTags} - Please review this dispute and make a final decision.`
     async getPRContext() {
         try {
             logger$2.debug('Fetching PR context for question answering');
-            const [files, diff] = await Promise.all([
-                this.getPRFiles(),
-                this.getPRDiff()
-            ]);
-            return { files, diff };
+            const files = await this.getPRFiles();
+            return { files };
         }
         catch (error) {
             logger$2.warning(`Failed to fetch PR context: ${error instanceof Error ? error.message : String(error)}`);
-            return { files: [], diff: '' };
+            return { files: [] };
         }
     }
 }
@@ -37130,24 +37102,27 @@ class OpenCodeClientImpl {
     async waitForSessionIdleViaEvents(sessionId) {
         const startTime = Date.now();
         const timeout = 600000;
+        const abortController = new AbortController();
         return new Promise((resolve, reject) => {
             let resolved = false;
-            let eventSubscription = null;
             const timeoutId = setTimeout(() => {
                 if (!resolved) {
                     resolved = true;
+                    abortController.abort();
                     reject(new OpenCodeError(`Timeout waiting for session ${sessionId} to become idle after ${timeout}ms`));
                 }
             }, timeout);
             const cleanup = () => {
                 clearTimeout(timeoutId);
+                abortController.abort();
             };
             const processEvents = async () => {
                 try {
-                    const eventResult = await this.client.event.subscribe({});
-                    eventSubscription = eventResult.stream;
-                    for await (const event of eventSubscription) {
-                        if (resolved) {
+                    const eventResult = await this.client.event.subscribe({
+                        signal: abortController.signal
+                    });
+                    for await (const event of eventResult.stream) {
+                        if (resolved || abortController.signal.aborted) {
                             break;
                         }
                         this.logEvent(event, sessionId);
@@ -37192,6 +37167,9 @@ class OpenCodeClientImpl {
                     }
                 }
                 catch (error) {
+                    if (abortController.signal.aborted) {
+                        return;
+                    }
                     if (!resolved) {
                         resolved = true;
                         cleanup();
@@ -37200,6 +37178,9 @@ class OpenCodeClientImpl {
                 }
             };
             processEvents().catch((error) => {
+                if (abortController.signal.aborted) {
+                    return;
+                }
                 if (!resolved) {
                     resolved = true;
                     cleanup();
@@ -97124,6 +97105,7 @@ class StateManager {
     octokit;
     tempDir;
     sentimentCache;
+    cachedState = null;
     constructor(config) {
         this.config = config;
         this.octokit = new Octokit({
@@ -97153,6 +97135,7 @@ class StateManager {
             const statePath = this.getStatePath();
             state.version = STATE_SCHEMA_VERSION;
             state.metadata.updated_at = new Date().toISOString();
+            this.cachedState = state;
             const serialized = JSON.stringify(state, null, 2);
             await writeFile(statePath, serialized, 'utf-8');
             coreExports.info(`State written to ${statePath}`);
@@ -97435,11 +97418,17 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`;
         return false;
     }
     async getOrCreateState() {
+        if (this.cachedState) {
+            return this.cachedState;
+        }
         const restored = await this.restoreState();
         if (restored) {
+            this.cachedState = restored;
             return restored;
         }
-        return await this.rebuildStateFromComments();
+        const rebuilt = await this.rebuildStateFromComments();
+        this.cachedState = rebuilt;
+        return rebuilt;
     }
     async updateThreadStatus(threadId, status) {
         const state = await this.getOrCreateState();
@@ -97834,7 +97823,7 @@ Do NOT use tools to post the response - just provide your answer as text and it 
 const REVIEW_PROMPTS = {
     SYSTEM: SYSTEM_PROMPT,
     QUESTION_ANSWERING_SYSTEM,
-    PASS_1: (files, diff) => `## Pass 1 of 4: Atomic Diff Review
+    PASS_1: (files) => `## Pass 1 of 4: Atomic Diff Review
 
 **Goal:** Review each changed line in isolation. Focus on:
 - Syntax errors and typos
@@ -97850,15 +97839,15 @@ const REVIEW_PROMPTS = {
 - Formatting standards
 - Language-specific best practices
 
-**Files changed:**
+**Files changed in this PR (${files.length} files):**
 ${files.map((f) => `- ${f}`).join('\n')}
 
-**Diff:**
-\`\`\`diff
-${diff}
-\`\`\`
+**Your Task:**
+1. Use the \`read\` tool to examine each changed file
+2. Focus on the actual changes (additions/modifications)
+3. Post comments for any issues you find using \`github_post_review_comment\`
 
-Review the diff above and post comments for any issues you find using \`github_post_review_comment\`.
+**Tip:** Start by reading the most critical files first (e.g., source code over config files).
 
 When you have completed this pass, call \`submit_pass_results(1, summary, has_blocking_issues)\`.`,
     PASS_2: () => `## Pass 2 of 4: Structural/Layered Review
@@ -98246,10 +98235,11 @@ class ReviewOrchestrator {
         await Promise.race([this.executeFourPassReview(), timeoutPromise]);
     }
     async executeFourPassReview() {
-        const prData = await this.fetchPRData();
+        const files = await this.github.getPRFiles();
         const securitySensitivity = await this.detectSecuritySensitivity();
+        logger$2.info(`Fetched ${files.length} changed files`);
         logger$2.info('Starting 4-pass review in single OpenCode session (context preserved across all passes)');
-        await this.executePass(1, REVIEW_PROMPTS.PASS_1(prData.files, prData.diff));
+        await this.executePass(1, REVIEW_PROMPTS.PASS_1(files));
         await this.executePass(2, REVIEW_PROMPTS.PASS_2());
         await this.executePass(3, REVIEW_PROMPTS.PASS_3(securitySensitivity));
         await this.executePass(4, REVIEW_PROMPTS.PASS_4());
@@ -98374,16 +98364,6 @@ class ReviewOrchestrator {
             });
         }
     }
-    async fetchPRData() {
-        logger$2.info('Fetching PR data');
-        const [files, diff] = await Promise.all([
-            this.github.getPRFiles(),
-            this.github.getPRDiff()
-        ]);
-        logger$2.info(`Fetched ${files.length} changed files`);
-        logger$2.debug(`Diff size: ${diff.length} chars`);
-        return { files, diff };
-    }
     async detectSecuritySensitivity() {
         try {
             const packageJsonPath = join(this.workspaceRoot, 'package.json');
@@ -98436,7 +98416,7 @@ ${issueList}`;
             return 'No commit history available';
         }
         try {
-            const { files, diff } = await this.fetchPRData();
+            const files = await this.github.getPRFiles();
             return `New commits since last review:
 - Last reviewed commit: ${this.reviewState.lastCommitSha.substring(0, 7)}
 - Current HEAD: New changes detected
@@ -98446,16 +98426,13 @@ ${issueList}`;
 **Important:** Use OpenCode tools (read, grep, glob) to verify if previous issues are addressed.
 Cross-file fixes are possible (e.g., issue in file_A.ts fixed by change in file_B.ts).
 
-**Diff of new changes:**
-\`\`\`diff
-${diff.length > 5000 ? diff.substring(0, 5000) + '\n... (truncated)' : diff}
-\`\`\``;
+Use the \`read\` tool to examine the changed files and verify if issues have been fixed.`;
         }
         catch (error) {
             logger$2.warning(`Failed to fetch new commits summary: ${error instanceof Error ? error.message : String(error)}`);
             return `New commits since last review:
 - Last reviewed commit: ${this.reviewState.lastCommitSha.substring(0, 7)}
-- Unable to fetch detailed diff`;
+- Unable to fetch file list - use OpenCode tools to explore`;
         }
     }
     buildReviewOutput() {

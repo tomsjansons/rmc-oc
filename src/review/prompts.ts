@@ -219,7 +219,7 @@ export const REVIEW_PROMPTS = {
 
   QUESTION_ANSWERING_SYSTEM,
 
-  PASS_1: (files: string[], diff: string) => `## Pass 1 of 4: Atomic Diff Review
+  PASS_1: (files: string[]) => `## Pass 1 of 4: Atomic Diff Review
 
 **Goal:** Review each changed line in isolation. Focus on:
 - Syntax errors and typos
@@ -235,15 +235,15 @@ export const REVIEW_PROMPTS = {
 - Formatting standards
 - Language-specific best practices
 
-**Files changed:**
+**Files changed in this PR (${files.length} files):**
 ${files.map((f) => `- ${f}`).join('\n')}
 
-**Diff:**
-\`\`\`diff
-${diff}
-\`\`\`
+**Your Task:**
+1. Use the \`read\` tool to examine each changed file
+2. Focus on the actual changes (additions/modifications)
+3. Post comments for any issues you find using \`github_post_review_comment\`
 
-Review the diff above and post comments for any issues you find using \`github_post_review_comment\`.
+**Tip:** Start by reading the most critical files first (e.g., source code over config files).
 
 When you have completed this pass, call \`submit_pass_results(1, summary, has_blocking_issues)\`.`,
 
@@ -511,7 +511,7 @@ Now explore the codebase and provide your clarification.`,
     question: string,
     author: string,
     fileContext?: { path: string; line?: number },
-    prContext?: { files: string[]; diff: string }
+    prContext?: { files: string[] }
   ) => {
     let prompt = `## Answer Developer Question
 

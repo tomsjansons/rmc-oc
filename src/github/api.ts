@@ -4,14 +4,6 @@ import type { ReviewConfig } from '../review/types.js'
 import { GitHubAPIError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
 
-function assertDiffIsString(val: unknown): asserts val is string {
-  if (typeof val !== 'string') {
-    throw new GitHubAPIError(
-      'Unexpected response type: expected string diff data'
-    )
-  }
-}
-
 export interface PostReviewCommentArgs {
   path: string
   line: number
@@ -31,38 +23,6 @@ export class GitHubAPI {
     this.owner = config.github.owner
     this.repo = config.github.repo
     this.prNumber = config.github.prNumber
-  }
-
-  async getPRDiff(): Promise<string> {
-    try {
-      logger.debug(
-        `Fetching PR diff for ${this.owner}/${this.repo}#${this.prNumber}`
-      )
-
-      const response = await this.octokit.request(
-        'GET /repos/{owner}/{repo}/pulls/{pull_number}',
-        {
-          owner: this.owner,
-          repo: this.repo,
-          pull_number: this.prNumber,
-          headers: {
-            accept: 'application/vnd.github.v3.diff'
-          }
-        }
-      )
-
-      const diff = response.data
-
-      assertDiffIsString(diff)
-
-      logger.info(`Fetched PR diff: ${diff.length} characters`)
-
-      return diff
-    } catch (error) {
-      throw new GitHubAPIError(
-        `Failed to fetch PR diff: ${error instanceof Error ? error.message : String(error)}`
-      )
-    }
   }
 
   async getPRFiles(): Promise<string[]> {
@@ -232,21 +192,18 @@ ${reviewerTags} - Please review this dispute and make a final decision.`
     }
   }
 
-  async getPRContext(): Promise<{ files: string[]; diff: string }> {
+  async getPRContext(): Promise<{ files: string[] }> {
     try {
       logger.debug('Fetching PR context for question answering')
 
-      const [files, diff] = await Promise.all([
-        this.getPRFiles(),
-        this.getPRDiff()
-      ])
+      const files = await this.getPRFiles()
 
-      return { files, diff }
+      return { files }
     } catch (error) {
       logger.warning(
         `Failed to fetch PR context: ${error instanceof Error ? error.message : String(error)}`
       )
-      return { files: [], diff: '' }
+      return { files: [] }
     }
   }
 }

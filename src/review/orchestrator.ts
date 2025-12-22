@@ -111,14 +111,15 @@ export class ReviewOrchestrator {
   }
 
   private async executeFourPassReview(): Promise<void> {
-    const prData = await this.fetchPRData()
+    const files = await this.github.getPRFiles()
     const securitySensitivity = await this.detectSecuritySensitivity()
 
+    logger.info(`Fetched ${files.length} changed files`)
     logger.info(
       'Starting 4-pass review in single OpenCode session (context preserved across all passes)'
     )
 
-    await this.executePass(1, REVIEW_PROMPTS.PASS_1(prData.files, prData.diff))
+    await this.executePass(1, REVIEW_PROMPTS.PASS_1(files))
     await this.executePass(2, REVIEW_PROMPTS.PASS_2())
     await this.executePass(3, REVIEW_PROMPTS.PASS_3(securitySensitivity))
     await this.executePass(4, REVIEW_PROMPTS.PASS_4())
@@ -311,20 +312,6 @@ export class ReviewOrchestrator {
     }
   }
 
-  private async fetchPRData(): Promise<{ files: string[]; diff: string }> {
-    logger.info('Fetching PR data')
-
-    const [files, diff] = await Promise.all([
-      this.github.getPRFiles(),
-      this.github.getPRDiff()
-    ])
-
-    logger.info(`Fetched ${files.length} changed files`)
-    logger.debug(`Diff size: ${diff.length} chars`)
-
-    return { files, diff }
-  }
-
   private async detectSecuritySensitivity(): Promise<string> {
     try {
       const packageJsonPath = join(this.workspaceRoot, 'package.json')
@@ -391,7 +378,7 @@ ${issueList}`
     }
 
     try {
-      const { files, diff } = await this.fetchPRData()
+      const files = await this.github.getPRFiles()
 
       return `New commits since last review:
 - Last reviewed commit: ${this.reviewState.lastCommitSha.substring(0, 7)}
@@ -402,10 +389,7 @@ ${issueList}`
 **Important:** Use OpenCode tools (read, grep, glob) to verify if previous issues are addressed.
 Cross-file fixes are possible (e.g., issue in file_A.ts fixed by change in file_B.ts).
 
-**Diff of new changes:**
-\`\`\`diff
-${diff.length > 5000 ? diff.substring(0, 5000) + '\n... (truncated)' : diff}
-\`\`\``
+Use the \`read\` tool to examine the changed files and verify if issues have been fixed.`
     } catch (error) {
       logger.warning(
         `Failed to fetch new commits summary: ${error instanceof Error ? error.message : String(error)}`
@@ -413,7 +397,7 @@ ${diff.length > 5000 ? diff.substring(0, 5000) + '\n... (truncated)' : diff}
 
       return `New commits since last review:
 - Last reviewed commit: ${this.reviewState.lastCommitSha.substring(0, 7)}
-- Unable to fetch detailed diff`
+- Unable to fetch file list - use OpenCode tools to explore`
     }
   }
 

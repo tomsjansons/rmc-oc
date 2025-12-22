@@ -143,14 +143,15 @@ export class OpenCodeClientImpl implements OpenCodeClient {
   private async waitForSessionIdleViaEvents(sessionId: string): Promise<void> {
     const startTime = Date.now()
     const timeout = 600000
+    const abortController = new AbortController()
 
     return new Promise<void>((resolve, reject) => {
       let resolved = false
-      let eventSubscription: AsyncGenerator<Event> | null = null
 
       const timeoutId = setTimeout(() => {
         if (!resolved) {
           resolved = true
+          abortController.abort()
           reject(
             new OpenCodeError(
               `Timeout waiting for session ${sessionId} to become idle after ${timeout}ms`
@@ -161,15 +162,17 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
       const cleanup = (): void => {
         clearTimeout(timeoutId)
+        abortController.abort()
       }
 
       const processEvents = async (): Promise<void> => {
         try {
-          const eventResult = await this.client.event.subscribe({})
-          eventSubscription = eventResult.stream
+          const eventResult = await this.client.event.subscribe({
+            signal: abortController.signal
+          })
 
-          for await (const event of eventSubscription) {
-            if (resolved) {
+          for await (const event of eventResult.stream) {
+            if (resolved || abortController.signal.aborted) {
               break
             }
 
@@ -228,6 +231,9 @@ export class OpenCodeClientImpl implements OpenCodeClient {
             }
           }
         } catch (error) {
+          if (abortController.signal.aborted) {
+            return
+          }
           if (!resolved) {
             resolved = true
             cleanup()
@@ -241,6 +247,9 @@ export class OpenCodeClientImpl implements OpenCodeClient {
       }
 
       processEvents().catch((error) => {
+        if (abortController.signal.aborted) {
+          return
+        }
         if (!resolved) {
           resolved = true
           cleanup()

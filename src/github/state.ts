@@ -59,6 +59,7 @@ export class StateManager {
   private octokit: Octokit
   private tempDir: string
   private sentimentCache: Map<string, boolean>
+  private cachedState: ReviewState | null = null
 
   constructor(private config: ReviewConfig) {
     this.octokit = new Octokit({
@@ -92,6 +93,8 @@ export class StateManager {
 
       state.version = STATE_SCHEMA_VERSION
       state.metadata.updated_at = new Date().toISOString()
+
+      this.cachedState = state
 
       const serialized = JSON.stringify(state, null, 2)
       await writeFile(statePath, serialized, 'utf-8')
@@ -447,13 +450,20 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
   }
 
   async getOrCreateState(): Promise<ReviewState> {
+    if (this.cachedState) {
+      return this.cachedState
+    }
+
     const restored = await this.restoreState()
 
     if (restored) {
+      this.cachedState = restored
       return restored
     }
 
-    return await this.rebuildStateFromComments()
+    const rebuilt = await this.rebuildStateFromComments()
+    this.cachedState = rebuilt
+    return rebuilt
   }
 
   async updateThreadStatus(

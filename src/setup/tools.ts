@@ -8,7 +8,9 @@ export async function setupToolsInWorkspace(): Promise<void> {
   const __filename = fileURLToPath(import.meta.url)
   const __dirname = dirname(__filename)
 
-  const actionToolsDir = join(__dirname, '..', '..', '.opencode', 'tool')
+  // When bundled, dist/index.js runs and __dirname is 'dist/'
+  // Tools are at 'dist/.opencode/tool/', so we go down from __dirname
+  const actionToolsDir = join(__dirname, '.opencode', 'tool')
 
   const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd()
   const workspaceToolsDir = join(workspaceDir, '.opencode', 'tool')

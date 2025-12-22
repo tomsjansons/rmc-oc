@@ -37314,7 +37314,7 @@ class OpenCodeServer {
         const authPath = join(dataDir, 'auth.json');
         this.authFilePath = authPath;
         const auth = {
-            openrouter: this.config.opencode.apiKey
+            openrouter: { type: 'api', key: this.config.opencode.apiKey }
         };
         try {
             writeFileSync(authPath, JSON.stringify(auth, null, 2), 'utf8');
@@ -98395,7 +98395,9 @@ ${diff.length > 5000 ? diff.substring(0, 5000) + '\n... (truncated)' : diff}
 async function setupToolsInWorkspace() {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = dirname(__filename);
-    const actionToolsDir = join(__dirname, '..', '..', '.opencode', 'tool');
+    // When bundled, dist/index.js runs and __dirname is 'dist/'
+    // Tools are at 'dist/.opencode/tool/', so we go down from __dirname
+    const actionToolsDir = join(__dirname, '.opencode', 'tool');
     const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd();
     const workspaceToolsDir = join(workspaceDir, '.opencode', 'tool');
     logger$2.info('Setting up OpenCode tools in workspace');

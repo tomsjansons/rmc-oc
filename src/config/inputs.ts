@@ -9,9 +9,7 @@ import type {
 
 export function parseInputs(): ReviewConfig {
   const apiKey = core.getInput('openrouter_api_key', { required: true })
-  const model =
-    core.getInput('model', { required: false }) ||
-    'anthropic/claude-sonnet-4-20250514'
+  const model = core.getInput('model', { required: true })
   const enableWeb = core.getBooleanInput('enable_web', { required: false })
   const debugLogging = core.getBooleanInput('debug_logging', {
     required: false
@@ -74,9 +72,10 @@ export function parseInputs(): ReviewConfig {
     core.getInput('injection_detection_enabled', { required: false }) !==
     'false'
 
-  const injectionVerificationModel =
-    core.getInput('injection_verification_model', { required: false }) ||
-    'openai/gpt-4o-mini'
+  const injectionVerificationModel = core.getInput(
+    'injection_verification_model',
+    { required: true }
+  )
 
   const context = github.context
 

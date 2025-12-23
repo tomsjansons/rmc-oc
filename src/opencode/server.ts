@@ -24,11 +24,9 @@ type ServerStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
 
 type OpenCodeConfig = {
   $schema: string
-  provider: {
-    openrouter: {
-      models: Record<string, { default?: boolean }>
-    }
-  }
+  model: string
+  enabled_providers: string[]
+  disabled_providers: string[]
   tools: {
     write: boolean
     bash: boolean
@@ -183,15 +181,9 @@ export class OpenCodeServer {
 
     const config: OpenCodeConfig = {
       $schema: 'https://opencode.ai/config.json',
-      provider: {
-        openrouter: {
-          models: {
-            [model]: {
-              default: true
-            }
-          }
-        }
-      },
+      model,
+      enabled_providers: ['openrouter'],
+      disabled_providers: ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'],
       tools: {
         write: false,
         bash: false,

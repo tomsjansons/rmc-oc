@@ -196,9 +196,11 @@ export class OpenCodeServer {
     const configPath = join(workspaceDir, 'opencode.json')
     const model = this.config.opencode.model
 
+    const openrouterModel = `openrouter/${model}`
+
     const config: OpenCodeConfig = {
       $schema: 'https://opencode.ai/config.json',
-      model,
+      model: openrouterModel,
       enabled_providers: ['openrouter'],
       disabled_providers: ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'],
       provider: {
@@ -222,7 +224,7 @@ export class OpenCodeServer {
     try {
       writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8')
       logger.info(`Created OpenCode config file: ${configPath}`)
-      logger.info(`Config model: ${model}`)
+      logger.info(`Config model: ${openrouterModel}`)
       logger.info(`Config contents: ${JSON.stringify(config, null, 2)}`)
     } catch (error) {
       throw new OpenCodeError(

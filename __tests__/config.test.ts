@@ -22,7 +22,7 @@ describe('Configuration Parser', () => {
         },
         scoring: {
           problemThreshold: 5,
-          blockingThreshold: 5,
+          blockingThreshold: 5
         },
         review: {
           timeoutMs: 30 * 60 * 1000,
@@ -55,7 +55,7 @@ describe('Configuration Parser', () => {
         },
         scoring: {
           problemThreshold: 5,
-          blockingThreshold: 5,
+          blockingThreshold: 5
         },
         github: {
           token: 'test-token',
@@ -79,7 +79,7 @@ describe('Configuration Parser', () => {
         },
         scoring: {
           problemThreshold: 11,
-          blockingThreshold: 11, // Invalid: > 10
+          blockingThreshold: 11 // Invalid: > 10
         },
         github: {
           token: 'test-token',
@@ -103,7 +103,7 @@ describe('Configuration Parser', () => {
         },
         scoring: {
           problemThreshold: 0,
-          blockingThreshold: 0, // Invalid: < 1
+          blockingThreshold: 0 // Invalid: < 1
         },
         github: {
           token: 'test-token',
@@ -127,7 +127,7 @@ describe('Configuration Parser', () => {
         },
         scoring: {
           problemThreshold: 5,
-          blockingThreshold: 5,
+          blockingThreshold: 5
         },
         review: {
           timeoutMs: 30 * 60 * 1000,
@@ -162,7 +162,7 @@ describe('Configuration Parser', () => {
         },
         scoring: {
           problemThreshold: 5,
-          blockingThreshold: 5,
+          blockingThreshold: 5
         },
         review: {
           timeoutMs: 30 * 60 * 1000,
@@ -197,7 +197,7 @@ describe('Configuration Parser', () => {
         },
         scoring: {
           problemThreshold: 5,
-          blockingThreshold: 5,
+          blockingThreshold: 5
         },
         github: {
           token: 'test-token',

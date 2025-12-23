@@ -106,6 +106,16 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         logger.debug(`tRPC: github.replyToThread called for ${input.threadId}`)
 
+        const state = ctx.orchestrator.getState()
+        const thread = state?.threads.find((t) => t.id === input.threadId)
+
+        if (thread?.status === 'RESOLVED') {
+          logger.info(
+            `Thread ${input.threadId} is already resolved, skipping reply`
+          )
+          return { success: true, skipped: true }
+        }
+
         await ctx.github.replyToComment(input.threadId, input.body)
 
         if (input.isConcession) {
@@ -118,7 +128,7 @@ export const appRouter = router({
           logger.info(`Thread ${input.threadId} marked as DISPUTED`)
         }
 
-        return { success: true }
+        return { success: true, skipped: false }
       }),
 
     resolveThread: publicProcedure
@@ -126,12 +136,25 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         logger.debug(`tRPC: github.resolveThread called for ${input.threadId}`)
 
+        const state = ctx.orchestrator.getState()
+        const thread = state?.threads.find((t) => t.id === input.threadId)
+
+        if (thread?.status === 'RESOLVED') {
+          logger.info(
+            `Thread ${input.threadId} is already resolved, skipping duplicate resolution`
+          )
+          return {
+            success: true,
+            alreadyResolved: true
+          }
+        }
+
         await ctx.github.resolveThread(input.threadId, input.reason)
         await ctx.orchestrator.updateThreadStatus(input.threadId, 'RESOLVED')
 
         logger.info(`Thread ${input.threadId} resolved: ${input.reason}`)
 
-        return { success: true }
+        return { success: true, alreadyResolved: false }
       }),
 
     escalateDispute: publicProcedure

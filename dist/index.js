@@ -37613,6 +37613,13 @@ class OpenCodeServer {
             model,
             enabled_providers: ['openrouter'],
             disabled_providers: ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'],
+            provider: {
+                openrouter: {
+                    models: {
+                        [model]: {}
+                    }
+                }
+            },
             tools: {
                 write: false,
                 bash: false,

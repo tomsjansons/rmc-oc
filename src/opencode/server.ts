@@ -27,6 +27,11 @@ type OpenCodeConfig = {
   model: string
   enabled_providers: string[]
   disabled_providers: string[]
+  provider: {
+    openrouter: {
+      models: Record<string, object>
+    }
+  }
   tools: {
     write: boolean
     bash: boolean
@@ -196,6 +201,13 @@ export class OpenCodeServer {
       model,
       enabled_providers: ['openrouter'],
       disabled_providers: ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'],
+      provider: {
+        openrouter: {
+          models: {
+            [model]: {}
+          }
+        }
+      },
       tools: {
         write: false,
         bash: false,

@@ -37588,10 +37588,18 @@ class OpenCodeServer {
         logger.debug(`Running: ${command} ${serveArgs.join(' ')}`);
         logger.debug(`Using config file: ${this.configFilePath}`);
         const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd();
+        const filteredEnv = {};
+        for (const [key, value] of Object.entries(process.env)) {
+            if (value !== undefined && !key.startsWith('OPENCODE_')) {
+                filteredEnv[key] = value;
+            }
+        }
+        filteredEnv['OPENCODE_CONFIG'] = this.configFilePath || '';
+        logger.info(`OpenCode environment: OPENCODE_CONFIG=${filteredEnv['OPENCODE_CONFIG']}`);
         this.serverProcess = spawn(command, serveArgs, {
             stdio: ['ignore', 'pipe', 'pipe'],
             cwd: workspaceDir,
-            env: process.env,
+            env: filteredEnv,
             detached: false
         });
         this.attachProcessHandlers();
@@ -37617,8 +37625,9 @@ class OpenCodeServer {
         };
         try {
             writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
-            logger.debug(`Created OpenCode config file: ${configPath}`);
-            logger.debug(`Config contents: ${JSON.stringify(config, null, 2)}`);
+            logger.info(`Created OpenCode config file: ${configPath}`);
+            logger.info(`Config model: ${model}`);
+            logger.info(`Config contents: ${JSON.stringify(config, null, 2)}`);
         }
         catch (error) {
             throw new OpenCodeError(`Failed to write config file: ${error instanceof Error ? error.message : String(error)}`);

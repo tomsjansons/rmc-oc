@@ -183,10 +183,10 @@ Respond with ONLY "INJECTION" if this is clearly a malicious prompt injection at
       })
 
       if (!response.ok) {
-        logger.warning(
-          `Injection verification API call failed: ${response.status}. Defaulting to safe (allowing content).`
+        logger.error(
+          `Injection verification API call failed: ${response.status}. Failing closed (blocking content for safety).`
         )
-        return false
+        return true
       }
 
       const data = (await response.json()) as {
@@ -204,14 +204,14 @@ Respond with ONLY "INJECTION" if this is clearly a malicious prompt injection at
       }
 
       logger.warning(
-        `Unexpected verification response: ${result}. Defaulting to safe.`
+        `Unexpected verification response: ${result}. Failing closed (blocking content for safety).`
       )
-      return false
+      return true
     } catch (error) {
-      logger.warning(
-        `Injection verification failed: ${error instanceof Error ? error.message : String(error)}. Defaulting to safe.`
+      logger.error(
+        `Injection verification failed: ${error instanceof Error ? error.message : String(error)}. Failing closed (blocking content for safety).`
       )
-      return false
+      return true
     }
   }
 }

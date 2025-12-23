@@ -5,6 +5,7 @@ import type { GitHubAPI } from '../github/api.js'
 import type { LLMClient } from '../opencode/llm-client.js'
 import type { ReviewOrchestrator } from '../review/orchestrator.js'
 import { logger } from '../utils/logger.js'
+import { auditToolCall } from '../utils/security.js'
 import { validateComment } from './comment-validator.js'
 import {
   escalateDisputeSchema,
@@ -43,6 +44,16 @@ export const appRouter = router({
     postReviewComment: publicProcedure
       .input(postReviewCommentSchema)
       .mutation(async ({ ctx, input }) => {
+        auditToolCall({
+          toolName: 'github_post_review_comment',
+          parameters: {
+            file: input.file,
+            line: input.line,
+            score: input.assessment.score
+          },
+          sessionId: 'trpc-session'
+        })
+
         logger.debug(
           `tRPC: github.postReviewComment called for ${input.file}:${input.line} (score: ${input.assessment.score})`
         )
@@ -126,6 +137,15 @@ export const appRouter = router({
     replyToThread: publicProcedure
       .input(replyToThreadSchema)
       .mutation(async ({ ctx, input }) => {
+        auditToolCall({
+          toolName: 'github_reply_to_thread',
+          parameters: {
+            threadId: input.threadId,
+            isConcession: input.isConcession
+          },
+          sessionId: 'trpc-session'
+        })
+
         logger.debug(`tRPC: github.replyToThread called for ${input.threadId}`)
 
         const state = ctx.orchestrator.getState()
@@ -169,6 +189,15 @@ export const appRouter = router({
     resolveThread: publicProcedure
       .input(resolveThreadSchema)
       .mutation(async ({ ctx, input }) => {
+        auditToolCall({
+          toolName: 'github_resolve_thread',
+          parameters: {
+            threadId: input.threadId,
+            reason: input.reason
+          },
+          sessionId: 'trpc-session'
+        })
+
         logger.debug(`tRPC: github.resolveThread called for ${input.threadId}`)
 
         const state = ctx.orchestrator.getState()
@@ -195,6 +224,14 @@ export const appRouter = router({
     escalateDispute: publicProcedure
       .input(escalateDisputeSchema)
       .mutation(async ({ ctx, input }) => {
+        auditToolCall({
+          toolName: 'github_escalate_dispute',
+          parameters: {
+            threadId: input.threadId
+          },
+          sessionId: 'trpc-session'
+        })
+
         logger.debug(
           `tRPC: github.escalateDispute called for ${input.threadId}`
         )

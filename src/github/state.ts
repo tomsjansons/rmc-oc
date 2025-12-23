@@ -3,6 +3,7 @@ import { Octokit } from '@octokit/rest'
 
 import type { LLMClient } from '../opencode/llm-client.js'
 import type { ReviewConfig } from '../review/types.js'
+import { sanitizeDelimiters } from '../utils/security.js'
 
 const STATE_SCHEMA_VERSION = 1
 const BOT_USERS = ['opencode-reviewer[bot]', 'github-actions[bot]']
@@ -275,7 +276,7 @@ export class StateManager {
   }
 
   private sanitizePromptInput(input: string): string {
-    return input.replace(/"""/g, '\\"\\"\\"')
+    return sanitizeDelimiters(input)
   }
 
   async detectConcession(body: string): Promise<boolean> {

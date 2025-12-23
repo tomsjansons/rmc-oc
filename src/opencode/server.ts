@@ -175,11 +175,13 @@ export class OpenCodeServer {
         filteredEnv[key] = value
       }
     }
-    filteredEnv['OPENCODE_CONFIG'] = this.configFilePath || ''
+    filteredEnv.OPENCODE_CONFIG = this.configFilePath || ''
+    filteredEnv.OPENROUTER_API_KEY = this.config.opencode.apiKey
 
     logger.info(
-      `OpenCode environment: OPENCODE_CONFIG=${filteredEnv['OPENCODE_CONFIG']}`
+      `OpenCode environment: OPENCODE_CONFIG=${filteredEnv.OPENCODE_CONFIG}`
     )
+    logger.debug('OPENROUTER_API_KEY passed via environment variable')
 
     this.serverProcess = spawn(command, serveArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -265,6 +267,9 @@ export class OpenCodeServer {
       })
       chmodSync(authPath, 0o600)
       logger.debug(`Created OpenCode auth file: ${authPath}`)
+      logger.debug(
+        'Note: Auth is also passed via OPENROUTER_API_KEY env var as backup'
+      )
     } catch (error) {
       throw new OpenCodeError(
         `Failed to write auth file: ${error instanceof Error ? error.message : String(error)}`

@@ -59,7 +59,7 @@ export class LLMClientImpl implements LLMClient {
         choices?: Array<{ message?: { content?: string } }>
       }
 
-      return data.choices?.[0]?.message?.content?.trim().toLowerCase() ?? null
+      return data.choices?.[0]?.message?.content?.trim() ?? null
     } catch (error) {
       logger.warning(
         `LLM completion failed: ${error instanceof Error ? error.message : String(error)}`

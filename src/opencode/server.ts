@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import {
@@ -164,12 +164,12 @@ export class OpenCodeServer {
     logger.debug(`Running: ${command} ${serveArgs.join(' ')}`)
     logger.debug(`Using config file: ${this.configFilePath}`)
 
+    const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd()
+
     this.serverProcess = spawn(command, serveArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        OPENCODE_CONFIG: this.configFilePath
-      },
+      cwd: workspaceDir,
+      env: process.env,
       detached: false
     })
 
@@ -177,18 +177,8 @@ export class OpenCodeServer {
   }
 
   private createConfigFile(): string {
-    const tempDir = tmpdir()
-    const configDir = join(tempDir, 'opencode-pr-reviewer')
-
-    try {
-      mkdirSync(configDir, { recursive: true })
-    } catch (error) {
-      throw new OpenCodeError(
-        `Failed to create config directory: ${error instanceof Error ? error.message : String(error)}`
-      )
-    }
-
-    const configPath = join(configDir, 'opencode.json')
+    const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd()
+    const configPath = join(workspaceDir, 'opencode.json')
     const model = this.config.opencode.model
 
     const config: OpenCodeConfig = {

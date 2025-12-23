@@ -482,7 +482,9 @@ When a dispute cannot be resolved after both sides have presented their position
 
 `
     : ''
-}Use the OpenCode exploration tools to thoroughly verify claims before making your decision.`,
+}**This is NOT a review pass** - do NOT call \`submit_pass_results\`. When you have responded to this thread, simply stop.
+
+Use the OpenCode exploration tools to thoroughly verify claims before making your decision.`,
 
   CLARIFY_REVIEW_FINDING: (
     originalFinding: string,
@@ -554,6 +556,8 @@ This matters because session expiry is common (30min timeout in \`src/config/aut
 
 Does this clarify the concern?
 \`\`\`
+
+**This is NOT a review pass** - do NOT call \`submit_pass_results\`. When you have provided your clarification, simply stop.
 
 Now explore the codebase and provide your clarification.`,
 

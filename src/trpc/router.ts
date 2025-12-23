@@ -2,6 +2,7 @@ import { initTRPC } from '@trpc/server'
 import superjson from 'superjson'
 
 import type { GitHubAPI } from '../github/api.js'
+import type { LLMClient } from '../opencode/llm-client.js'
 import type { ReviewOrchestrator } from '../review/orchestrator.js'
 import { logger } from '../utils/logger.js'
 import { validateComment } from './comment-validator.js'
@@ -16,6 +17,7 @@ import {
 export type TRPCContext = {
   orchestrator: ReviewOrchestrator
   github: GitHubAPI
+  llmClient: LLMClient
 }
 
 const t = initTRPC.context<TRPCContext>().create({
@@ -72,11 +74,7 @@ export const appRouter = router({
           }
         }
 
-        const validation = await validateComment(
-          input.body,
-          config.opencode.apiKey,
-          config.opencode.model
-        )
+        const validation = await validateComment(input.body, ctx.llmClient)
 
         if (!validation.isValid) {
           logger.warning(
@@ -140,12 +138,7 @@ export const appRouter = router({
           return { success: true, skipped: true }
         }
 
-        const config = ctx.orchestrator.getConfig()
-        const validation = await validateComment(
-          input.body,
-          config.opencode.apiKey,
-          config.opencode.model
-        )
+        const validation = await validateComment(input.body, ctx.llmClient)
 
         if (!validation.isValid) {
           logger.warning(

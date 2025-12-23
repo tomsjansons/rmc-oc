@@ -1,23 +1,20 @@
-import { OPENROUTER_API_URL } from '../config/constants.js'
+import type { LLMClient } from '../opencode/llm-client.js'
 import { logger } from '../utils/logger.js'
 
 const THINKING_PATTERNS = [
-  /\bwait\b/i,
-  /\bactually\b/i,
+  /\bwait,\s+(?:let me|i need|actually)/i,
+  /\bactually,?\s+(?:no|wait|let me|i think i)/i,
   /\bcorrection:/i,
   /\bon second thought\b/i,
-  /\blet me (?:think|check|see|reconsider)\b/i,
-  /\bhmm\b/i,
-  /\bi think\b/i,
-  /\bmaybe\b/i,
-  /\bperhaps\b/i,
-  /\bi(?:'m| am) not sure\b/i,
-  /\bi need to\b/i,
-  /\bhold on\b/i,
+  /\blet me (?:think|reconsider|check (?:if|whether))\b/i,
+  /\bhmm+\b/i,
+  /\bi(?:'m| am) not sure (?:if|whether|about)\b/i,
+  /\bi need to (?:check|verify|think|reconsider)\b/i,
+  /\bhold on,?\s+(?:let me|i need|wait)\b/i,
   /\bnevermind\b/i,
   /\bignore (?:that|this|the above)\b/i,
-  /\bsorry,? (?:i|let me)\b/i,
-  /\bno,? wait\b/i,
+  /\bsorry,?\s+(?:i was wrong|let me|i meant)\b/i,
+  /\bno,?\s+wait\b/i,
   /\.{3,}\s*(?:wait|actually|hmm)/i,
   /\((?:thinking|checking|wait)\)/i
 ]
@@ -82,8 +79,7 @@ export function detectSuspectedThinking(commentBody: string): {
 
 export async function verifyThinkingContent(
   commentBody: string,
-  apiKey: string,
-  model: string
+  llmClient: LLMClient
 ): Promise<boolean> {
   const prompt = `You are a quality assurance checker for code review comments. Your task is to determine if a comment contains internal "thinking" or reasoning that should not be published.
 
@@ -111,40 +107,9 @@ Does this comment contain problematic internal "thinking" that should not be pub
 Respond with ONLY "yes" or "no".`
 
   try {
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-        'HTTP-Referer': 'https://github.com/opencode-pr-reviewer',
-        'X-Title': 'OpenCode PR Reviewer - Comment Validator'
-      },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.1,
-        max_tokens: 10
-      })
-    })
+    const content = await llmClient.complete(prompt)
 
-    if (!response.ok) {
-      logger.warning(
-        `Comment validation API call failed: ${response.status}, allowing comment`
-      )
-      return false
-    }
-
-    const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>
-    }
-
-    const content = data.choices?.[0]?.message?.content?.trim().toLowerCase()
-
-    if (content === 'yes') {
-      return true
-    }
-
-    return false
+    return /^yes/i.test(content || '')
   } catch (error) {
     logger.warning(
       `Comment validation failed with error: ${error}, allowing comment`
@@ -155,8 +120,7 @@ Respond with ONLY "yes" or "no".`
 
 export async function validateComment(
   commentBody: string,
-  apiKey: string,
-  model: string
+  llmClient: LLMClient
 ): Promise<CommentValidationResult> {
   const { suspected, matchedPatterns } = detectSuspectedThinking(commentBody)
 
@@ -172,7 +136,7 @@ export async function validateComment(
     `Comment flagged for potential thinking content. Patterns: ${matchedPatterns.join(', ')}`
   )
 
-  const confirmed = await verifyThinkingContent(commentBody, apiKey, model)
+  const confirmed = await verifyThinkingContent(commentBody, llmClient)
 
   if (confirmed) {
     return {

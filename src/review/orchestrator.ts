@@ -8,6 +8,7 @@ import {
   StateManager
 } from '../github/state.js'
 import type { OpenCodeClient } from '../opencode/client.js'
+import type { LLMClient } from '../opencode/llm-client.js'
 import { OrchestratorError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
 import { REVIEW_PROMPTS, buildSecuritySensitivity } from './prompts.js'
@@ -35,11 +36,12 @@ export class ReviewOrchestrator {
 
   constructor(
     private opencode: OpenCodeClient,
+    llmClient: LLMClient,
     private github: GitHubAPI,
     private config: ReviewConfig,
     private workspaceRoot: string
   ) {
-    this.stateManager = new StateManager(config)
+    this.stateManager = new StateManager(config, llmClient)
   }
 
   async executeReview(): Promise<ReviewOutput> {

@@ -34,17 +34,20 @@ jest.unstable_mockModule('@octokit/rest', () => ({
 const { StateManager, StateError } = await import('../src/github/state.js')
 import type { ReviewConfig } from '../src/review/types.js'
 import type { ReviewState, ReviewThread } from '../src/github/state.js'
+import type { LLMClient } from '../src/opencode/llm-client.js'
 
 describe('StateManager', () => {
-  let stateManager: StateManager
+  let stateManager: InstanceType<typeof StateManager>
   let mockConfig: ReviewConfig
+  let mockLLMClient: LLMClient
 
   beforeEach(() => {
     mockConfig = {
       opencode: {
         apiKey: 'test-key',
         model: 'test-model',
-        enableWeb: false
+        enableWeb: false,
+        debugLogging: false
       },
       scoring: {
         problemThreshold: 5,
@@ -56,9 +59,13 @@ describe('StateManager', () => {
         repo: 'test-repo',
         prNumber: 123
       }
+    } as ReviewConfig
+
+    mockLLMClient = {
+      complete: jest.fn<(prompt: string) => Promise<string | null>>()
     }
 
-    stateManager = new StateManager(mockConfig)
+    stateManager = new StateManager(mockConfig, mockLLMClient)
 
     mockInfo.mockClear()
     mockWarning.mockClear()
@@ -750,39 +757,17 @@ export type PostReviewCommentArgs = {
 
   describe('detectConcession', () => {
     it('should detect concession via API', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          choices: [
-            {
-              message: {
-                content: 'true'
-              }
-            }
-          ]
-        })
-      } as Response)
+      ;(mockLLMClient.complete as jest.Mock).mockResolvedValue('true')
 
       const isConcession = await stateManager.detectConcession(
         'You are absolutely right, I will fix this'
       )
       expect(isConcession).toBe(true)
-      expect(mockFetch).toHaveBeenCalled()
+      expect(mockLLMClient.complete).toHaveBeenCalled()
     })
 
     it('should detect non-concession via API', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          choices: [
-            {
-              message: {
-                content: 'false'
-              }
-            }
-          ]
-        })
-      } as Response)
+      ;(mockLLMClient.complete as jest.Mock).mockResolvedValue('false')
 
       const isConcession = await stateManager.detectConcession(
         'I disagree with this suggestion'
@@ -791,7 +776,9 @@ export type PostReviewCommentArgs = {
     })
 
     it('should fallback to keyword detection on API failure', async () => {
-      mockFetch.mockRejectedValue(new Error('API error'))
+      ;(mockLLMClient.complete as jest.Mock).mockRejectedValue(
+        new Error('API error')
+      )
 
       const isConcession = await stateManager.detectConcession(
         'You are correct about this'
@@ -803,18 +790,7 @@ export type PostReviewCommentArgs = {
     })
 
     it('should cache sentiment analysis results', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          choices: [
-            {
-              message: {
-                content: 'true'
-              }
-            }
-          ]
-        })
-      } as Response)
+      ;(mockLLMClient.complete as jest.Mock).mockResolvedValue('true')
 
       const comment = 'You are absolutely right'
 
@@ -823,7 +799,7 @@ export type PostReviewCommentArgs = {
 
       expect(result1).toBe(true)
       expect(result2).toBe(true)
-      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(mockLLMClient.complete).toHaveBeenCalledTimes(1)
       expect(mockDebug).toHaveBeenCalledWith(
         expect.stringContaining('Using cached sentiment result')
       )
@@ -832,18 +808,7 @@ export type PostReviewCommentArgs = {
 
   describe('classifyDeveloperReply', () => {
     it('should classify acknowledgment via API', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          choices: [
-            {
-              message: {
-                content: 'acknowledgment'
-              }
-            }
-          ]
-        })
-      } as Response)
+      ;(mockLLMClient.complete as jest.Mock).mockResolvedValue('acknowledgment')
 
       const classification = await stateManager.classifyDeveloperReply(
         'Missing null check',
@@ -853,18 +818,7 @@ export type PostReviewCommentArgs = {
     })
 
     it('should classify dispute via API', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          choices: [
-            {
-              message: {
-                content: 'dispute'
-              }
-            }
-          ]
-        })
-      } as Response)
+      ;(mockLLMClient.complete as jest.Mock).mockResolvedValue('dispute')
 
       const classification = await stateManager.classifyDeveloperReply(
         'Missing null check',
@@ -874,7 +828,9 @@ export type PostReviewCommentArgs = {
     })
 
     it('should fallback on API failure', async () => {
-      mockFetch.mockRejectedValue(new Error('API error'))
+      ;(mockLLMClient.complete as jest.Mock).mockRejectedValue(
+        new Error('API error')
+      )
 
       const classification = await stateManager.classifyDeveloperReply(
         'Missing null check',

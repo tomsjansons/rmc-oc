@@ -1,7 +1,7 @@
 import * as core from '@actions/core'
 import { Octokit } from '@octokit/rest'
 
-import { OPENROUTER_API_URL } from '../config/constants.js'
+import type { LLMClient } from '../opencode/llm-client.js'
 import type { ReviewConfig } from '../review/types.js'
 
 const STATE_SCHEMA_VERSION = 1
@@ -54,7 +54,10 @@ export class StateManager {
   private sentimentCache: Map<string, boolean>
   private currentState: ReviewState | null = null
 
-  constructor(private config: ReviewConfig) {
+  constructor(
+    private config: ReviewConfig,
+    private llmClient: LLMClient
+  ) {
     this.octokit = new Octokit({
       auth: config.github.token
     })
@@ -323,40 +326,7 @@ export class StateManager {
   }
 
   private async callLLM(prompt: string): Promise<string | null> {
-    const requestBody = {
-      model: this.config.opencode.model,
-      messages: [
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
-      temperature: 0.1,
-      max_tokens: 10
-    }
-
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.config.opencode.apiKey}`,
-        'HTTP-Referer': 'https://github.com/opencode-pr-reviewer',
-        'X-Title': 'OpenCode PR Reviewer'
-      },
-      body: JSON.stringify(requestBody)
-    })
-
-    if (!response.ok) {
-      throw new Error(
-        `OpenRouter API request failed: ${response.status} ${response.statusText}`
-      )
-    }
-
-    const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>
-    }
-
-    return data.choices?.[0]?.message?.content?.trim().toLowerCase() ?? null
+    return this.llmClient.complete(prompt)
   }
 
   private async analyzeCommentSentiment(commentBody: string): Promise<boolean> {
@@ -384,11 +354,11 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
 
     const content = await this.callLLM(prompt)
 
-    if (content === 'true') {
+    if (/^true/i.test(content || '')) {
       return true
     }
 
-    if (content === 'false') {
+    if (/^false/i.test(content || '')) {
       return false
     }
 
@@ -515,15 +485,19 @@ Classify the response as ONE of the following:
 Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`
 
     try {
-      const content = await this.callLLM(prompt)
+      const content = (await this.callLLM(prompt)) || ''
 
-      if (
-        content === 'acknowledgment' ||
-        content === 'dispute' ||
-        content === 'question' ||
-        content === 'out_of_scope'
-      ) {
-        return content
+      if (/^acknowledgment/i.test(content)) {
+        return 'acknowledgment'
+      }
+      if (/^dispute/i.test(content)) {
+        return 'dispute'
+      }
+      if (/^question/i.test(content)) {
+        return 'question'
+      }
+      if (/^out_of_scope/i.test(content)) {
+        return 'out_of_scope'
       }
 
       core.debug(

@@ -308,6 +308,7 @@ export const appRouter = router({
 
         ctx.orchestrator.recordPassCompletion({
           passNumber: input.passNumber,
+          completed: true,
           hasBlockingIssues: input.hasBlockingIssues
         })
 

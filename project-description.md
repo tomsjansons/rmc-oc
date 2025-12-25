@@ -351,7 +351,7 @@ process.
 
 ##### `submit_pass_results()`
 
-- **Responsibility**: Marks a specific review pass (1-4) as complete. This
+- **Responsibility**: Marks a specific review pass (1-3) as complete. This
   triggers the orchestrator to provide the prompt for the next pass or finalize
   the review.
 - **Signature**:
@@ -426,7 +426,6 @@ modifying the codebase without manual oversight.
     - **Pass 2:** Structural/Layered review (leveraging OpenCode to navigate the
       tree).
     - **Pass 3:** Security and AGENTS.md compliance audit.
-    - **Pass 4:** Final consolidation and noise reduction.
 
 The Phases are not isolated and the OpenCode Server will manage the context. The
 passes will be handled as prompts for the OpenCode Agent and it can manage the

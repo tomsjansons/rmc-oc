@@ -169,24 +169,32 @@ export class OpenCodeServer {
 
     const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd()
 
-    const filteredEnv: Record<string, string> = {}
-    for (const [key, value] of Object.entries(process.env)) {
-      if (value !== undefined && !key.startsWith('OPENCODE_')) {
-        filteredEnv[key] = value
-      }
+    const env: Record<string, string> = {
+      OPENCODE_CONFIG: this.configFilePath || '',
+      OPENROUTER_API_KEY: this.config.opencode.apiKey,
+      PATH: process.env.PATH || '',
+      HOME: process.env.HOME || '',
+      TMPDIR: process.env.TMPDIR || process.env.TEMP || '/tmp',
+      NODE_ENV: process.env.NODE_ENV || 'production'
     }
-    filteredEnv.OPENCODE_CONFIG = this.configFilePath || ''
-    filteredEnv.OPENROUTER_API_KEY = this.config.opencode.apiKey
 
-    logger.info(
-      `OpenCode environment: OPENCODE_CONFIG=${filteredEnv.OPENCODE_CONFIG}`
-    )
+    if (this.config.opencode.debugLogging) {
+      env.DEBUG = process.env.DEBUG || '*'
+      env.OPENCODE_DEBUG = 'true'
+    }
+
+    logger.info(`OpenCode environment: OPENCODE_CONFIG=${env.OPENCODE_CONFIG}`)
     logger.debug('OPENROUTER_API_KEY passed via environment variable')
+    logger.debug(
+      `Minimal environment: ${Object.keys(env)
+        .filter((k) => k !== 'OPENROUTER_API_KEY')
+        .join(', ')}`
+    )
 
     this.serverProcess = spawn(command, serveArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
       cwd: workspaceDir,
-      env: filteredEnv,
+      env,
       detached: false
     })
 
@@ -216,9 +224,7 @@ export class OpenCodeServer {
       disabled_providers: ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'],
       provider: {
         openrouter: {
-          models: {
-            [model]: {}
-          }
+          models: {}
         }
       },
       tools: {

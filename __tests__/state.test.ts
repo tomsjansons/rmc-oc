@@ -720,14 +720,14 @@ export type PostReviewCommentArgs = {
       mockOctokit.pulls.listReviewComments.mockResolvedValue({ data: [] })
 
       await stateManager.recordPassCompletion({
-        number: 1,
+        passNumber: 1,
         completed: true,
-        has_blocking_issues: false
+        hasBlockingIssues: false
       })
 
       const state = await stateManager.getOrCreateState()
       expect(state.passes).toHaveLength(1)
-      expect(state.passes[0].number).toBe(1)
+      expect(state.passes[0].passNumber).toBe(1)
     })
 
     it('should update existing pass record', async () => {
@@ -737,21 +737,21 @@ export type PostReviewCommentArgs = {
       mockOctokit.pulls.listReviewComments.mockResolvedValue({ data: [] })
 
       await stateManager.recordPassCompletion({
-        number: 1,
+        passNumber: 1,
         completed: false,
-        has_blocking_issues: false
+        hasBlockingIssues: false
       })
 
       await stateManager.recordPassCompletion({
-        number: 1,
+        passNumber: 1,
         completed: true,
-        has_blocking_issues: true
+        hasBlockingIssues: true
       })
 
       const state = await stateManager.getOrCreateState()
       expect(state.passes).toHaveLength(1)
       expect(state.passes[0].completed).toBe(true)
-      expect(state.passes[0].has_blocking_issues).toBe(true)
+      expect(state.passes[0].hasBlockingIssues).toBe(true)
     })
   })
 

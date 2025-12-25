@@ -430,15 +430,9 @@ export class ReviewOrchestrator {
     }
 
     if (this.reviewState) {
-      this.stateManager
-        .recordPassCompletion({
-          number: result.passNumber,
-          completed: true,
-          has_blocking_issues: result.hasBlockingIssues
-        })
-        .catch((error) => {
-          logger.warning(`Failed to record pass completion: ${error}`)
-        })
+      this.stateManager.recordPassCompletion(result).catch((error) => {
+        logger.warning(`Failed to record pass completion: ${error}`)
+      })
     }
   }
 

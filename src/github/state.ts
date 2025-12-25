@@ -2,7 +2,7 @@ import * as core from '@actions/core'
 import { Octokit } from '@octokit/rest'
 
 import type { LLMClient } from '../opencode/llm-client.js'
-import type { ReviewConfig } from '../review/types.js'
+import type { PassResult, ReviewConfig } from '../review/types.js'
 import { sanitizeDelimiters } from '../utils/security.js'
 
 const STATE_SCHEMA_VERSION = 1
@@ -30,12 +30,6 @@ export type ReviewThread = {
     timestamp: string
   }>
   escalated_at?: string
-}
-
-export type PassResult = {
-  number: number
-  completed: boolean
-  has_blocking_issues: boolean
 }
 
 export type ReviewState = {
@@ -412,7 +406,7 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
     const state = await this.getOrCreateState()
 
     const existingIndex = state.passes.findIndex(
-      (p) => p.number === passResult.number
+      (p) => p.passNumber === passResult.passNumber
     )
     if (existingIndex >= 0) {
       state.passes[existingIndex] = passResult

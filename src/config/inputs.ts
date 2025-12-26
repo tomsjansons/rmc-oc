@@ -1,13 +1,16 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
+
+import { LLMClientImpl } from '../opencode/llm-client.js'
 import type {
   DisputeContext,
   ExecutionMode,
   QuestionContext,
   ReviewConfig
 } from '../review/types.js'
+import { IntentClassifier } from '../utils/intent-classifier.js'
 
-export function parseInputs(): ReviewConfig {
+export async function parseInputs(): Promise<ReviewConfig> {
   const apiKey = core.getInput('openrouter_api_key', { required: true })
   const model = core.getInput('model', { required: true })
   const enableWeb = core.getBooleanInput('enable_web', { required: false })
@@ -79,8 +82,14 @@ export function parseInputs(): ReviewConfig {
 
   const context = github.context
 
+  const tempLlmClient = new LLMClientImpl({
+    apiKey,
+    model: injectionVerificationModel
+  })
+  const intentClassifier = new IntentClassifier(tempLlmClient)
+
   const { mode, prNumber, questionContext, disputeContext } =
-    detectExecutionMode(context)
+    await detectExecutionMode(context, intentClassifier)
 
   const owner = context.repo.owner
   const repo = context.repo.repo
@@ -130,27 +139,15 @@ export function parseInputs(): ReviewConfig {
   }
 }
 
-function detectReviewRequest(text: string): boolean {
-  const reviewKeywords = [
-    /\b(?:please\s+)?review(?:\s+this)?(?:\s+pr)?/i,
-    /\b(?:can|could)\s+you\s+review/i,
-    /\bdo\s+a\s+review/i,
-    /\brun\s+(?:a\s+)?review/i,
-    /\bcheck\s+(?:this\s+)?(?:pr|code|changes)/i,
-    /\blgtm\?/i,
-    /\bready\s+for\s+review/i,
-    /\btake\s+a\s+look/i
-  ]
-
-  return reviewKeywords.some((pattern) => pattern.test(text))
-}
-
-function detectExecutionMode(context: typeof github.context): {
+async function detectExecutionMode(
+  context: typeof github.context,
+  intentClassifier: IntentClassifier
+): Promise<{
   mode: ExecutionMode
   prNumber: number
   questionContext?: QuestionContext
   disputeContext?: DisputeContext
-} {
+}> {
   if (context.eventName === 'pull_request_review_comment') {
     const comment = context.payload.comment
     const pullRequest = context.payload.pull_request
@@ -218,9 +215,9 @@ function detectExecutionMode(context: typeof github.context): {
         )
       }
 
-      const isReviewRequest = detectReviewRequest(textAfterMention)
+      const intent = await intentClassifier.classifyBotMention(textAfterMention)
 
-      if (isReviewRequest) {
+      if (intent === 'review-request') {
         core.info(`Review request detected via bot mention`)
         core.info(`Requested by: ${comment?.user?.login || 'unknown'}`)
 

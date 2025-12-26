@@ -20,7 +20,7 @@ export async function run(): Promise<void> {
   try {
     logger.info('Starting OpenCode PR Reviewer...')
 
-    const config = parseInputs()
+    const config = await parseInputs()
     validateConfig(config)
 
     logger.info(

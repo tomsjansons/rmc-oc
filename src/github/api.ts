@@ -333,6 +333,43 @@ ${reviewerTags} - Please review this dispute and make a final decision.
     }
   }
 
+  async updateIssueComment(commentId: string, body: string): Promise<void> {
+    try {
+      logger.debug(`Updating issue comment ${commentId}`)
+
+      await this.octokit.issues.updateComment({
+        owner: this.owner,
+        repo: this.repo,
+        comment_id: Number(commentId),
+        body
+      })
+
+      logger.info(`Updated issue comment ${commentId}`)
+    } catch (error) {
+      throw new GitHubAPIError(
+        `Failed to update issue comment: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async getIssueComment(commentId: string): Promise<string> {
+    try {
+      logger.debug(`Fetching issue comment ${commentId}`)
+
+      const response = await this.octokit.issues.getComment({
+        owner: this.owner,
+        repo: this.repo,
+        comment_id: Number(commentId)
+      })
+
+      return response.data.body || ''
+    } catch (error) {
+      throw new GitHubAPIError(
+        `Failed to get issue comment: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
   async replyToIssueComment(commentId: string, body: string): Promise<void> {
     try {
       logger.debug(`Replying to issue comment ${commentId}`)

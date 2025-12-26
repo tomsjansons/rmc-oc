@@ -89,14 +89,12 @@ ${answer}
 
       if (
         config.execution.isManuallyTriggered &&
-        config.execution.manualTriggerComments.enableStartComment &&
-        config.execution.triggerCommentId
+        config.execution.manualTriggerComments.enableStartComment
       ) {
         logger.info('Posting review start comment')
-        await github.replyToIssueComment(
-          config.execution.triggerCommentId,
+        const startMessage =
           "🤖 **Review started!**\n\nI'm analyzing your code now. This may take a few minutes..."
-        )
+        await github.postIssueComment(startMessage)
       }
 
       const result = await orchestrator.executeReview()
@@ -107,8 +105,7 @@ ${answer}
 
       if (
         config.execution.isManuallyTriggered &&
-        config.execution.manualTriggerComments.enableEndComment &&
-        config.execution.triggerCommentId
+        config.execution.manualTriggerComments.enableEndComment
       ) {
         logger.info('Posting review end comment')
         let endMessage = '✅ **Review completed!**\n\n'
@@ -121,10 +118,7 @@ ${answer}
           endMessage += `Found ${result.issuesFound} issue(s). Please review the comments above.`
         }
 
-        await github.replyToIssueComment(
-          config.execution.triggerCommentId,
-          endMessage
-        )
+        await github.postIssueComment(endMessage)
       }
 
       if (result.issuesFound > 0) {

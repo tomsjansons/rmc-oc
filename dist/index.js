@@ -31451,7 +31451,7 @@ async function parseInputs() {
         model: injectionVerificationModel
     });
     const intentClassifier = new IntentClassifier(tempLlmClient);
-    const { mode, prNumber, questionContext, disputeContext, isManuallyTriggered, triggerCommentId } = await detectExecutionMode(context, intentClassifier);
+    const { mode, prNumber, questionContext, disputeContext, isManuallyTriggered } = await detectExecutionMode(context, intentClassifier);
     const owner = context.repo.owner;
     const repo = context.repo.repo;
     if (!apiKey || apiKey.trim() === '') {
@@ -31494,7 +31494,6 @@ async function parseInputs() {
             questionContext,
             disputeContext,
             isManuallyTriggered,
-            triggerCommentId,
             manualTriggerComments: {
                 enableStartComment,
                 enableEndComment
@@ -31527,7 +31526,6 @@ async function detectExecutionMode(context, intentClassifier) {
             mode: 'dispute-resolution',
             prNumber: pullRequest.number,
             isManuallyTriggered: true,
-            triggerCommentId: String(comment?.id || ''),
             disputeContext: {
                 threadId: String(inReplyToId),
                 replyCommentId: String(comment?.id || ''),
@@ -31559,8 +31557,7 @@ async function detectExecutionMode(context, intentClassifier) {
                 return {
                     mode: 'full-review',
                     prNumber: issue.number,
-                    isManuallyTriggered: true,
-                    triggerCommentId: String(comment?.id || '')
+                    isManuallyTriggered: true
                 };
             }
             let fileContext;
@@ -31576,7 +31573,6 @@ async function detectExecutionMode(context, intentClassifier) {
                 mode: 'question-answering',
                 prNumber: issue.number,
                 isManuallyTriggered: true,
-                triggerCommentId: String(comment?.id || ''),
                 questionContext: {
                     commentId: String(comment?.id || ''),
                     question: textAfterMention,
@@ -35668,6 +35664,21 @@ ${reviewerTags} - Please review this dispute and make a final decision.
         }
         catch (error) {
             throw new GitHubAPIError(`Failed to escalate to human reviewers: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    async postIssueComment(body) {
+        try {
+            logger.debug('Posting issue comment');
+            await this.octokit.issues.createComment({
+                owner: this.owner,
+                repo: this.repo,
+                issue_number: this.prNumber,
+                body
+            });
+            logger.info('Posted issue comment');
+        }
+        catch (error) {
+            throw new GitHubAPIError(`Failed to post issue comment: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
     async replyToIssueComment(commentId, body) {
@@ -49601,18 +49612,17 @@ ${answer}
         else if (config.execution.mode === 'full-review') {
             logger.info('Execution mode: Full Review');
             if (config.execution.isManuallyTriggered &&
-                config.execution.manualTriggerComments.enableStartComment &&
-                config.execution.triggerCommentId) {
+                config.execution.manualTriggerComments.enableStartComment) {
                 logger.info('Posting review start comment');
-                await github.replyToIssueComment(config.execution.triggerCommentId, "🤖 **Review started!**\n\nI'm analyzing your code now. This may take a few minutes...");
+                const startMessage = "🤖 **Review started!**\n\nI'm analyzing your code now. This may take a few minutes...";
+                await github.postIssueComment(startMessage);
             }
             const result = await orchestrator.executeReview();
             coreExports.setOutput('review_status', result.status);
             coreExports.setOutput('issues_found', String(result.issuesFound));
             coreExports.setOutput('blocking_issues', String(result.blockingIssues));
             if (config.execution.isManuallyTriggered &&
-                config.execution.manualTriggerComments.enableEndComment &&
-                config.execution.triggerCommentId) {
+                config.execution.manualTriggerComments.enableEndComment) {
                 logger.info('Posting review end comment');
                 let endMessage = '✅ **Review completed!**\n\n';
                 if (result.issuesFound === 0) {
@@ -49624,7 +49634,7 @@ ${answer}
                 else {
                     endMessage += `Found ${result.issuesFound} issue(s). Please review the comments above.`;
                 }
-                await github.replyToIssueComment(config.execution.triggerCommentId, endMessage);
+                await github.postIssueComment(endMessage);
             }
             if (result.issuesFound > 0) {
                 const message = result.blockingIssues > 0

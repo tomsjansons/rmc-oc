@@ -103,8 +103,7 @@ export async function parseInputs(): Promise<ReviewConfig> {
     prNumber,
     questionContext,
     disputeContext,
-    isManuallyTriggered,
-    triggerCommentId
+    isManuallyTriggered
   } = await detectExecutionMode(context, intentClassifier)
 
   const owner = context.repo.owner
@@ -152,7 +151,6 @@ export async function parseInputs(): Promise<ReviewConfig> {
       questionContext,
       disputeContext,
       isManuallyTriggered,
-      triggerCommentId,
       manualTriggerComments: {
         enableStartComment,
         enableEndComment
@@ -170,7 +168,6 @@ async function detectExecutionMode(
   questionContext?: QuestionContext
   disputeContext?: DisputeContext
   isManuallyTriggered: boolean
-  triggerCommentId?: string
 }> {
   if (context.eventName === 'pull_request_review_comment') {
     const comment = context.payload.comment
@@ -207,7 +204,6 @@ async function detectExecutionMode(
       mode: 'dispute-resolution',
       prNumber: pullRequest.number,
       isManuallyTriggered: true,
-      triggerCommentId: String(comment?.id || ''),
       disputeContext: {
         threadId: String(inReplyToId),
         replyCommentId: String(comment?.id || ''),
@@ -251,8 +247,7 @@ async function detectExecutionMode(
         return {
           mode: 'full-review',
           prNumber: issue.number,
-          isManuallyTriggered: true,
-          triggerCommentId: String(comment?.id || '')
+          isManuallyTriggered: true
         }
       }
 
@@ -272,7 +267,6 @@ async function detectExecutionMode(
         mode: 'question-answering',
         prNumber: issue.number,
         isManuallyTriggered: true,
-        triggerCommentId: String(comment?.id || ''),
         questionContext: {
           commentId: String(comment?.id || ''),
           question: textAfterMention,

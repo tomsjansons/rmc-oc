@@ -314,6 +314,25 @@ ${reviewerTags} - Please review this dispute and make a final decision.
     }
   }
 
+  async postIssueComment(body: string): Promise<void> {
+    try {
+      logger.debug('Posting issue comment')
+
+      await this.octokit.issues.createComment({
+        owner: this.owner,
+        repo: this.repo,
+        issue_number: this.prNumber,
+        body
+      })
+
+      logger.info('Posted issue comment')
+    } catch (error) {
+      throw new GitHubAPIError(
+        `Failed to post issue comment: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
   async replyToIssueComment(commentId: string, body: string): Promise<void> {
     try {
       logger.debug(`Replying to issue comment ${commentId}`)

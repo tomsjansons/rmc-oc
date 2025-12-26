@@ -56,7 +56,6 @@ export type ReviewConfig = {
     questionContext?: QuestionContext
     disputeContext?: DisputeContext
     isManuallyTriggered: boolean
-    triggerCommentId?: string
     manualTriggerComments: {
       enableStartComment: boolean
       enableEndComment: boolean

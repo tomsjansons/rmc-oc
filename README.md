@@ -210,18 +210,37 @@ The agent engages in technical discussions with developers:
   - Encryption and data integrity
   - Authentication/authorization issues
 
-### On-Demand Review Trigger
+### Bot Mention for Reviews and Questions
 
-Developers can trigger a review on draft PRs by mentioning `@review-my-code-bot`
-in a PR comment:
+Developers can interact with the bot by mentioning `@review-my-code-bot` in PR
+comments. The bot intelligently detects the intent:
+
+#### Request a Review
+
+Trigger a full 3-pass review (works on draft PRs too):
 
 ```
 @review-my-code-bot please review this PR
+@review-my-code-bot can you review this?
+@review-my-code-bot check this code
+@review-my-code-bot ready for review
 ```
 
-This bypasses the normal "Ready for Review" trigger and runs the full 3-pass
-review process even on draft PRs, useful for getting early feedback before
-marking a PR as ready.
+This bypasses the normal "Ready for Review" trigger and runs the complete review
+process, useful for getting early feedback on draft PRs.
+
+#### Ask Questions
+
+Get answers about the codebase:
+
+```
+@review-my-code-bot Why is the UserService needed in this component?
+@review-my-code-bot How does authentication work here?
+@review-my-code-bot What does this function do?
+```
+
+The bot analyzes the codebase and provides detailed answers with file
+references.
 
 ### Developer-Friendly Comments
 
@@ -311,10 +330,10 @@ jobs:
     injection_verification_model: 'openai/gpt-4o-mini'
 ```
 
-### With On-Demand Review Trigger
+### With Bot Mention Support
 
-Add `issue_comment` trigger to enable on-demand reviews via
-`@review-my-code-bot` mentions:
+Add `issue_comment` trigger to enable on-demand reviews and question answering
+via `@review-my-code-bot` mentions:
 
 ```yaml
 on:

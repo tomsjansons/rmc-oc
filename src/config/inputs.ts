@@ -130,6 +130,21 @@ export function parseInputs(): ReviewConfig {
   }
 }
 
+function detectReviewRequest(text: string): boolean {
+  const reviewKeywords = [
+    /\b(?:please\s+)?review(?:\s+this)?(?:\s+pr)?/i,
+    /\b(?:can|could)\s+you\s+review/i,
+    /\bdo\s+a\s+review/i,
+    /\brun\s+(?:a\s+)?review/i,
+    /\bcheck\s+(?:this\s+)?(?:pr|code|changes)/i,
+    /\blgtm\?/i,
+    /\bready\s+for\s+review/i,
+    /\btake\s+a\s+look/i
+  ]
+
+  return reviewKeywords.some((pattern) => pattern.test(text))
+}
+
 function detectExecutionMode(context: typeof github.context): {
   mode: ExecutionMode
   prNumber: number
@@ -195,12 +210,24 @@ function detectExecutionMode(context: typeof github.context): {
     const botMention = '@review-my-code-bot'
 
     if (commentBody.includes(botMention)) {
-      const question = commentBody.replace(botMention, '').trim()
+      const textAfterMention = commentBody.replace(botMention, '').trim()
 
-      if (!question) {
+      if (!textAfterMention) {
         throw new Error(
-          `Please provide a question after ${botMention}. Example: "${botMention} Why is this function needed?"`
+          `Please provide instructions after ${botMention}. Examples:\n- "${botMention} please review this PR"\n- "${botMention} Why is this function needed?"`
         )
+      }
+
+      const isReviewRequest = detectReviewRequest(textAfterMention)
+
+      if (isReviewRequest) {
+        core.info(`Review request detected via bot mention`)
+        core.info(`Requested by: ${comment?.user?.login || 'unknown'}`)
+
+        return {
+          mode: 'full-review',
+          prNumber: issue.number
+        }
       }
 
       let fileContext: QuestionContext['fileContext'] | undefined
@@ -212,7 +239,7 @@ function detectExecutionMode(context: typeof github.context): {
         }
       }
 
-      core.info(`Question detected: "${question}"`)
+      core.info(`Question detected: "${textAfterMention}"`)
       core.info(`Asked by: ${comment?.user?.login || 'unknown'}`)
 
       return {
@@ -220,7 +247,7 @@ function detectExecutionMode(context: typeof github.context): {
         prNumber: issue.number,
         questionContext: {
           commentId: String(comment?.id || ''),
-          question,
+          question: textAfterMention,
           author: comment?.user?.login || 'unknown',
           fileContext
         }

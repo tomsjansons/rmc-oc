@@ -507,8 +507,9 @@ with:
 
 - **Triggering:** Runs on:
   - "Ready for Review" or new pushes to active PRs
-  - When a developer mentions `@review-my-code-bot` in a comment (triggers
-    review even on draft PRs)
+  - When a developer mentions `@review-my-code-bot` in a comment:
+    - **Review Request**: Detects review keywords (e.g., "please review", "check this code", "ready for review") and triggers full 3-pass review (works on draft PRs)
+    - **Question Answering**: If not a review request, treats the text as a question and analyzes the codebase to provide an answer
 - **Isolation:** OpenCode runs on the runner but is abstracted for future
   containerization.
 - **Memory:** State is preserved in GitHub PR comments via `rmcoc` blocks,

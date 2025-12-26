@@ -52,6 +52,8 @@ Response:`
         temperature: 0
       })
 
+      core.info(`LLM classification response: "${response}"`)
+
       if (!response) {
         core.warning(
           'LLM returned null for intent classification, falling back to regex'
@@ -60,6 +62,7 @@ Response:`
       }
 
       const normalized = response.toLowerCase().trim()
+      core.debug(`Normalized response: "${normalized}"`)
 
       if (
         normalized.includes('review-request') ||
@@ -87,6 +90,8 @@ Response:`
   }
 
   private fallbackClassification(text: string): BotMentionIntent {
+    core.info('Using fallback regex classification')
+
     const reviewKeywords = [
       /\b(?:please\s+)?review(?:\s+this)?(?:\s+pr)?/i,
       /\b(?:can|could)\s+you\s+review/i,
@@ -99,6 +104,8 @@ Response:`
     ]
 
     const isReviewRequest = reviewKeywords.some((pattern) => pattern.test(text))
-    return isReviewRequest ? 'review-request' : 'question'
+    const result = isReviewRequest ? 'review-request' : 'question'
+    core.info(`Fallback classification result: ${result}`)
+    return result
   }
 }

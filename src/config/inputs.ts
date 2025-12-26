@@ -216,6 +216,7 @@ async function detectExecutionMode(
       }
 
       const intent = await intentClassifier.classifyBotMention(textAfterMention)
+      core.info(`Intent classified as: ${intent}`)
 
       if (intent === 'review-request') {
         core.info(`Review request detected via bot mention`)

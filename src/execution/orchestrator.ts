@@ -3,7 +3,7 @@ import { join } from 'node:path'
 
 import type { GitHubAPI } from '../github/api.js'
 import type {
-  ReviewState,
+  ProcessState,
   ReviewThread,
   StateManager
 } from '../state/manager.js'
@@ -34,7 +34,7 @@ type ReviewPhase =
 export class ReviewExecutor {
   private injectionDetector: PromptInjectionDetector
   private passResults: PassResult[] = []
-  private reviewState: ReviewState | null = null
+  private processState: ProcessState | null = null
   private currentSessionId: string | null = null
   private currentPhase: ReviewPhase = 'idle'
 
@@ -73,12 +73,12 @@ export class ReviewExecutor {
             this.passResults = []
           }
 
-          this.reviewState = await this.stateManager.getOrCreateState()
+          this.processState = await this.stateManager.getOrCreateState()
           logger.info(
-            `Loaded review state with ${this.reviewState.threads.length} existing threads`
+            `Loaded review state with ${this.processState.threads.length} existing threads`
           )
 
-          const hasExistingIssues = this.reviewState.threads.some(
+          const hasExistingIssues = this.processState.threads.some(
             (t) => t.status === 'PENDING' || t.status === 'DISPUTED'
           )
 
@@ -155,7 +155,7 @@ export class ReviewExecutor {
 
   private async executeFixVerification(): Promise<void> {
     await logger.group('Fix Verification', async () => {
-      if (!this.reviewState) {
+      if (!this.processState) {
         throw new OrchestratorError('Review state not loaded')
       }
 
@@ -167,7 +167,7 @@ export class ReviewExecutor {
       const prompt = REVIEW_PROMPTS.FIX_VERIFICATION(previousIssues, newCommits)
 
       logger.info(
-        `Verifying ${this.reviewState.threads.filter((t) => t.status !== 'RESOLVED').length} unresolved issues`
+        `Verifying ${this.processState.threads.filter((t) => t.status !== 'RESOLVED').length} unresolved issues`
       )
 
       await this.sendPromptToOpenCode(prompt)
@@ -427,7 +427,7 @@ export class ReviewExecutor {
       this.passResults.push(result)
     }
 
-    if (this.reviewState) {
+    if (this.processState) {
       this.stateManager.recordPassCompletion(result).catch((error) => {
         logger.warning(`Failed to record pass completion: ${error}`)
       })
@@ -476,18 +476,18 @@ export class ReviewExecutor {
   }
 
   private formatPreviousIssues(): string {
-    if (!this.reviewState) {
+    if (!this.processState) {
       return 'No previous issues'
     }
 
-    const pendingCount = this.reviewState.threads.filter(
+    const pendingCount = this.processState.threads.filter(
       (t) => t.status === 'PENDING'
     ).length
-    const disputedCount = this.reviewState.threads.filter(
+    const disputedCount = this.processState.threads.filter(
       (t) => t.status === 'DISPUTED'
     ).length
 
-    const issueList = this.reviewState.threads
+    const issueList = this.processState.threads
       .filter((t) => t.status !== 'RESOLVED')
       .map((thread) => {
         return `- **${thread.file}:${thread.line}** [${thread.status}] (score: ${thread.score})
@@ -503,7 +503,7 @@ ${issueList}`
   }
 
   private async getNewCommitsSummary(): Promise<string> {
-    if (!this.reviewState) {
+    if (!this.processState) {
       return 'No commit history available'
     }
 
@@ -511,7 +511,7 @@ ${issueList}`
       const files = await this.github.getPRFiles()
 
       return `New commits since last review:
-- Last reviewed commit: ${this.reviewState.lastCommitSha.substring(0, 7)}
+- Last reviewed commit: ${this.processState.lastCommitSha.substring(0, 7)}
 - Current HEAD: New changes detected
 - Files changed: ${files.length}
 - Changed files: ${files.join(', ')}
@@ -526,13 +526,13 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
       )
 
       return `New commits since last review:
-- Last reviewed commit: ${this.reviewState.lastCommitSha.substring(0, 7)}
+- Last reviewed commit: ${this.processState.lastCommitSha.substring(0, 7)}
 - Unable to fetch file list - use OpenCode tools to explore`
     }
   }
 
   private buildReviewOutput(): ReviewOutput {
-    if (!this.reviewState) {
+    if (!this.processState) {
       return {
         status: 'failed',
         issuesFound: 0,
@@ -540,7 +540,7 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
       }
     }
 
-    const activeThreads = this.reviewState.threads.filter(
+    const activeThreads = this.processState.threads.filter(
       (t) => t.status !== 'RESOLVED'
     )
 
@@ -592,8 +592,8 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
   ): Promise<void> {
     await this.stateManager.updateThreadStatus(threadId, status)
 
-    if (this.reviewState) {
-      const thread = this.reviewState.threads.find((t) => t.id === threadId)
+    if (this.processState) {
+      const thread = this.processState.threads.find((t) => t.id === threadId)
       if (thread) {
         thread.status = status
       }
@@ -603,20 +603,20 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
   async addThread(thread: ReviewThread): Promise<void> {
     await this.stateManager.addThread(thread)
 
-    if (this.reviewState) {
-      const existingIndex = this.reviewState.threads.findIndex(
+    if (this.processState) {
+      const existingIndex = this.processState.threads.findIndex(
         (t) => t.id === thread.id
       )
       if (existingIndex >= 0) {
-        this.reviewState.threads[existingIndex] = thread
+        this.processState.threads[existingIndex] = thread
       } else {
-        this.reviewState.threads.push(thread)
+        this.processState.threads.push(thread)
       }
     }
   }
 
-  getState(): ReviewState | null {
-    return this.reviewState
+  getState(): ProcessState | null {
+    return this.processState
   }
 
   getConfig(): ReviewConfig {
@@ -624,21 +624,21 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
   }
 
   async getThreadsRequiringVerification(): Promise<ReviewThread[]> {
-    if (!this.reviewState) {
+    if (!this.processState) {
       return []
     }
 
-    return this.reviewState.threads.filter(
+    return this.processState.threads.filter(
       (t) => t.status === 'PENDING' || t.status === 'DISPUTED'
     )
   }
 
   async getResolvedThreadsCount(): Promise<number> {
-    if (!this.reviewState) {
+    if (!this.processState) {
       return 0
     }
 
-    return this.reviewState.threads.filter((t) => t.status === 'RESOLVED')
+    return this.processState.threads.filter((t) => t.status === 'RESOLVED')
       .length
   }
 

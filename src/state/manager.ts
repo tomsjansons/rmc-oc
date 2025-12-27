@@ -32,7 +32,13 @@ export type ReviewThread = {
   escalated_at?: string
 }
 
-export type ReviewState = {
+/**
+ * The main state object for tracking all PR review activity.
+ *
+ * This type was renamed from ReviewState to ProcessState to better reflect
+ * that it tracks all task types (reviews, disputes, questions), not just reviews.
+ */
+export type ProcessState = {
   version: number
   prNumber: number
   lastCommitSha: string
@@ -44,6 +50,11 @@ export type ReviewState = {
   }
 }
 
+/**
+ * @deprecated Use ProcessState instead. This alias exists for backward compatibility.
+ */
+export type ReviewState = ProcessState
+
 type AutoReviewTrigger = {
   action: 'opened' | 'synchronize' | 'ready_for_review'
   sha: string
@@ -54,7 +65,7 @@ type AutoReviewTrigger = {
 
 export class StateManager {
   private sentimentCache: Map<string, boolean>
-  private currentState: ReviewState | null = null
+  private currentState: ProcessState | null = null
   private autoReviewTrigger: AutoReviewTrigger | null = null
   private autoReviewCommentId: number | null = null
 
@@ -66,13 +77,13 @@ export class StateManager {
     this.sentimentCache = new Map()
   }
 
-  updateState(state: ReviewState): void {
+  updateState(state: ProcessState): void {
     state.version = STATE_SCHEMA_VERSION
     state.metadata.updated_at = new Date().toISOString()
     this.currentState = state
   }
 
-  async rebuildStateFromComments(): Promise<ReviewState> {
+  async rebuildStateFromComments(): Promise<ProcessState> {
     core.info('Rebuilding state from GitHub PR comments')
 
     try {
@@ -151,7 +162,7 @@ export class StateManager {
         })
       }
 
-      const state: ReviewState = {
+      const state: ProcessState = {
         version: STATE_SCHEMA_VERSION,
         prNumber,
         lastCommitSha,
@@ -364,7 +375,7 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
     return false
   }
 
-  async getOrCreateState(): Promise<ReviewState> {
+  async getOrCreateState(): Promise<ProcessState> {
     if (this.currentState) {
       return this.currentState
     }

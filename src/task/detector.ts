@@ -93,7 +93,7 @@ export class TaskDetector {
     // Get the real state from StateManager - this contains review threads with disputes
     const reviewState = await this.stateManager.getOrCreateState()
 
-    // Convert ReviewState threads to the format expected by detectPendingDisputes
+    // Convert ProcessState threads to the format expected by detectPendingDisputes
     const reviewThreads = reviewState.threads.map((thread) => ({
       id: thread.id,
       file: thread.file,

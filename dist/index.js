@@ -40590,7 +40590,7 @@ class ReviewExecutor {
     workspaceRoot;
     injectionDetector;
     passResults = [];
-    reviewState = null;
+    processState = null;
     currentSessionId = null;
     currentPhase = 'idle';
     constructor(opencode, stateManager, github, config, workspaceRoot) {
@@ -40613,9 +40613,9 @@ class ReviewExecutor {
                         await this.resetSession();
                         this.passResults = [];
                     }
-                    this.reviewState = await this.stateManager.getOrCreateState();
-                    logger.info(`Loaded review state with ${this.reviewState.threads.length} existing threads`);
-                    const hasExistingIssues = this.reviewState.threads.some((t) => t.status === 'PENDING' || t.status === 'DISPUTED');
+                    this.processState = await this.stateManager.getOrCreateState();
+                    logger.info(`Loaded review state with ${this.processState.threads.length} existing threads`);
+                    const hasExistingIssues = this.processState.threads.some((t) => t.status === 'PENDING' || t.status === 'DISPUTED');
                     if (hasExistingIssues) {
                         logger.info('Found existing unresolved issues - running fix verification and dispute resolution');
                         await this.executeDisputeResolution();
@@ -40661,14 +40661,14 @@ class ReviewExecutor {
     }
     async executeFixVerification() {
         await logger.group('Fix Verification', async () => {
-            if (!this.reviewState) {
+            if (!this.processState) {
                 throw new OrchestratorError('Review state not loaded');
             }
             this.currentPhase = 'fix-verification';
             const previousIssues = this.formatPreviousIssues();
             const newCommits = await this.getNewCommitsSummary();
             const prompt = REVIEW_PROMPTS.FIX_VERIFICATION(previousIssues, newCommits);
-            logger.info(`Verifying ${this.reviewState.threads.filter((t) => t.status !== 'RESOLVED').length} unresolved issues`);
+            logger.info(`Verifying ${this.processState.threads.filter((t) => t.status !== 'RESOLVED').length} unresolved issues`);
             await this.sendPromptToOpenCode(prompt);
             this.currentPhase = 'idle';
         });
@@ -40814,7 +40814,7 @@ class ReviewExecutor {
         else {
             this.passResults.push(result);
         }
-        if (this.reviewState) {
+        if (this.processState) {
             this.stateManager.recordPassCompletion(result).catch((error) => {
                 logger.warning(`Failed to record pass completion: ${error}`);
             });
@@ -40852,12 +40852,12 @@ class ReviewExecutor {
         }
     }
     formatPreviousIssues() {
-        if (!this.reviewState) {
+        if (!this.processState) {
             return 'No previous issues';
         }
-        const pendingCount = this.reviewState.threads.filter((t) => t.status === 'PENDING').length;
-        const disputedCount = this.reviewState.threads.filter((t) => t.status === 'DISPUTED').length;
-        const issueList = this.reviewState.threads
+        const pendingCount = this.processState.threads.filter((t) => t.status === 'PENDING').length;
+        const disputedCount = this.processState.threads.filter((t) => t.status === 'DISPUTED').length;
+        const issueList = this.processState.threads
             .filter((t) => t.status !== 'RESOLVED')
             .map((thread) => {
             return `- **${thread.file}:${thread.line}** [${thread.status}] (score: ${thread.score})
@@ -40871,13 +40871,13 @@ class ReviewExecutor {
 ${issueList}`;
     }
     async getNewCommitsSummary() {
-        if (!this.reviewState) {
+        if (!this.processState) {
             return 'No commit history available';
         }
         try {
             const files = await this.github.getPRFiles();
             return `New commits since last review:
-- Last reviewed commit: ${this.reviewState.lastCommitSha.substring(0, 7)}
+- Last reviewed commit: ${this.processState.lastCommitSha.substring(0, 7)}
 - Current HEAD: New changes detected
 - Files changed: ${files.length}
 - Changed files: ${files.join(', ')}
@@ -40890,19 +40890,19 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
         catch (error) {
             logger.warning(`Failed to fetch new commits summary: ${error instanceof Error ? error.message : String(error)}`);
             return `New commits since last review:
-- Last reviewed commit: ${this.reviewState.lastCommitSha.substring(0, 7)}
+- Last reviewed commit: ${this.processState.lastCommitSha.substring(0, 7)}
 - Unable to fetch file list - use OpenCode tools to explore`;
         }
     }
     buildReviewOutput() {
-        if (!this.reviewState) {
+        if (!this.processState) {
             return {
                 status: 'failed',
                 issuesFound: 0,
                 blockingIssues: 0
             };
         }
-        const activeThreads = this.reviewState.threads.filter((t) => t.status !== 'RESOLVED');
+        const activeThreads = this.processState.threads.filter((t) => t.status !== 'RESOLVED');
         const blockingCount = activeThreads.filter((t) => t.score >= this.config.scoring.blockingThreshold).length;
         const hasBlocking = blockingCount > 0 || this.passResults.some((p) => p.hasBlockingIssues);
         return {
@@ -40927,8 +40927,8 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
     }
     async updateThreadStatus(threadId, status) {
         await this.stateManager.updateThreadStatus(threadId, status);
-        if (this.reviewState) {
-            const thread = this.reviewState.threads.find((t) => t.id === threadId);
+        if (this.processState) {
+            const thread = this.processState.threads.find((t) => t.id === threadId);
             if (thread) {
                 thread.status = status;
             }
@@ -40936,33 +40936,33 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
     }
     async addThread(thread) {
         await this.stateManager.addThread(thread);
-        if (this.reviewState) {
-            const existingIndex = this.reviewState.threads.findIndex((t) => t.id === thread.id);
+        if (this.processState) {
+            const existingIndex = this.processState.threads.findIndex((t) => t.id === thread.id);
             if (existingIndex >= 0) {
-                this.reviewState.threads[existingIndex] = thread;
+                this.processState.threads[existingIndex] = thread;
             }
             else {
-                this.reviewState.threads.push(thread);
+                this.processState.threads.push(thread);
             }
         }
     }
     getState() {
-        return this.reviewState;
+        return this.processState;
     }
     getConfig() {
         return this.config;
     }
     async getThreadsRequiringVerification() {
-        if (!this.reviewState) {
+        if (!this.processState) {
             return [];
         }
-        return this.reviewState.threads.filter((t) => t.status === 'PENDING' || t.status === 'DISPUTED');
+        return this.processState.threads.filter((t) => t.status === 'PENDING' || t.status === 'DISPUTED');
     }
     async getResolvedThreadsCount() {
-        if (!this.reviewState) {
+        if (!this.processState) {
             return 0;
         }
-        return this.reviewState.threads.filter((t) => t.status === 'RESOLVED')
+        return this.processState.threads.filter((t) => t.status === 'RESOLVED')
             .length;
     }
     async executeQuestionAnswering(questionContext, conversationHistory) {
@@ -42081,7 +42081,7 @@ class TaskDetector {
         logger.info('Detecting all pending tasks...');
         // Get the real state from StateManager - this contains review threads with disputes
         const reviewState = await this.stateManager.getOrCreateState();
-        // Convert ReviewState threads to the format expected by detectPendingDisputes
+        // Convert ProcessState threads to the format expected by detectPendingDisputes
         const reviewThreads = reviewState.threads.map((thread) => ({
             id: thread.id,
             file: thread.file,

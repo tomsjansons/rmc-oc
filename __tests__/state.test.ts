@@ -38,7 +38,7 @@ jest.unstable_mockModule('@actions/core', () => ({
 
 const { StateManager, StateError } = await import('../src/state/manager.js')
 import type { ReviewConfig } from '../src/execution/types.js'
-import type { ReviewState, ReviewThread } from '../src/state/manager.js'
+import type { ProcessState, ReviewThread } from '../src/state/manager.js'
 import type { LLMClient } from '../src/opencode/llm-client.js'
 
 describe('StateManager', () => {
@@ -92,7 +92,7 @@ describe('StateManager', () => {
 
   describe('updateState', () => {
     it('should update metadata timestamp', () => {
-      const state: ReviewState = {
+      const state: ProcessState = {
         version: 1,
         prNumber: 123,
         lastCommitSha: 'abc123',
@@ -115,7 +115,7 @@ describe('StateManager', () => {
 
   describe('getOrCreateState', () => {
     it('should return cached state if available', async () => {
-      const state: ReviewState = {
+      const state: ProcessState = {
         version: 1,
         prNumber: 123,
         lastCommitSha: 'abc123',

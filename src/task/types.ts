@@ -24,6 +24,12 @@ export type QuestionContext = {
     path: string
     line?: number
   }
+  /**
+   * Whether this question requires fresh analysis (e.g., "summarize PR").
+   * When true, the agent should analyze the current diff directly
+   * without relying on conversation history.
+   */
+  requiresFreshAnalysis?: boolean
 }
 
 /**

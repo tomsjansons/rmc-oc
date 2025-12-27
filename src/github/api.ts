@@ -63,6 +63,21 @@ export class GitHubAPI {
     }
   }
 
+  async getPRContext(): Promise<{ files: string[] }> {
+    try {
+      logger.debug('Fetching PR context for question answering')
+
+      const files = await this.getPRFiles()
+
+      return { files }
+    } catch (error) {
+      logger.warning(
+        `Failed to fetch PR context: ${error instanceof Error ? error.message : String(error)}`
+      )
+      return { files: [] }
+    }
+  }
+
   async postReviewComment(args: PostReviewCommentArgs): Promise<string> {
     try {
       logger.debug(
@@ -397,21 +412,6 @@ ${reviewerTags} - Please review this dispute and make a final decision.
       throw new GitHubAPIError(
         `Failed to reply to issue comment: ${error instanceof Error ? error.message : String(error)}`
       )
-    }
-  }
-
-  async getPRContext(): Promise<{ files: string[] }> {
-    try {
-      logger.debug('Fetching PR context for question answering')
-
-      const files = await this.getPRFiles()
-
-      return { files }
-    } catch (error) {
-      logger.warning(
-        `Failed to fetch PR context: ${error instanceof Error ? error.message : String(error)}`
-      )
-      return { files: [] }
     }
   }
 

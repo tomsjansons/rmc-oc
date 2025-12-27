@@ -683,9 +683,18 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
         REVIEW_PROMPTS.QUESTION_ANSWERING_SYSTEM
       )
 
-      // Build prompt with conversation history if available
+      // Build prompt based on question type
       let prompt: string
-      if (conversationHistory && conversationHistory.length > 0) {
+      if (context.requiresFreshAnalysis) {
+        // For summary/overview questions, use fresh analysis prompt
+        // that instructs the agent to run git diff and examine actual changes
+        logger.info('Using fresh analysis prompt (summary-type question)')
+        prompt = REVIEW_PROMPTS.ANSWER_FRESH_ANALYSIS_QUESTION(
+          sanitizedQuestion,
+          context.author,
+          prContext.files.length > 0 ? prContext : undefined
+        )
+      } else if (conversationHistory && conversationHistory.length > 0) {
         prompt = REVIEW_PROMPTS.ANSWER_FOLLOWUP_QUESTION(
           sanitizedQuestion,
           context.author,

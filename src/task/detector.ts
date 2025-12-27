@@ -58,6 +58,31 @@ function hashQuestionText(text: string): string {
 }
 
 /**
+ * Detect if a question requires fresh analysis without conversation history.
+ *
+ * Questions like "summarize the PR", "what changed", "overview of changes"
+ * should NOT include prior conversation history as it may contain stale
+ * summaries from previous commits that would pollute the response.
+ */
+function requiresFreshAnalysis(question: string): boolean {
+  const lowerQuestion = question.toLowerCase()
+
+  const freshAnalysisPatterns = [
+    /\bsummar(y|ize|ise)\b/,
+    /\boverview\b/,
+    /\bwhat('s| is| are)?\s+(changed|new|different|modified)\b/,
+    /\blist\s+(the\s+)?changes\b/,
+    /\bdescribe\s+(the\s+)?(changes|pr|pull\s*request)\b/,
+    /\bwhat\s+does\s+this\s+pr\s+do\b/,
+    /\bexplain\s+(the\s+)?(changes|pr|pull\s*request)\b/,
+    /\bchangelog\b/,
+    /\brelease\s+notes\b/
+  ]
+
+  return freshAnalysisPatterns.some((pattern) => pattern.test(lowerQuestion))
+}
+
+/**
  * Detects all pending tasks across a PR
  */
 export class TaskDetector {
@@ -303,11 +328,21 @@ export class TaskDetector {
         await this.intentClassifier.classifyBotMention(textAfterMention)
 
       if (intent === 'question') {
-        // Get conversation history for follow-ups
-        const conversationHistory = await this.getConversationHistory(
-          commentId,
-          allComments
-        )
+        // For summary/overview questions, don't include conversation history
+        // as it may contain stale summaries from previous commits
+        const needsFreshAnalysis = requiresFreshAnalysis(textAfterMention)
+
+        let conversationHistory: ConversationMessage[] = []
+        if (!needsFreshAnalysis) {
+          conversationHistory = this.getConversationHistory(
+            commentId,
+            allComments
+          )
+        } else {
+          logger.info(
+            `Question "${textAfterMention.substring(0, 50)}..." requires fresh analysis, skipping conversation history`
+          )
+        }
 
         questions.push({
           type: 'question-answering',
@@ -317,7 +352,8 @@ export class TaskDetector {
             question: textAfterMention,
             questionHash: hashQuestionText(textAfterMention),
             author: comment.user?.login || 'unknown',
-            fileContext: undefined // Issue comments don't have file context
+            fileContext: undefined, // Issue comments don't have file context
+            requiresFreshAnalysis: needsFreshAnalysis
           },
           conversationHistory,
           isManuallyTriggered: false,

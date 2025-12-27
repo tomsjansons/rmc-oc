@@ -21,6 +21,12 @@ function getOpenCodeCLICommand(): { command: string; args: string[] } {
 
 type ServerStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
 
+type BashPermission =
+  | 'allow'
+  | 'ask'
+  | 'deny'
+  | Record<string, 'allow' | 'ask' | 'deny'>
+
 type OpenCodeConfig = {
   $schema: string
   model: string
@@ -38,7 +44,7 @@ type OpenCodeConfig = {
   }
   permission: {
     edit: 'deny'
-    bash: 'deny'
+    bash: BashPermission
     external_directory: 'deny'
   }
 }
@@ -229,12 +235,27 @@ export class OpenCodeServer {
       },
       tools: {
         write: false,
-        bash: false,
+        bash: true,
         webfetch: this.config.opencode.enableWeb
       },
       permission: {
         edit: 'deny',
-        bash: 'deny',
+        bash: {
+          // Deny all commands by default
+          '*': 'deny',
+          // Allow read-only git commands for code analysis
+          'git status': 'allow',
+          'git diff *': 'allow',
+          'git log *': 'allow',
+          'git show *': 'allow',
+          'git branch': 'allow',
+          'git branch -a': 'allow',
+          'git branch -r': 'allow',
+          'git rev-parse *': 'allow',
+          'git merge-base *': 'allow',
+          'git ls-files *': 'allow',
+          'git blame *': 'allow'
+        },
         external_directory: 'deny'
       }
     }

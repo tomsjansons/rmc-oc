@@ -48,7 +48,7 @@ Response:`
       )
 
       const response = await this.llmClient.complete(prompt, {
-        maxTokens: 10,
+        maxTokens: 20,
         temperature: 0
       })
 

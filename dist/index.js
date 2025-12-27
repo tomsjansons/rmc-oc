@@ -31370,7 +31370,7 @@ Response:`;
         try {
             coreExports.debug(`Classifying bot mention intent: "${text.substring(0, 50)}..."`);
             const response = await this.llmClient.complete(prompt, {
-                maxTokens: 10,
+                maxTokens: 20,
                 temperature: 0
             });
             coreExports.info(`LLM classification response: "${response}"`);

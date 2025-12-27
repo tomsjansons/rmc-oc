@@ -50,15 +50,19 @@ export async function run(): Promise<void> {
     })
     const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd()
 
+    const stateManager = new StateManager(
+      config,
+      llmClient,
+      github.getOctokit()
+    )
+
     reviewOrchestrator = new ReviewOrchestrator(
       opencode,
-      llmClient,
+      stateManager,
       github,
       config,
       workspaceRoot
     )
-
-    const stateManager = new StateManager(config, llmClient)
 
     const executionOrchestrator = new ExecutionOrchestrator(
       config,

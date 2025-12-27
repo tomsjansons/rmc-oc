@@ -31,6 +31,10 @@ export class GitHubAPI {
     this.prNumber = config.github.prNumber
   }
 
+  getOctokit(): Octokit {
+    return this.octokit
+  }
+
   async getPRFiles(): Promise<string[]> {
     try {
       logger.debug(

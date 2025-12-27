@@ -44,18 +44,25 @@ export type ReviewState = {
   }
 }
 
+type AutoReviewTrigger = {
+  action: 'opened' | 'synchronize' | 'ready_for_review'
+  sha: string
+  triggeredAt: string
+  cancelled: boolean
+  completedAt?: string
+}
+
 export class StateManager {
-  private octokit: Octokit
   private sentimentCache: Map<string, boolean>
   private currentState: ReviewState | null = null
+  private autoReviewTrigger: AutoReviewTrigger | null = null
+  private autoReviewCommentId: number | null = null
 
   constructor(
     private config: ReviewConfig,
-    private llmClient: LLMClient
+    private llmClient: LLMClient,
+    private octokit: Octokit
   ) {
-    this.octokit = new Octokit({
-      auth: config.github.token
-    })
     this.sentimentCache = new Map()
   }
 
@@ -869,6 +876,7 @@ Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`
   /**
    * Record that an auto review was triggered by a PR event.
    * This is used to preserve merge gate behavior when reviews are cancelled.
+   * Persists to a hidden PR comment so it survives workflow restarts.
    */
   async recordAutoReviewTrigger(
     action: 'opened' | 'synchronize' | 'ready_for_review',
@@ -876,12 +884,14 @@ Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`
   ): Promise<void> {
     core.info(`Recording auto review trigger: ${action} for SHA ${sha}`)
 
-    // Store in state metadata (persisted via comments in future)
-    // For now, we store in memory - the state will be rebuilt on next run
-    if (this.currentState) {
-      // Note: currentState is ReviewState, not ProcessState
-      // We need to extend this properly, but for now just log
+    this.autoReviewTrigger = {
+      action,
+      sha,
+      triggeredAt: new Date().toISOString(),
+      cancelled: false
     }
+
+    await this.persistAutoReviewTrigger()
   }
 
   /**
@@ -891,11 +901,41 @@ Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`
   async getPendingAutoReviewTrigger(
     currentSha: string
   ): Promise<{ action: 'opened' | 'synchronize' | 'ready_for_review' } | null> {
-    // In a full implementation, this would check persisted state
-    // For now, return null - auto reviews won't be detected as "cancelled"
-    // The merge gate will still work for fresh auto reviews via config.execution.isManuallyTriggered
     core.debug(`Checking for pending auto review trigger for SHA ${currentSha}`)
-    return null
+
+    await this.loadAutoReviewTrigger()
+
+    if (!this.autoReviewTrigger) {
+      return null
+    }
+
+    if (this.autoReviewTrigger.sha !== currentSha) {
+      core.debug(
+        `Auto review trigger SHA ${this.autoReviewTrigger.sha} doesn't match current SHA ${currentSha}`
+      )
+      return null
+    }
+
+    if (this.autoReviewTrigger.completedAt) {
+      core.debug('Auto review trigger already completed')
+      return null
+    }
+
+    core.info(
+      `Found pending auto review trigger: ${this.autoReviewTrigger.action} for SHA ${currentSha}`
+    )
+    return { action: this.autoReviewTrigger.action }
+  }
+
+  /**
+   * Mark the auto review trigger as cancelled (workflow was interrupted).
+   */
+  async markAutoReviewCancelled(): Promise<void> {
+    if (this.autoReviewTrigger) {
+      this.autoReviewTrigger.cancelled = true
+      await this.persistAutoReviewTrigger()
+      core.info('Marked auto review as cancelled')
+    }
   }
 
   /**
@@ -903,6 +943,11 @@ Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`
    */
   async markAutoReviewCompleted(): Promise<void> {
     core.info('Marking auto review as completed')
+
+    if (this.autoReviewTrigger) {
+      this.autoReviewTrigger.completedAt = new Date().toISOString()
+      await this.persistAutoReviewTrigger()
+    }
   }
 
   /**
@@ -910,9 +955,100 @@ Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`
    * This is used to determine if blocking issues should fail the action.
    */
   wasAutoReviewTriggered(): boolean {
-    // This is determined by config.execution.isManuallyTriggered
-    // The StateManager doesn't need to track this - main.ts already has this info
-    return false
+    return (
+      this.autoReviewTrigger !== null && !this.autoReviewTrigger.completedAt
+    )
+  }
+
+  /**
+   * Persist auto review trigger to a hidden PR comment.
+   */
+  private async persistAutoReviewTrigger(): Promise<void> {
+    const { owner, repo, prNumber } = this.config.github
+
+    const rmcocData = {
+      type: 'auto-review-trigger',
+      ...this.autoReviewTrigger
+    }
+
+    const body = `<!-- rmcoc-auto-review-trigger -->\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+
+    try {
+      if (this.autoReviewCommentId) {
+        await this.octokit.issues.updateComment({
+          owner,
+          repo,
+          comment_id: this.autoReviewCommentId,
+          body
+        })
+      } else {
+        const response = await this.octokit.issues.createComment({
+          owner,
+          repo,
+          issue_number: prNumber,
+          body
+        })
+        this.autoReviewCommentId = response.data.id
+      }
+    } catch (error) {
+      core.warning(
+        `Failed to persist auto review trigger: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  /**
+   * Load auto review trigger from PR comments.
+   */
+  private async loadAutoReviewTrigger(): Promise<void> {
+    if (this.autoReviewTrigger) {
+      return
+    }
+
+    const { owner, repo, prNumber } = this.config.github
+
+    try {
+      const comments = await this.octokit.paginate(
+        this.octokit.issues.listComments,
+        {
+          owner,
+          repo,
+          issue_number: prNumber,
+          per_page: 100
+        }
+      )
+
+      for (const comment of comments) {
+        if (comment.body?.includes('<!-- rmcoc-auto-review-trigger -->')) {
+          const match = comment.body.match(/```rmcoc\s*\n([\s\S]*?)\n```/)
+          if (match?.[1]) {
+            try {
+              const parsed = JSON.parse(match[1])
+              if (parsed.type === 'auto-review-trigger') {
+                this.autoReviewTrigger = {
+                  action: parsed.action,
+                  sha: parsed.sha,
+                  triggeredAt: parsed.triggeredAt,
+                  cancelled: parsed.cancelled || false,
+                  completedAt: parsed.completedAt
+                }
+                this.autoReviewCommentId = comment.id
+                core.debug(
+                  `Loaded auto review trigger from comment ${comment.id}`
+                )
+                return
+              }
+            } catch {
+              core.debug('Failed to parse auto review trigger comment')
+            }
+          }
+        }
+      }
+    } catch (error) {
+      core.warning(
+        `Failed to load auto review trigger: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
   }
 }
 

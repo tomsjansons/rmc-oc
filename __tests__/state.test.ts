@@ -16,7 +16,14 @@ const mockOctokit = {
   pulls: {
     get: jest.fn(),
     listReviewComments: jest.fn()
-  }
+  },
+  issues: {
+    getComment: jest.fn(),
+    updateComment: jest.fn(),
+    createComment: jest.fn(),
+    listComments: jest.fn()
+  },
+  paginate: jest.fn()
 }
 
 global.fetch = mockFetch as typeof global.fetch
@@ -25,10 +32,6 @@ jest.unstable_mockModule('@actions/core', () => ({
   info: mockInfo,
   warning: mockWarning,
   debug: mockDebug
-}))
-
-jest.unstable_mockModule('@octokit/rest', () => ({
-  Octokit: jest.fn(() => mockOctokit)
 }))
 
 const { StateManager, StateError } = await import('../src/state/manager.js')
@@ -65,7 +68,11 @@ describe('StateManager', () => {
       complete: jest.fn<(prompt: string) => Promise<string | null>>()
     }
 
-    stateManager = new StateManager(mockConfig, mockLLMClient)
+    stateManager = new StateManager(
+      mockConfig,
+      mockLLMClient,
+      mockOctokit as never
+    )
 
     mockInfo.mockClear()
     mockWarning.mockClear()

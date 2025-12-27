@@ -174,6 +174,10 @@ export const appRouter = router({
         await ctx.github.replyToComment(input.threadId, input.body)
 
         if (input.isConcession) {
+          await ctx.github.resolveThread(
+            input.threadId,
+            'Agent conceded to developer explanation'
+          )
           await ctx.orchestrator.updateThreadStatus(input.threadId, 'RESOLVED')
           logger.info(
             `Thread ${input.threadId} marked as RESOLVED (agent conceded)`

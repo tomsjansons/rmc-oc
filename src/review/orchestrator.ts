@@ -2,13 +2,13 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import type { GitHubAPI } from '../github/api.js'
-import {
-  type ReviewState,
-  type ReviewThread,
+import type {
+  ReviewState,
+  ReviewThread,
   StateManager
 } from '../state/manager.js'
 import type { OpenCodeClient } from '../opencode/client.js'
-import type { LLMClient } from '../opencode/llm-client.js'
+
 import { OrchestratorError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
 import {
@@ -16,15 +16,14 @@ import {
   createPromptInjectionDetector
 } from '../utils/prompt-injection-detector.js'
 import { REVIEW_PROMPTS, buildSecuritySensitivity } from './prompts.js'
-import type { ConversationMessage, QuestionContext } from '../task/types.js'
 import type {
+  ConversationMessage,
   DisputeContext,
-  PassResult,
-  ReviewConfig,
-  ReviewOutput
-} from './types.js'
+  QuestionContext
+} from '../task/types.js'
+import type { PassResult, ReviewConfig, ReviewOutput } from './types.js'
 
-type PassNumber = 1 | 2 | 3 | 4
+type PassNumber = 1 | 2 | 3
 
 type ReviewPhase =
   | 'idle'
@@ -33,7 +32,6 @@ type ReviewPhase =
   | 'multi-pass-review'
 
 export class ReviewOrchestrator {
-  private stateManager: StateManager
   private injectionDetector: PromptInjectionDetector
   private passResults: PassResult[] = []
   private reviewState: ReviewState | null = null
@@ -42,12 +40,11 @@ export class ReviewOrchestrator {
 
   constructor(
     private opencode: OpenCodeClient,
-    llmClient: LLMClient,
+    private stateManager: StateManager,
     private github: GitHubAPI,
     private config: ReviewConfig,
     private workspaceRoot: string
   ) {
-    this.stateManager = new StateManager(config, llmClient)
     this.injectionDetector = createPromptInjectionDetector(
       config.opencode.apiKey,
       config.security.injectionVerificationModel,
@@ -341,7 +338,7 @@ export class ReviewOrchestrator {
     passNumber: PassNumber,
     prompt: string
   ): Promise<void> {
-    await logger.group(`Pass ${passNumber} of 4`, async () => {
+    await logger.group(`Pass ${passNumber} of 3`, async () => {
       const startTime = Date.now()
 
       logger.info(`Starting pass ${passNumber}`)

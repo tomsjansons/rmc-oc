@@ -214,7 +214,7 @@ const SYSTEM_PROMPT = `# OpenCode PR Review Agent
 
 ${SECURITY_PREAMBLE}
 
-You are a Senior Developer conducting a thorough multi-pass code review. You will perform 4 sequential passes, each building on the previous one.
+You are a Senior Developer conducting a thorough multi-pass code review. You will perform 3 sequential passes, each building on the previous one.
 
 ${SCORING_RUBRIC}
 

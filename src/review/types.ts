@@ -1,26 +1,11 @@
+export type { QuestionContext, DisputeContext } from '../task/types.js'
+
 export type ExecutionMode =
   | 'full-review'
   | 'dispute-resolution'
   | 'question-answering'
 
-export type QuestionContext = {
-  commentId: string
-  question: string
-  author: string
-  fileContext?: {
-    path: string
-    line?: number
-  }
-}
-
-export type DisputeContext = {
-  threadId: string
-  replyCommentId: string
-  replyBody: string
-  replyAuthor: string
-  file: string
-  line?: number
-}
+import type { QuestionContext, DisputeContext } from '../task/types.js'
 
 export type ReviewConfig = {
   opencode: {
@@ -62,33 +47,6 @@ export type ReviewConfig = {
       enableEndComment: boolean
     }
   }
-}
-
-export type ThreadStatus = 'PENDING' | 'RESOLVED' | 'DISPUTED' | 'ESCALATED'
-
-export type ThreadComment = {
-  author: string
-  body: string
-  createdAt: string
-}
-
-export type ReviewThread = {
-  id: string
-  file: string
-  line: number
-  status: ThreadStatus
-  history: ThreadComment[]
-}
-
-export type IssueAssessment = {
-  finding: string
-  assessment: string
-  score: number
-}
-
-export type ReviewState = {
-  threads: ReviewThread[]
-  metadata: Record<string, unknown>
 }
 
 export type PassResult = {

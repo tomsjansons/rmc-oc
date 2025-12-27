@@ -31319,7 +31319,15 @@ class LLMClientImpl {
             if (choice?.error) {
                 throw new Error(`OpenRouter API error: ${choice.error.code} - ${choice.error.message}`);
             }
-            return choice?.message?.content?.trim() ?? null;
+            const content = choice?.message?.content?.trim() ?? null;
+            // Log if we got an empty or null response for debugging
+            if (!content) {
+                logger.warning(`LLM returned empty/null response. ` +
+                    `Finish reason: ${choice?.finish_reason ?? 'unknown'}, ` +
+                    `Usage: ${JSON.stringify(data.usage ?? {})}, ` +
+                    `Model: ${this.config.model}`);
+            }
+            return content;
         }
         catch (error) {
             logger.warning(`LLM completion failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -31370,12 +31378,13 @@ Response:`;
         try {
             coreExports.debug(`Classifying bot mention intent: "${text.substring(0, 50)}..."`);
             const response = await this.llmClient.complete(prompt, {
-                maxTokens: 20,
+                maxTokens: 50,
                 temperature: 0
             });
             coreExports.info(`LLM classification response: "${response}"`);
-            if (!response) {
-                coreExports.warning('LLM returned null for intent classification, falling back to regex');
+            // Handle null, undefined, or empty string
+            if (!response || response.trim() === '') {
+                coreExports.warning('LLM returned empty/null for intent classification, falling back to regex');
                 return this.fallbackClassification(text);
             }
             const normalized = response.toLowerCase().trim();
@@ -31399,12 +31408,35 @@ Response:`;
     }
     fallbackClassification(text) {
         coreExports.info('Using fallback regex classification');
+        // Question patterns - check these FIRST as they're more specific
+        const questionKeywords = [
+            /\bsummar(y|ize|ise)\b/i,
+            /\bexplain\b/i,
+            /\bdescribe\b/i,
+            /\bwhat('s|\s+is|\s+are|\s+does|\s+do)\b/i,
+            /\bwhy\b/i,
+            /\bhow\b/i,
+            /\bwhere\b/i,
+            /\bwhen\b/i,
+            /\bwhich\b/i,
+            /\bwho\b/i,
+            /\btell\s+me\b/i,
+            /\blist\s+(the\s+)?changes\b/i,
+            /\boverview\b/i,
+            /\bchangelog\b/i
+        ];
+        const isQuestion = questionKeywords.some((pattern) => pattern.test(text));
+        if (isQuestion) {
+            coreExports.info('Fallback classification result: question');
+            return 'question';
+        }
+        // Review request patterns
         const reviewKeywords = [
             /\b(?:please\s+)?review(?:\s+this)?(?:\s+pr)?/i,
             /\b(?:can|could)\s+you\s+review/i,
             /\bdo\s+a\s+review/i,
             /\brun\s+(?:a\s+)?review/i,
-            /\bcheck\s+(?:this\s+)?(?:the\s+)?(?:pr|code|changes)/i,
+            /\bcheck\s+(?:this\s+)?(?:the\s+)?(?:pr|code)\b/i, // Removed "changes" - too generic
             /\blgtm\?/i,
             /\bready\s+for\s+review/i,
             /\btake\s+a\s+look/i

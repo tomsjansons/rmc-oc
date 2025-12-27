@@ -1,12 +1,12 @@
 import * as core from '@actions/core'
 import { Octokit } from '@octokit/rest'
 
+import { BOT_USERS } from '../config/constants.js'
 import type { LLMClient } from '../opencode/llm-client.js'
-import type { PassResult, ReviewConfig } from '../review/types.js'
+import type { PassResult, ReviewConfig } from '../execution/types.js'
 import { sanitizeDelimiters } from '../utils/security.js'
 
 const STATE_SCHEMA_VERSION = 1
-const BOT_USERS = ['opencode-reviewer[bot]', 'github-actions[bot]']
 
 export type ReviewThread = {
   id: string
@@ -127,11 +127,7 @@ export class StateManager {
         const status = this.determineThreadStatus(replies)
 
         const developerReplies = replies
-          .filter(
-            (r) =>
-              r.user?.login !== 'opencode-reviewer[bot]' &&
-              r.user?.login !== 'github-actions[bot]'
-          )
+          .filter((r) => !BOT_USERS.includes(r.user?.login || ''))
           .map((r) => ({
             author: r.user?.login || 'unknown',
             body: r.body,
@@ -183,9 +179,7 @@ export class StateManager {
     replies: Array<{ body: string; user?: { login?: string } | null }>
   ): 'PENDING' | 'RESOLVED' | 'DISPUTED' | 'ESCALATED' {
     for (const reply of replies) {
-      const isBot =
-        reply.user?.login === 'opencode-reviewer[bot]' ||
-        reply.user?.login === 'github-actions[bot]'
+      const isBot = BOT_USERS.includes(reply.user?.login || '')
 
       if (!isBot) {
         continue
@@ -445,8 +439,7 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
         .filter(
           (comment) =>
             comment.in_reply_to_id === Number(threadId) &&
-            comment.user?.login !== 'opencode-reviewer[bot]' &&
-            comment.user?.login !== 'github-actions[bot]'
+            !BOT_USERS.includes(comment.user?.login || '')
         )
         .map((comment) => ({
           author: comment.user?.login || 'unknown',
@@ -646,8 +639,45 @@ Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`
         `File context: ${fileContext.path}:${fileContext.line || 'N/A'}`
       )
     }
-    // Note: Full persistence would update the comment with an rmcoc block
-    // For now, we just log - the question status is tracked via reply comments
+
+    try {
+      const comment = await this.octokit.issues.getComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(commentId)
+      })
+
+      const existingBody = comment.data.body || ''
+      const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/
+
+      if (rmcocRegex.test(existingBody)) {
+        return
+      }
+
+      const rmcocData = {
+        type: 'question',
+        status: 'PENDING',
+        author,
+        question: question.substring(0, 200),
+        file_context: fileContext,
+        tracked_at: new Date().toISOString()
+      }
+
+      const updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+
+      await this.octokit.issues.updateComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(commentId),
+        body: updatedBody
+      })
+
+      core.debug(`Added PENDING rmcoc block to question ${commentId}`)
+    } catch (error) {
+      core.warning(
+        `Failed to track question task: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
   }
 
   async markQuestionInProgress(questionId: string): Promise<void> {
@@ -947,6 +977,20 @@ Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`
     if (this.autoReviewTrigger) {
       this.autoReviewTrigger.completedAt = new Date().toISOString()
       await this.persistAutoReviewTrigger()
+    }
+  }
+
+  /**
+   * Clear the auto review trigger after a review is complete.
+   * This resets the trigger state so future runs don't see stale data.
+   */
+  async clearAutoReviewTrigger(): Promise<void> {
+    core.info('Clearing auto review trigger')
+
+    if (this.autoReviewTrigger) {
+      this.autoReviewTrigger.completedAt = new Date().toISOString()
+      await this.persistAutoReviewTrigger()
+      this.autoReviewTrigger = null
     }
   }
 

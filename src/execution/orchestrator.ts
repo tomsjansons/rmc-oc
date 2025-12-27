@@ -31,7 +31,7 @@ type ReviewPhase =
   | 'dispute-resolution'
   | 'multi-pass-review'
 
-export class ReviewOrchestrator {
+export class ReviewExecutor {
   private injectionDetector: PromptInjectionDetector
   private passResults: PassResult[] = []
   private reviewState: ReviewState | null = null

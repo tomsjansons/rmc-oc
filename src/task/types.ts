@@ -15,6 +15,8 @@ export type QuestionContext = {
   commentId: string
   /** The question text (after @ mention is removed) */
   question: string
+  /** Hash of question text for detecting edits after answer */
+  questionHash?: string
   /** GitHub username who asked the question */
   author: string
   /** Optional file/line context if question is about specific code */

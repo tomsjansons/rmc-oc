@@ -1,7 +1,8 @@
 import { Octokit } from '@octokit/rest'
 import type { RestEndpointMethodTypes } from '@octokit/rest'
 
-import type { ReviewConfig } from '../review/types.js'
+import { BOT_USERS } from '../config/constants.js'
+import type { ReviewConfig } from '../execution/types.js'
 import { GitHubAPIError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
 
@@ -502,10 +503,9 @@ ${reviewerTags} - Please review this dispute and make a final decision.
       logger.debug(`Checking for new developer replies in thread ${threadId}`)
 
       const comments = await this.getThreadComments(threadId)
-      const botUsers = ['github-actions[bot]', 'opencode-reviewer[bot]']
 
       const lastBotComment = comments
-        .filter((c) => botUsers.includes(c.user?.login || ''))
+        .filter((c) => BOT_USERS.includes(c.user?.login || ''))
         .sort(
           (a, b) =>
             new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
@@ -517,7 +517,7 @@ ${reviewerTags} - Please review this dispute and make a final decision.
 
       const hasNewReply = comments.some(
         (c) =>
-          !botUsers.includes(c.user?.login || '') &&
+          !BOT_USERS.includes(c.user?.login || '') &&
           new Date(c.created_at) > new Date(lastBotComment.created_at)
       )
 

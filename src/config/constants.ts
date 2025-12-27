@@ -8,3 +8,7 @@ export const TRPC_SERVER_URL = `http://${TRPC_SERVER_HOST}:${TRPC_SERVER_PORT}`
 
 export const OPENROUTER_API_URL =
   'https://openrouter.ai/api/v1/chat/completions'
+
+export const BOT_MENTION = '@review-my-code-bot'
+
+export const BOT_USERS = ['github-actions[bot]', 'opencode-reviewer[bot]']

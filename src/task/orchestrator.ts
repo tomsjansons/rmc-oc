@@ -2,8 +2,8 @@ import * as core from '@actions/core'
 
 import type { GitHubAPI } from '../github/api.js'
 import type { LLMClient } from '../opencode/llm-client.js'
-import type { ReviewOrchestrator } from '../review/orchestrator.js'
-import type { ReviewConfig } from '../review/types.js'
+import type { ReviewExecutor } from '../execution/orchestrator.js'
+import type { ReviewConfig } from '../execution/types.js'
 import type { StateManager } from '../state/manager.js'
 import { logger } from '../utils/logger.js'
 import { TaskDetector } from './detector.js'
@@ -17,13 +17,13 @@ import type {
   TaskResult
 } from './types.js'
 
-export class ExecutionOrchestrator {
+export class TaskOrchestrator {
   private taskDetector: TaskDetector
 
   constructor(
     private config: ReviewConfig,
     private githubApi: GitHubAPI,
-    private reviewOrchestrator: ReviewOrchestrator,
+    private reviewExecutor: ReviewExecutor,
     private stateManager: StateManager,
     llmClient: LLMClient
   ) {
@@ -128,7 +128,7 @@ export class ExecutionOrchestrator {
       `Executing Dispute Resolution (thread ${task.disputeContext.threadId})`,
       async () => {
         try {
-          await this.reviewOrchestrator.executeDisputeResolution(
+          await this.reviewExecutor.executeDisputeResolution(
             task.disputeContext
           )
 
@@ -165,7 +165,7 @@ export class ExecutionOrchestrator {
           )
 
           // Pass the question context and conversation history to the orchestrator
-          await this.reviewOrchestrator.executeQuestionAnswering(
+          await this.reviewExecutor.executeQuestionAnswering(
             task.questionContext,
             task.conversationHistory
           )
@@ -205,7 +205,7 @@ export class ExecutionOrchestrator {
             )
           }
 
-          const reviewOutput = await this.reviewOrchestrator.executeReview()
+          const reviewOutput = await this.reviewExecutor.executeReview()
 
           if (task.isManual && task.triggerCommentId) {
             await this.stateManager.markManualReviewCompleted(

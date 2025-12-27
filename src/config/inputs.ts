@@ -1,13 +1,14 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
 
+import { BOT_MENTION, BOT_USERS } from './constants.js'
 import { LLMClientImpl } from '../opencode/llm-client.js'
 import type {
   DisputeContext,
   ExecutionMode,
   QuestionContext,
   ReviewConfig
-} from '../review/types.js'
+} from '../execution/types.js'
 import { IntentClassifier } from '../task/classifier.js'
 
 export async function parseInputs(): Promise<ReviewConfig> {
@@ -161,6 +162,19 @@ export async function parseInputs(): Promise<ReviewConfig> {
   }
 }
 
+/**
+ * Detect the execution mode based on the GitHub event that triggered this run.
+ *
+ * NOTE: This function provides the initial execution context based on the triggering
+ * event. The TaskDetector class performs comprehensive task detection that may find
+ * additional pending work (questions, disputes) beyond what triggered this run.
+ *
+ * The execution.mode field is used by TaskDetector as a hint for whether a full
+ * review was requested. TaskDetector's detectAllTasks() will scan for ALL pending
+ * work regardless of the triggering event.
+ *
+ * @internal
+ */
 async function detectExecutionMode(
   context: typeof github.context,
   intentClassifier: IntentClassifier
@@ -193,8 +207,7 @@ async function detectExecutionMode(
     }
 
     const commentAuthor = comment?.user?.login || 'unknown'
-    const botUsers = ['github-actions[bot]', 'opencode-reviewer[bot]']
-    if (botUsers.includes(commentAuthor)) {
+    if (BOT_USERS.includes(commentAuthor)) {
       core.info('Ignoring comment from bot user to prevent loops.')
       throw new Error('Skipping: Comment is from a bot user.')
     }
@@ -230,14 +243,13 @@ async function detectExecutionMode(
     }
 
     const commentBody = comment?.body || ''
-    const botMention = '@review-my-code-bot'
 
-    if (commentBody.includes(botMention)) {
-      const textAfterMention = commentBody.replace(botMention, '').trim()
+    if (commentBody.includes(BOT_MENTION)) {
+      const textAfterMention = commentBody.replace(BOT_MENTION, '').trim()
 
       if (!textAfterMention) {
         throw new Error(
-          `Please provide instructions after ${botMention}. Examples:\n- "${botMention} please review this PR"\n- "${botMention} Why is this function needed?"`
+          `Please provide instructions after ${BOT_MENTION}. Examples:\n- "${BOT_MENTION} please review this PR"\n- "${BOT_MENTION} Why is this function needed?"`
         )
       }
 
@@ -282,7 +294,7 @@ async function detectExecutionMode(
       }
     }
 
-    core.info('Comment does not mention @review-my-code-bot, skipping')
+    core.info(`Comment does not mention ${BOT_MENTION}, skipping`)
     throw new Error(
       'This action was triggered by a comment but no bot mention was found. Skipping.'
     )

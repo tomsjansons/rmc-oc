@@ -27292,6 +27292,8 @@ const TRPC_SERVER_PORT = 38291;
 const TRPC_SERVER_HOST = 'localhost';
 const TRPC_SERVER_URL = `http://${TRPC_SERVER_HOST}:${TRPC_SERVER_PORT}`;
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const BOT_MENTION = '@review-my-code-bot';
+const BOT_USERS = ['github-actions[bot]', 'opencode-reviewer[bot]'];
 
 var github = {};
 
@@ -31502,6 +31504,19 @@ async function parseInputs() {
         }
     };
 }
+/**
+ * Detect the execution mode based on the GitHub event that triggered this run.
+ *
+ * NOTE: This function provides the initial execution context based on the triggering
+ * event. The TaskDetector class performs comprehensive task detection that may find
+ * additional pending work (questions, disputes) beyond what triggered this run.
+ *
+ * The execution.mode field is used by TaskDetector as a hint for whether a full
+ * review was requested. TaskDetector's detectAllTasks() will scan for ALL pending
+ * work regardless of the triggering event.
+ *
+ * @internal
+ */
 async function detectExecutionMode(context, intentClassifier) {
     if (context.eventName === 'pull_request_review_comment') {
         const comment = context.payload.comment;
@@ -31515,8 +31530,7 @@ async function detectExecutionMode(context, intentClassifier) {
             throw new Error('This action only handles replies to existing review threads. New review comments are ignored.');
         }
         const commentAuthor = comment?.user?.login || 'unknown';
-        const botUsers = ['github-actions[bot]', 'opencode-reviewer[bot]'];
-        if (botUsers.includes(commentAuthor)) {
+        if (BOT_USERS.includes(commentAuthor)) {
             coreExports.info('Ignoring comment from bot user to prevent loops.');
             throw new Error('Skipping: Comment is from a bot user.');
         }
@@ -31545,11 +31559,10 @@ async function detectExecutionMode(context, intentClassifier) {
             throw new Error('Comment is not on a pull request. This action only works on PR comments.');
         }
         const commentBody = comment?.body || '';
-        const botMention = '@review-my-code-bot';
-        if (commentBody.includes(botMention)) {
-            const textAfterMention = commentBody.replace(botMention, '').trim();
+        if (commentBody.includes(BOT_MENTION)) {
+            const textAfterMention = commentBody.replace(BOT_MENTION, '').trim();
             if (!textAfterMention) {
-                throw new Error(`Please provide instructions after ${botMention}. Examples:\n- "${botMention} please review this PR"\n- "${botMention} Why is this function needed?"`);
+                throw new Error(`Please provide instructions after ${BOT_MENTION}. Examples:\n- "${BOT_MENTION} please review this PR"\n- "${BOT_MENTION} Why is this function needed?"`);
             }
             const intent = await intentClassifier.classifyBotMention(textAfterMention);
             coreExports.info(`Intent classified as: ${intent}`);
@@ -31585,7 +31598,7 @@ async function detectExecutionMode(context, intentClassifier) {
                 }
             };
         }
-        coreExports.info('Comment does not mention @review-my-code-bot, skipping');
+        coreExports.info(`Comment does not mention ${BOT_MENTION}, skipping`);
         throw new Error('This action was triggered by a comment but no bot mention was found. Skipping.');
     }
     if (context.eventName === 'pull_request') {
@@ -35472,6 +35485,9 @@ class GitHubAPI {
         this.repo = config.github.repo;
         this.prNumber = config.github.prNumber;
     }
+    getOctokit() {
+        return this.octokit;
+    }
     async getPRFiles() {
         try {
             logger.debug(`Fetching PR files for ${this.owner}/${this.repo}#${this.prNumber}`);
@@ -35805,14 +35821,13 @@ ${reviewerTags} - Please review this dispute and make a final decision.
         try {
             logger.debug(`Checking for new developer replies in thread ${threadId}`);
             const comments = await this.getThreadComments(threadId);
-            const botUsers = ['github-actions[bot]', 'opencode-reviewer[bot]'];
             const lastBotComment = comments
-                .filter((c) => botUsers.includes(c.user?.login || ''))
+                .filter((c) => BOT_USERS.includes(c.user?.login || ''))
                 .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
             if (!lastBotComment) {
                 return false;
             }
-            const hasNewReply = comments.some((c) => !botUsers.includes(c.user?.login || '') &&
+            const hasNewReply = comments.some((c) => !BOT_USERS.includes(c.user?.login || '') &&
                 new Date(c.created_at) > new Date(lastBotComment.created_at));
             logger.debug(`Thread ${threadId} has new developer reply: ${hasNewReply}`);
             return hasNewReply;
@@ -38111,814 +38126,6 @@ class OpenCodeServer {
     }
 }
 
-const DANGEROUS_DELIMITER_PATTERNS = [
-    { pattern: /"""/g, replacement: '\u201c\u201d\u201d' },
-    { pattern: /```/g, replacement: '\u0060\u0060\u0060' },
-    { pattern: /~~~/g, replacement: '\u007e\u007e\u007e' },
-    { pattern: /<\/?system>/gi, replacement: '[system]' },
-    { pattern: /<\/?instruction>/gi, replacement: '[instruction]' },
-    { pattern: /<\/?prompt>/gi, replacement: '[prompt]' },
-    { pattern: /<\/?user>/gi, replacement: '[user]' },
-    { pattern: /<\/?assistant>/gi, replacement: '[assistant]' },
-    { pattern: /<\/?human>/gi, replacement: '[human]' },
-    { pattern: /<\/?ai>/gi, replacement: '[ai]' },
-    { pattern: /<\/?context>/gi, replacement: '[context]' },
-    { pattern: /<\/?message>/gi, replacement: '[message]' },
-    { pattern: /<\/?tool>/gi, replacement: '[tool]' },
-    { pattern: /<\/?function>/gi, replacement: '[function]' },
-    { pattern: /<\/?task>/gi, replacement: '[task]' }
-];
-function sanitizeDelimiters$1(input) {
-    let sanitized = input;
-    for (const { pattern, replacement } of DANGEROUS_DELIMITER_PATTERNS) {
-        sanitized = sanitized.replace(pattern, replacement);
-    }
-    return sanitized;
-}
-function auditToolCall(entry) {
-    ({
-        ...entry,
-        timestamp: new Date().toISOString()
-    });
-    const logLevel = entry.result === 'blocked' ? 'warning' : 'debug';
-    const message = `[AUDIT] Tool: ${entry.toolName}, Session: ${entry.sessionId}, Result: ${entry.result || 'pending'}`;
-    if (logLevel === 'warning') {
-        logger.warning(`${message}, Reason: ${entry.reason}`);
-    }
-    else {
-        logger.debug(message);
-    }
-}
-
-const STATE_SCHEMA_VERSION = 1;
-const BOT_USERS = ['opencode-reviewer[bot]', 'github-actions[bot]'];
-class StateManager {
-    config;
-    llmClient;
-    octokit;
-    sentimentCache;
-    currentState = null;
-    constructor(config, llmClient) {
-        this.config = config;
-        this.llmClient = llmClient;
-        this.octokit = new Octokit({
-            auth: config.github.token
-        });
-        this.sentimentCache = new Map();
-    }
-    updateState(state) {
-        state.version = STATE_SCHEMA_VERSION;
-        state.metadata.updated_at = new Date().toISOString();
-        this.currentState = state;
-    }
-    async rebuildStateFromComments() {
-        coreExports.info('Rebuilding state from GitHub PR comments');
-        try {
-            const { owner, repo, prNumber } = this.config.github;
-            const prData = await this.octokit.pulls.get({
-                owner,
-                repo,
-                pull_number: prNumber
-            });
-            const lastCommitSha = prData.data.head.sha;
-            const reviewComments = await this.octokit.pulls.listReviewComments({
-                owner,
-                repo,
-                pull_number: prNumber,
-                per_page: 100
-            });
-            const threads = [];
-            const commentMap = new Map();
-            for (const comment of reviewComments.data) {
-                const replyToId = comment.in_reply_to_id;
-                if (replyToId) {
-                    const replies = commentMap.get(replyToId) || [];
-                    replies.push(comment);
-                    commentMap.set(replyToId, replies);
-                }
-            }
-            for (const comment of reviewComments.data) {
-                if (comment.in_reply_to_id) {
-                    continue;
-                }
-                const commentAuthor = comment.user?.login;
-                if (!commentAuthor || !BOT_USERS.includes(commentAuthor)) {
-                    continue;
-                }
-                const threadId = String(comment.id);
-                const assessment = this.extractAssessmentFromComment(comment.body);
-                if (!assessment) {
-                    continue;
-                }
-                const replies = commentMap.get(comment.id) || [];
-                const status = this.determineThreadStatus(replies);
-                const developerReplies = replies
-                    .filter((r) => r.user?.login !== 'opencode-reviewer[bot]' &&
-                    r.user?.login !== 'github-actions[bot]')
-                    .map((r) => ({
-                    author: r.user?.login || 'unknown',
-                    body: r.body,
-                    timestamp: r.created_at
-                }));
-                threads.push({
-                    id: threadId,
-                    file: comment.path,
-                    line: comment.line || comment.original_line || 1,
-                    status,
-                    score: assessment.score,
-                    assessment,
-                    original_comment: {
-                        author: comment.user?.login || 'unknown',
-                        body: comment.body,
-                        timestamp: comment.created_at
-                    },
-                    developer_replies: developerReplies.length > 0 ? developerReplies : undefined
-                });
-            }
-            const state = {
-                version: STATE_SCHEMA_VERSION,
-                prNumber,
-                lastCommitSha,
-                threads,
-                passes: [],
-                metadata: {
-                    created_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString()
-                }
-            };
-            coreExports.info(`Rebuilt state with ${threads.length} threads`);
-            this.updateState(state);
-            return state;
-        }
-        catch (error) {
-            if (error instanceof Error) {
-                throw new StateError('Failed to rebuild state from comments', error);
-            }
-            throw error;
-        }
-    }
-    determineThreadStatus(replies) {
-        for (const reply of replies) {
-            const isBot = reply.user?.login === 'opencode-reviewer[bot]' ||
-                reply.user?.login === 'github-actions[bot]';
-            if (!isBot) {
-                continue;
-            }
-            const statusFromBlock = this.extractStatusFromRmcocBlock(reply.body);
-            if (statusFromBlock) {
-                return statusFromBlock;
-            }
-            if (reply.body.includes('✅ **Issue Resolved**')) {
-                return 'RESOLVED';
-            }
-            if (reply.body.includes('🔺 **Escalated to Human Review**')) {
-                return 'ESCALATED';
-            }
-        }
-        return 'PENDING';
-    }
-    extractStatusFromRmcocBlock(body) {
-        const match = body.match(/```rmcoc\s*(\{[\s\S]*?\})\s*```/);
-        if (!match?.[1]) {
-            return null;
-        }
-        try {
-            const parsed = JSON.parse(match[1]);
-            if (parsed.status === 'RESOLVED') {
-                return 'RESOLVED';
-            }
-            if (parsed.status === 'ESCALATED') {
-                return 'ESCALATED';
-            }
-        }
-        catch {
-            return null;
-        }
-        return null;
-    }
-    extractAssessmentFromComment(body) {
-        const patterns = [
-            /```rmcoc\s*(\{[\s\S]*?\})\s*```/,
-            /```json\s*(\{[\s\S]*?\})\s*```/,
-            /(\{\s*"finding"[\s\S]*?"score"\s*:\s*\d+\s*\})/
-        ];
-        for (const pattern of patterns) {
-            try {
-                const match = body.match(pattern);
-                if (match?.[1]) {
-                    const sanitized = this.sanitizeJsonString(match[1]);
-                    const parsed = JSON.parse(sanitized);
-                    if (parsed.finding &&
-                        parsed.assessment &&
-                        typeof parsed.score === 'number') {
-                        return parsed;
-                    }
-                }
-            }
-            catch (error) {
-                coreExports.debug(`Failed to parse JSON with pattern ${pattern}: ${error}`);
-            }
-        }
-        return null;
-    }
-    sanitizeJsonString(jsonStr) {
-        return (jsonStr
-            // Remove trailing commas before } or ]
-            .replace(/,(\s*[}\]])/g, '$1')
-            // Replace backslash-backtick with just single quote
-            .replace(/\\`/g, "'")
-            // Replace standalone backticks with single quotes
-            .replace(/`/g, "'"));
-    }
-    sanitizePromptInput(input) {
-        return sanitizeDelimiters$1(input);
-    }
-    async detectConcession(body) {
-        const cacheKey = this.generateSentimentCacheKey(body);
-        const cachedResult = this.sentimentCache.get(cacheKey);
-        if (cachedResult !== undefined) {
-            coreExports.debug(`Using cached sentiment result for comment`);
-            return cachedResult;
-        }
-        try {
-            const response = await this.analyzeCommentSentiment(body);
-            this.sentimentCache.set(cacheKey, response);
-            return response;
-        }
-        catch (error) {
-            coreExports.warning(`Failed to analyze sentiment via API: ${error}`);
-            const fallbackResult = this.detectConcessionFallback(body);
-            this.sentimentCache.set(cacheKey, fallbackResult);
-            return fallbackResult;
-        }
-    }
-    generateSentimentCacheKey(body) {
-        const normalized = body.trim().toLowerCase();
-        let hash = 0;
-        for (let i = 0; i < normalized.length; i++) {
-            const char = normalized.charCodeAt(i);
-            hash = (hash << 5) - hash + char;
-            hash = hash & hash;
-        }
-        return `sentiment_${hash}`;
-    }
-    detectConcessionFallback(body) {
-        const concessionPhrases = [
-            'you are correct',
-            'i concede',
-            "you're right",
-            'fair point',
-            'good catch',
-            'agreed',
-            'makes sense'
-        ];
-        const lowerBody = body.toLowerCase();
-        return concessionPhrases.some((phrase) => lowerBody.includes(phrase));
-    }
-    async callLLM(prompt) {
-        return this.llmClient.complete(prompt);
-    }
-    async analyzeCommentSentiment(commentBody) {
-        const sanitizedBody = this.sanitizePromptInput(commentBody);
-        const prompt = `You are analyzing a code review comment to determine if the developer is conceding to a reviewer's suggestion.
-
-A concession means the developer:
-- Agrees with the reviewer's point
-- Acknowledges they were wrong or missed something
-- Commits to making the suggested change
-- Accepts the feedback as valid
-
-A concession does NOT include:
-- Disagreements or rebuttals
-- Requests for clarification
-- Alternative suggestions
-- Neutral acknowledgments without commitment
-
-Comment to analyze:
-"""
-${sanitizedBody}
-"""
-
-Respond with ONLY "true" if this is a concession, or "false" if it is not.`;
-        const content = await this.callLLM(prompt);
-        if (/^true/i.test(content || '')) {
-            return true;
-        }
-        if (/^false/i.test(content || '')) {
-            return false;
-        }
-        coreExports.debug(`Unexpected sentiment analysis response: ${content}, defaulting to false`);
-        return false;
-    }
-    async getOrCreateState() {
-        if (this.currentState) {
-            return this.currentState;
-        }
-        return await this.rebuildStateFromComments();
-    }
-    async updateThreadStatus(threadId, status) {
-        const state = await this.getOrCreateState();
-        const thread = state.threads.find((t) => t.id === threadId);
-        if (!thread) {
-            throw new StateError(`Thread ${threadId} not found`);
-        }
-        thread.status = status;
-        if (status === 'ESCALATED') {
-            thread.escalated_at = new Date().toISOString();
-        }
-        this.updateState(state);
-    }
-    async addThread(thread) {
-        const state = await this.getOrCreateState();
-        const existingIndex = state.threads.findIndex((t) => t.id === thread.id);
-        if (existingIndex >= 0) {
-            state.threads[existingIndex] = thread;
-        }
-        else {
-            state.threads.push(thread);
-        }
-        this.updateState(state);
-    }
-    async recordPassCompletion(passResult) {
-        const state = await this.getOrCreateState();
-        const existingIndex = state.passes.findIndex((p) => p.passNumber === passResult.passNumber);
-        if (existingIndex >= 0) {
-            state.passes[existingIndex] = passResult;
-        }
-        else {
-            state.passes.push(passResult);
-        }
-        this.updateState(state);
-    }
-    async fetchDeveloperReplies(threadId) {
-        try {
-            const { owner, repo, prNumber } = this.config.github;
-            const comments = await this.octokit.pulls.listReviewComments({
-                owner,
-                repo,
-                pull_number: prNumber,
-                per_page: 100
-            });
-            const replies = comments.data
-                .filter((comment) => comment.in_reply_to_id === Number(threadId) &&
-                comment.user?.login !== 'opencode-reviewer[bot]' &&
-                comment.user?.login !== 'github-actions[bot]')
-                .map((comment) => ({
-                author: comment.user?.login || 'unknown',
-                body: comment.body,
-                timestamp: comment.created_at
-            }));
-            return replies;
-        }
-        catch (error) {
-            coreExports.warning(`Failed to fetch developer replies for thread ${threadId}: ${error}`);
-            return [];
-        }
-    }
-    async classifyDeveloperReply(originalFinding, replyBody) {
-        const sanitizedFinding = this.sanitizePromptInput(originalFinding);
-        const sanitizedReply = this.sanitizePromptInput(replyBody);
-        const prompt = `You are analyzing a developer's response to a code review comment to classify their intent.
-
-Original finding: "${sanitizedFinding}"
-
-Developer's response:
-"""
-${sanitizedReply}
-"""
-
-Classify the response as ONE of the following:
-- "acknowledgment": Developer agrees and commits to fixing it (e.g., "good catch", "will fix", "you're right")
-- "dispute": Developer disagrees with the finding (e.g., "this is intentional", "middleware handles this", "size is constrained")
-- "question": Developer asks for clarification (e.g., "what do you mean?", "can you explain?", "where should I...")
-- "out_of_scope": Developer acknowledges but will fix later (e.g., "will fix in next sprint", "out of scope for this PR")
-
-Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`;
-        try {
-            const content = (await this.callLLM(prompt)) || '';
-            if (/^acknowledgment/i.test(content)) {
-                return 'acknowledgment';
-            }
-            if (/^dispute/i.test(content)) {
-                return 'dispute';
-            }
-            if (/^question/i.test(content)) {
-                return 'question';
-            }
-            if (/^out_of_scope/i.test(content)) {
-                return 'out_of_scope';
-            }
-            coreExports.debug(`Unexpected classification response: ${content}, defaulting to dispute`);
-            return 'dispute';
-        }
-        catch (error) {
-            coreExports.warning(`Failed to classify developer reply via API: ${error}, using fallback`);
-            return this.classifyDeveloperReplyFallback(replyBody);
-        }
-    }
-    classifyDeveloperReplyFallback(replyBody) {
-        const lowerBody = replyBody.toLowerCase();
-        const acknowledgmentPhrases = [
-            'good catch',
-            'will fix',
-            'thanks',
-            "you're right",
-            'you are right',
-            'agreed',
-            'makes sense',
-            'fair point'
-        ];
-        if (acknowledgmentPhrases.some((phrase) => lowerBody.includes(phrase))) {
-            return 'acknowledgment';
-        }
-        const questionMarkers = ['what', 'why', 'how', 'can you', 'could you', '?'];
-        if (questionMarkers.some((marker) => lowerBody.includes(marker))) {
-            return 'question';
-        }
-        const outOfScopePhrases = [
-            'next sprint',
-            'later',
-            'future pr',
-            'separate pr',
-            'out of scope',
-            'follow up'
-        ];
-        if (outOfScopePhrases.some((phrase) => lowerBody.includes(phrase))) {
-            return 'out_of_scope';
-        }
-        return 'dispute';
-    }
-    async getThreadsWithDeveloperReplies() {
-        const state = await this.getOrCreateState();
-        const threadsWithReplies = [];
-        for (const thread of state.threads) {
-            if (thread.status === 'RESOLVED') {
-                continue;
-            }
-            const replies = await this.fetchDeveloperReplies(thread.id);
-            if (replies.length > 0) {
-                threadsWithReplies.push({
-                    ...thread,
-                    developer_replies: replies
-                });
-            }
-        }
-        return threadsWithReplies;
-    }
-    findDuplicateThread(file, line, finding) {
-        if (!this.currentState) {
-            return null;
-        }
-        return (this.currentState.threads.find((t) => t.file === file &&
-            t.line === line &&
-            t.status !== 'RESOLVED' &&
-            this.isSimilarFinding(t.assessment.finding, finding)) || null);
-    }
-    isSimilarFinding(existing, incoming) {
-        const normalizedExisting = this.normalizeForComparison(existing);
-        const normalizedIncoming = this.normalizeForComparison(incoming);
-        if (normalizedExisting === normalizedIncoming) {
-            return true;
-        }
-        const existingWords = this.getSignificantWords(existing);
-        const incomingWords = this.getSignificantWords(incoming);
-        if (existingWords.size === 0 || incomingWords.size === 0) {
-            return false;
-        }
-        const intersection = [...existingWords].filter((w) => incomingWords.has(w));
-        const smallerSet = Math.min(existingWords.size, incomingWords.size);
-        const overlapRatio = intersection.length / smallerSet;
-        return overlapRatio >= 0.5;
-    }
-    normalizeForComparison(text) {
-        return text
-            .toLowerCase()
-            .replace(/[^a-z0-9]/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim();
-    }
-    getSignificantWords(text) {
-        const words = this.normalizeForComparison(text).split(' ');
-        return new Set(words.filter((w) => w.length > 2 && !STOP_WORDS.has(w)));
-    }
-    async trackQuestionTask(questionId, author, question, commentId, fileContext) {
-        coreExports.info(`Tracking question task: ${questionId} from ${author}`);
-        coreExports.debug(`Question: ${question.substring(0, 100)}...`);
-        if (fileContext) {
-            coreExports.debug(`File context: ${fileContext.path}:${fileContext.line || 'N/A'}`);
-        }
-        // Note: Full persistence would update the comment with an rmcoc block
-        // For now, we just log - the question status is tracked via reply comments
-    }
-    async markQuestionInProgress(questionId) {
-        coreExports.info(`Marking question ${questionId} as in progress`);
-        // Update the original comment with rmcoc block showing IN_PROGRESS status
-        try {
-            const comment = await this.octokit.issues.getComment({
-                owner: this.config.github.owner,
-                repo: this.config.github.repo,
-                comment_id: Number(questionId)
-            });
-            const rmcocData = {
-                type: 'question',
-                status: 'IN_PROGRESS',
-                started_at: new Date().toISOString()
-            };
-            const existingBody = comment.data.body || '';
-            const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/;
-            let updatedBody;
-            if (rmcocRegex.test(existingBody)) {
-                updatedBody = existingBody.replace(rmcocRegex, `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``);
-            }
-            else {
-                updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``;
-            }
-            await this.octokit.issues.updateComment({
-                owner: this.config.github.owner,
-                repo: this.config.github.repo,
-                comment_id: Number(questionId),
-                body: updatedBody
-            });
-        }
-        catch (error) {
-            coreExports.warning(`Failed to update question status to IN_PROGRESS: ${error instanceof Error ? error.message : String(error)}`);
-        }
-    }
-    async markQuestionAnswered(questionId) {
-        coreExports.info(`Marking question ${questionId} as answered`);
-        // Update the original comment with rmcoc block showing ANSWERED status
-        try {
-            const comment = await this.octokit.issues.getComment({
-                owner: this.config.github.owner,
-                repo: this.config.github.repo,
-                comment_id: Number(questionId)
-            });
-            const rmcocData = {
-                type: 'question',
-                status: 'ANSWERED',
-                completed_at: new Date().toISOString()
-            };
-            const existingBody = comment.data.body || '';
-            const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/;
-            let updatedBody;
-            if (rmcocRegex.test(existingBody)) {
-                updatedBody = existingBody.replace(rmcocRegex, `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``);
-            }
-            else {
-                updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``;
-            }
-            await this.octokit.issues.updateComment({
-                owner: this.config.github.owner,
-                repo: this.config.github.repo,
-                comment_id: Number(questionId),
-                body: updatedBody
-            });
-        }
-        catch (error) {
-            coreExports.warning(`Failed to update question status to ANSWERED: ${error instanceof Error ? error.message : String(error)}`);
-        }
-    }
-    async trackManualReviewRequest(requestId, author, commentId) {
-        coreExports.info(`Tracking manual review request: ${requestId} from ${author}`);
-        coreExports.debug(`Comment ID: ${commentId}`);
-        // The tracking is done when we update the comment status
-    }
-    async markManualReviewInProgress(requestId) {
-        coreExports.info(`Marking manual review ${requestId} as in progress`);
-        try {
-            const comment = await this.octokit.issues.getComment({
-                owner: this.config.github.owner,
-                repo: this.config.github.repo,
-                comment_id: Number(requestId)
-            });
-            const rmcocData = {
-                type: 'manual-pr-review',
-                status: 'IN_PROGRESS',
-                started_at: new Date().toISOString()
-            };
-            const existingBody = comment.data.body || '';
-            const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/;
-            let updatedBody;
-            if (rmcocRegex.test(existingBody)) {
-                updatedBody = existingBody.replace(rmcocRegex, `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``);
-            }
-            else {
-                updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``;
-            }
-            await this.octokit.issues.updateComment({
-                owner: this.config.github.owner,
-                repo: this.config.github.repo,
-                comment_id: Number(requestId),
-                body: updatedBody
-            });
-        }
-        catch (error) {
-            coreExports.warning(`Failed to update manual review status to IN_PROGRESS: ${error instanceof Error ? error.message : String(error)}`);
-        }
-    }
-    async markManualReviewCompleted(requestId) {
-        coreExports.info(`Marking manual review ${requestId} as completed`);
-        try {
-            const comment = await this.octokit.issues.getComment({
-                owner: this.config.github.owner,
-                repo: this.config.github.repo,
-                comment_id: Number(requestId)
-            });
-            const rmcocData = {
-                type: 'manual-pr-review',
-                status: 'COMPLETED',
-                completed_at: new Date().toISOString()
-            };
-            const existingBody = comment.data.body || '';
-            const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/;
-            let updatedBody;
-            if (rmcocRegex.test(existingBody)) {
-                updatedBody = existingBody.replace(rmcocRegex, `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``);
-            }
-            else {
-                updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``;
-            }
-            await this.octokit.issues.updateComment({
-                owner: this.config.github.owner,
-                repo: this.config.github.repo,
-                comment_id: Number(requestId),
-                body: updatedBody
-            });
-        }
-        catch (error) {
-            coreExports.warning(`Failed to update manual review status to COMPLETED: ${error instanceof Error ? error.message : String(error)}`);
-        }
-    }
-    async dismissManualReview(requestId, dismissedBy) {
-        coreExports.info(`Dismissing manual review ${requestId}, dismissed by: ${dismissedBy}`);
-        try {
-            const comment = await this.octokit.issues.getComment({
-                owner: this.config.github.owner,
-                repo: this.config.github.repo,
-                comment_id: Number(requestId)
-            });
-            const rmcocData = {
-                type: 'manual-pr-review',
-                status: 'DISMISSED_BY_AUTO_REVIEW',
-                dismissed_at: new Date().toISOString(),
-                dismissed_reason: `Dismissed by ${dismissedBy}`
-            };
-            const existingBody = comment.data.body || '';
-            const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/;
-            let updatedBody;
-            if (rmcocRegex.test(existingBody)) {
-                updatedBody = existingBody.replace(rmcocRegex, `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``);
-            }
-            else {
-                updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``;
-            }
-            await this.octokit.issues.updateComment({
-                owner: this.config.github.owner,
-                repo: this.config.github.repo,
-                comment_id: Number(requestId),
-                body: updatedBody
-            });
-        }
-        catch (error) {
-            coreExports.warning(`Failed to dismiss manual review: ${error instanceof Error ? error.message : String(error)}`);
-        }
-    }
-    /**
-     * Record that an auto review was triggered by a PR event.
-     * This is used to preserve merge gate behavior when reviews are cancelled.
-     */
-    async recordAutoReviewTrigger(action, sha) {
-        coreExports.info(`Recording auto review trigger: ${action} for SHA ${sha}`);
-        // Store in state metadata (persisted via comments in future)
-        // For now, we store in memory - the state will be rebuilt on next run
-        if (this.currentState) ;
-    }
-    /**
-     * Check if there's a pending (cancelled/incomplete) auto review for the current SHA.
-     * Returns the trigger info if found, null otherwise.
-     */
-    async getPendingAutoReviewTrigger(currentSha) {
-        // In a full implementation, this would check persisted state
-        // For now, return null - auto reviews won't be detected as "cancelled"
-        // The merge gate will still work for fresh auto reviews via config.execution.isManuallyTriggered
-        coreExports.debug(`Checking for pending auto review trigger for SHA ${currentSha}`);
-        return null;
-    }
-    /**
-     * Mark an auto review as completed.
-     */
-    async markAutoReviewCompleted() {
-        coreExports.info('Marking auto review as completed');
-    }
-    /**
-     * Check if the current execution was triggered by an auto review (PR event).
-     * This is used to determine if blocking issues should fail the action.
-     */
-    wasAutoReviewTriggered() {
-        // This is determined by config.execution.isManuallyTriggered
-        // The StateManager doesn't need to track this - main.ts already has this info
-        return false;
-    }
-}
-const STOP_WORDS = new Set([
-    'a',
-    'an',
-    'the',
-    'is',
-    'are',
-    'was',
-    'were',
-    'be',
-    'been',
-    'being',
-    'have',
-    'has',
-    'had',
-    'do',
-    'does',
-    'did',
-    'will',
-    'would',
-    'could',
-    'should',
-    'may',
-    'might',
-    'must',
-    'shall',
-    'can',
-    'need',
-    'dare',
-    'ought',
-    'used',
-    'to',
-    'of',
-    'in',
-    'for',
-    'on',
-    'with',
-    'at',
-    'by',
-    'from',
-    'as',
-    'into',
-    'through',
-    'during',
-    'before',
-    'after',
-    'above',
-    'below',
-    'between',
-    'under',
-    'again',
-    'further',
-    'then',
-    'once',
-    'here',
-    'there',
-    'when',
-    'where',
-    'why',
-    'how',
-    'all',
-    'each',
-    'few',
-    'more',
-    'most',
-    'other',
-    'some',
-    'such',
-    'no',
-    'nor',
-    'not',
-    'only',
-    'own',
-    'same',
-    'so',
-    'than',
-    'too',
-    'very',
-    'just',
-    'and',
-    'but',
-    'if',
-    'or',
-    'because',
-    'until',
-    'while',
-    'this',
-    'that',
-    'these',
-    'those'
-]);
-class StateError extends Error {
-    cause;
-    constructor(message, cause) {
-        super(message);
-        this.cause = cause;
-        this.name = 'StateError';
-    }
-}
-
 // src/errors.ts
 var PromptInjectionError = class _PromptInjectionError extends Error {
   /**
@@ -39583,7 +38790,7 @@ function applySanitizationPass(input, threats) {
 function sanitizeByType(input, type, threats) {
   switch (type) {
     case "delimiterInjection":
-      return sanitizeDelimiters(input);
+      return sanitizeDelimiters$1(input);
     case "encoding":
       return sanitizeEncoding(input);
     case "instructionOverride":
@@ -39596,7 +38803,7 @@ function sanitizeByType(input, type, threats) {
       return input;
   }
 }
-function sanitizeDelimiters(input) {
+function sanitizeDelimiters$1(input) {
   let sanitized = input;
   sanitized = sanitized.replace(
     /<\/?(?:system|user|assistant|human|ai|context|instruction|prompt)>/gi,
@@ -40858,7 +40065,7 @@ const SYSTEM_PROMPT = `# OpenCode PR Review Agent
 
 ${SECURITY_PREAMBLE}
 
-You are a Senior Developer conducting a thorough multi-pass code review. You will perform 4 sequential passes, each building on the previous one.
+You are a Senior Developer conducting a thorough multi-pass code review. You will perform 3 sequential passes, each building on the previous one.
 
 ${SCORING_RUBRIC}
 
@@ -41375,23 +40582,23 @@ function buildSecuritySensitivity(packageJson, readme) {
     return `High sensitivity detected: ${indicators.join(', ')}`;
 }
 
-class ReviewOrchestrator {
+class ReviewExecutor {
     opencode;
+    stateManager;
     github;
     config;
     workspaceRoot;
-    stateManager;
     injectionDetector;
     passResults = [];
     reviewState = null;
     currentSessionId = null;
     currentPhase = 'idle';
-    constructor(opencode, llmClient, github, config, workspaceRoot) {
+    constructor(opencode, stateManager, github, config, workspaceRoot) {
         this.opencode = opencode;
+        this.stateManager = stateManager;
         this.github = github;
         this.config = config;
         this.workspaceRoot = workspaceRoot;
-        this.stateManager = new StateManager(config, llmClient);
         this.injectionDetector = createPromptInjectionDetector(config.opencode.apiKey, config.security.injectionVerificationModel, config.security.injectionDetectionEnabled);
     }
     async executeReview() {
@@ -41540,7 +40747,7 @@ class ReviewOrchestrator {
         await this.sendPromptToOpenCode(prompt);
     }
     async executePass(passNumber, prompt) {
-        await logger.group(`Pass ${passNumber} of 4`, async () => {
+        await logger.group(`Pass ${passNumber} of 3`, async () => {
             const startTime = Date.now();
             logger.info(`Starting pass ${passNumber}`);
             logger.debug(`Pass ${passNumber} prompt length: ${prompt.length} chars`);
@@ -41817,6 +41024,956 @@ async function setupToolsInWorkspace() {
     logger.info(`Successfully copied ${toolFiles.length} tools to workspace`);
 }
 
+const DANGEROUS_DELIMITER_PATTERNS = [
+    { pattern: /"""/g, replacement: '\u201c\u201d\u201d' },
+    { pattern: /```/g, replacement: '\u0060\u0060\u0060' },
+    { pattern: /~~~/g, replacement: '\u007e\u007e\u007e' },
+    { pattern: /<\/?system>/gi, replacement: '[system]' },
+    { pattern: /<\/?instruction>/gi, replacement: '[instruction]' },
+    { pattern: /<\/?prompt>/gi, replacement: '[prompt]' },
+    { pattern: /<\/?user>/gi, replacement: '[user]' },
+    { pattern: /<\/?assistant>/gi, replacement: '[assistant]' },
+    { pattern: /<\/?human>/gi, replacement: '[human]' },
+    { pattern: /<\/?ai>/gi, replacement: '[ai]' },
+    { pattern: /<\/?context>/gi, replacement: '[context]' },
+    { pattern: /<\/?message>/gi, replacement: '[message]' },
+    { pattern: /<\/?tool>/gi, replacement: '[tool]' },
+    { pattern: /<\/?function>/gi, replacement: '[function]' },
+    { pattern: /<\/?task>/gi, replacement: '[task]' }
+];
+function sanitizeDelimiters(input) {
+    let sanitized = input;
+    for (const { pattern, replacement } of DANGEROUS_DELIMITER_PATTERNS) {
+        sanitized = sanitized.replace(pattern, replacement);
+    }
+    return sanitized;
+}
+function auditToolCall(entry) {
+    ({
+        ...entry,
+        timestamp: new Date().toISOString()
+    });
+    const logLevel = entry.result === 'blocked' ? 'warning' : 'debug';
+    const message = `[AUDIT] Tool: ${entry.toolName}, Session: ${entry.sessionId}, Result: ${entry.result || 'pending'}`;
+    if (logLevel === 'warning') {
+        logger.warning(`${message}, Reason: ${entry.reason}`);
+    }
+    else {
+        logger.debug(message);
+    }
+}
+
+const STATE_SCHEMA_VERSION = 1;
+class StateManager {
+    config;
+    llmClient;
+    octokit;
+    sentimentCache;
+    currentState = null;
+    autoReviewTrigger = null;
+    autoReviewCommentId = null;
+    constructor(config, llmClient, octokit) {
+        this.config = config;
+        this.llmClient = llmClient;
+        this.octokit = octokit;
+        this.sentimentCache = new Map();
+    }
+    updateState(state) {
+        state.version = STATE_SCHEMA_VERSION;
+        state.metadata.updated_at = new Date().toISOString();
+        this.currentState = state;
+    }
+    async rebuildStateFromComments() {
+        coreExports.info('Rebuilding state from GitHub PR comments');
+        try {
+            const { owner, repo, prNumber } = this.config.github;
+            const prData = await this.octokit.pulls.get({
+                owner,
+                repo,
+                pull_number: prNumber
+            });
+            const lastCommitSha = prData.data.head.sha;
+            const reviewComments = await this.octokit.pulls.listReviewComments({
+                owner,
+                repo,
+                pull_number: prNumber,
+                per_page: 100
+            });
+            const threads = [];
+            const commentMap = new Map();
+            for (const comment of reviewComments.data) {
+                const replyToId = comment.in_reply_to_id;
+                if (replyToId) {
+                    const replies = commentMap.get(replyToId) || [];
+                    replies.push(comment);
+                    commentMap.set(replyToId, replies);
+                }
+            }
+            for (const comment of reviewComments.data) {
+                if (comment.in_reply_to_id) {
+                    continue;
+                }
+                const commentAuthor = comment.user?.login;
+                if (!commentAuthor || !BOT_USERS.includes(commentAuthor)) {
+                    continue;
+                }
+                const threadId = String(comment.id);
+                const assessment = this.extractAssessmentFromComment(comment.body);
+                if (!assessment) {
+                    continue;
+                }
+                const replies = commentMap.get(comment.id) || [];
+                const status = this.determineThreadStatus(replies);
+                const developerReplies = replies
+                    .filter((r) => !BOT_USERS.includes(r.user?.login || ''))
+                    .map((r) => ({
+                    author: r.user?.login || 'unknown',
+                    body: r.body,
+                    timestamp: r.created_at
+                }));
+                threads.push({
+                    id: threadId,
+                    file: comment.path,
+                    line: comment.line || comment.original_line || 1,
+                    status,
+                    score: assessment.score,
+                    assessment,
+                    original_comment: {
+                        author: comment.user?.login || 'unknown',
+                        body: comment.body,
+                        timestamp: comment.created_at
+                    },
+                    developer_replies: developerReplies.length > 0 ? developerReplies : undefined
+                });
+            }
+            const state = {
+                version: STATE_SCHEMA_VERSION,
+                prNumber,
+                lastCommitSha,
+                threads,
+                passes: [],
+                metadata: {
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                }
+            };
+            coreExports.info(`Rebuilt state with ${threads.length} threads`);
+            this.updateState(state);
+            return state;
+        }
+        catch (error) {
+            if (error instanceof Error) {
+                throw new StateError('Failed to rebuild state from comments', error);
+            }
+            throw error;
+        }
+    }
+    determineThreadStatus(replies) {
+        for (const reply of replies) {
+            const isBot = BOT_USERS.includes(reply.user?.login || '');
+            if (!isBot) {
+                continue;
+            }
+            const statusFromBlock = this.extractStatusFromRmcocBlock(reply.body);
+            if (statusFromBlock) {
+                return statusFromBlock;
+            }
+            if (reply.body.includes('✅ **Issue Resolved**')) {
+                return 'RESOLVED';
+            }
+            if (reply.body.includes('🔺 **Escalated to Human Review**')) {
+                return 'ESCALATED';
+            }
+        }
+        return 'PENDING';
+    }
+    extractStatusFromRmcocBlock(body) {
+        const match = body.match(/```rmcoc\s*(\{[\s\S]*?\})\s*```/);
+        if (!match?.[1]) {
+            return null;
+        }
+        try {
+            const parsed = JSON.parse(match[1]);
+            if (parsed.status === 'RESOLVED') {
+                return 'RESOLVED';
+            }
+            if (parsed.status === 'ESCALATED') {
+                return 'ESCALATED';
+            }
+        }
+        catch {
+            return null;
+        }
+        return null;
+    }
+    extractAssessmentFromComment(body) {
+        const patterns = [
+            /```rmcoc\s*(\{[\s\S]*?\})\s*```/,
+            /```json\s*(\{[\s\S]*?\})\s*```/,
+            /(\{\s*"finding"[\s\S]*?"score"\s*:\s*\d+\s*\})/
+        ];
+        for (const pattern of patterns) {
+            try {
+                const match = body.match(pattern);
+                if (match?.[1]) {
+                    const sanitized = this.sanitizeJsonString(match[1]);
+                    const parsed = JSON.parse(sanitized);
+                    if (parsed.finding &&
+                        parsed.assessment &&
+                        typeof parsed.score === 'number') {
+                        return parsed;
+                    }
+                }
+            }
+            catch (error) {
+                coreExports.debug(`Failed to parse JSON with pattern ${pattern}: ${error}`);
+            }
+        }
+        return null;
+    }
+    sanitizeJsonString(jsonStr) {
+        return (jsonStr
+            // Remove trailing commas before } or ]
+            .replace(/,(\s*[}\]])/g, '$1')
+            // Replace backslash-backtick with just single quote
+            .replace(/\\`/g, "'")
+            // Replace standalone backticks with single quotes
+            .replace(/`/g, "'"));
+    }
+    sanitizePromptInput(input) {
+        return sanitizeDelimiters(input);
+    }
+    async detectConcession(body) {
+        const cacheKey = this.generateSentimentCacheKey(body);
+        const cachedResult = this.sentimentCache.get(cacheKey);
+        if (cachedResult !== undefined) {
+            coreExports.debug(`Using cached sentiment result for comment`);
+            return cachedResult;
+        }
+        try {
+            const response = await this.analyzeCommentSentiment(body);
+            this.sentimentCache.set(cacheKey, response);
+            return response;
+        }
+        catch (error) {
+            coreExports.warning(`Failed to analyze sentiment via API: ${error}`);
+            const fallbackResult = this.detectConcessionFallback(body);
+            this.sentimentCache.set(cacheKey, fallbackResult);
+            return fallbackResult;
+        }
+    }
+    generateSentimentCacheKey(body) {
+        const normalized = body.trim().toLowerCase();
+        let hash = 0;
+        for (let i = 0; i < normalized.length; i++) {
+            const char = normalized.charCodeAt(i);
+            hash = (hash << 5) - hash + char;
+            hash = hash & hash;
+        }
+        return `sentiment_${hash}`;
+    }
+    detectConcessionFallback(body) {
+        const concessionPhrases = [
+            'you are correct',
+            'i concede',
+            "you're right",
+            'fair point',
+            'good catch',
+            'agreed',
+            'makes sense'
+        ];
+        const lowerBody = body.toLowerCase();
+        return concessionPhrases.some((phrase) => lowerBody.includes(phrase));
+    }
+    async callLLM(prompt) {
+        return this.llmClient.complete(prompt);
+    }
+    async analyzeCommentSentiment(commentBody) {
+        const sanitizedBody = this.sanitizePromptInput(commentBody);
+        const prompt = `You are analyzing a code review comment to determine if the developer is conceding to a reviewer's suggestion.
+
+A concession means the developer:
+- Agrees with the reviewer's point
+- Acknowledges they were wrong or missed something
+- Commits to making the suggested change
+- Accepts the feedback as valid
+
+A concession does NOT include:
+- Disagreements or rebuttals
+- Requests for clarification
+- Alternative suggestions
+- Neutral acknowledgments without commitment
+
+Comment to analyze:
+"""
+${sanitizedBody}
+"""
+
+Respond with ONLY "true" if this is a concession, or "false" if it is not.`;
+        const content = await this.callLLM(prompt);
+        if (/^true/i.test(content || '')) {
+            return true;
+        }
+        if (/^false/i.test(content || '')) {
+            return false;
+        }
+        coreExports.debug(`Unexpected sentiment analysis response: ${content}, defaulting to false`);
+        return false;
+    }
+    async getOrCreateState() {
+        if (this.currentState) {
+            return this.currentState;
+        }
+        return await this.rebuildStateFromComments();
+    }
+    async updateThreadStatus(threadId, status) {
+        const state = await this.getOrCreateState();
+        const thread = state.threads.find((t) => t.id === threadId);
+        if (!thread) {
+            throw new StateError(`Thread ${threadId} not found`);
+        }
+        thread.status = status;
+        if (status === 'ESCALATED') {
+            thread.escalated_at = new Date().toISOString();
+        }
+        this.updateState(state);
+    }
+    async addThread(thread) {
+        const state = await this.getOrCreateState();
+        const existingIndex = state.threads.findIndex((t) => t.id === thread.id);
+        if (existingIndex >= 0) {
+            state.threads[existingIndex] = thread;
+        }
+        else {
+            state.threads.push(thread);
+        }
+        this.updateState(state);
+    }
+    async recordPassCompletion(passResult) {
+        const state = await this.getOrCreateState();
+        const existingIndex = state.passes.findIndex((p) => p.passNumber === passResult.passNumber);
+        if (existingIndex >= 0) {
+            state.passes[existingIndex] = passResult;
+        }
+        else {
+            state.passes.push(passResult);
+        }
+        this.updateState(state);
+    }
+    async fetchDeveloperReplies(threadId) {
+        try {
+            const { owner, repo, prNumber } = this.config.github;
+            const comments = await this.octokit.pulls.listReviewComments({
+                owner,
+                repo,
+                pull_number: prNumber,
+                per_page: 100
+            });
+            const replies = comments.data
+                .filter((comment) => comment.in_reply_to_id === Number(threadId) &&
+                !BOT_USERS.includes(comment.user?.login || ''))
+                .map((comment) => ({
+                author: comment.user?.login || 'unknown',
+                body: comment.body,
+                timestamp: comment.created_at
+            }));
+            return replies;
+        }
+        catch (error) {
+            coreExports.warning(`Failed to fetch developer replies for thread ${threadId}: ${error}`);
+            return [];
+        }
+    }
+    async classifyDeveloperReply(originalFinding, replyBody) {
+        const sanitizedFinding = this.sanitizePromptInput(originalFinding);
+        const sanitizedReply = this.sanitizePromptInput(replyBody);
+        const prompt = `You are analyzing a developer's response to a code review comment to classify their intent.
+
+Original finding: "${sanitizedFinding}"
+
+Developer's response:
+"""
+${sanitizedReply}
+"""
+
+Classify the response as ONE of the following:
+- "acknowledgment": Developer agrees and commits to fixing it (e.g., "good catch", "will fix", "you're right")
+- "dispute": Developer disagrees with the finding (e.g., "this is intentional", "middleware handles this", "size is constrained")
+- "question": Developer asks for clarification (e.g., "what do you mean?", "can you explain?", "where should I...")
+- "out_of_scope": Developer acknowledges but will fix later (e.g., "will fix in next sprint", "out of scope for this PR")
+
+Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`;
+        try {
+            const content = (await this.callLLM(prompt)) || '';
+            if (/^acknowledgment/i.test(content)) {
+                return 'acknowledgment';
+            }
+            if (/^dispute/i.test(content)) {
+                return 'dispute';
+            }
+            if (/^question/i.test(content)) {
+                return 'question';
+            }
+            if (/^out_of_scope/i.test(content)) {
+                return 'out_of_scope';
+            }
+            coreExports.debug(`Unexpected classification response: ${content}, defaulting to dispute`);
+            return 'dispute';
+        }
+        catch (error) {
+            coreExports.warning(`Failed to classify developer reply via API: ${error}, using fallback`);
+            return this.classifyDeveloperReplyFallback(replyBody);
+        }
+    }
+    classifyDeveloperReplyFallback(replyBody) {
+        const lowerBody = replyBody.toLowerCase();
+        const acknowledgmentPhrases = [
+            'good catch',
+            'will fix',
+            'thanks',
+            "you're right",
+            'you are right',
+            'agreed',
+            'makes sense',
+            'fair point'
+        ];
+        if (acknowledgmentPhrases.some((phrase) => lowerBody.includes(phrase))) {
+            return 'acknowledgment';
+        }
+        const questionMarkers = ['what', 'why', 'how', 'can you', 'could you', '?'];
+        if (questionMarkers.some((marker) => lowerBody.includes(marker))) {
+            return 'question';
+        }
+        const outOfScopePhrases = [
+            'next sprint',
+            'later',
+            'future pr',
+            'separate pr',
+            'out of scope',
+            'follow up'
+        ];
+        if (outOfScopePhrases.some((phrase) => lowerBody.includes(phrase))) {
+            return 'out_of_scope';
+        }
+        return 'dispute';
+    }
+    async getThreadsWithDeveloperReplies() {
+        const state = await this.getOrCreateState();
+        const threadsWithReplies = [];
+        for (const thread of state.threads) {
+            if (thread.status === 'RESOLVED') {
+                continue;
+            }
+            const replies = await this.fetchDeveloperReplies(thread.id);
+            if (replies.length > 0) {
+                threadsWithReplies.push({
+                    ...thread,
+                    developer_replies: replies
+                });
+            }
+        }
+        return threadsWithReplies;
+    }
+    findDuplicateThread(file, line, finding) {
+        if (!this.currentState) {
+            return null;
+        }
+        return (this.currentState.threads.find((t) => t.file === file &&
+            t.line === line &&
+            t.status !== 'RESOLVED' &&
+            this.isSimilarFinding(t.assessment.finding, finding)) || null);
+    }
+    isSimilarFinding(existing, incoming) {
+        const normalizedExisting = this.normalizeForComparison(existing);
+        const normalizedIncoming = this.normalizeForComparison(incoming);
+        if (normalizedExisting === normalizedIncoming) {
+            return true;
+        }
+        const existingWords = this.getSignificantWords(existing);
+        const incomingWords = this.getSignificantWords(incoming);
+        if (existingWords.size === 0 || incomingWords.size === 0) {
+            return false;
+        }
+        const intersection = [...existingWords].filter((w) => incomingWords.has(w));
+        const smallerSet = Math.min(existingWords.size, incomingWords.size);
+        const overlapRatio = intersection.length / smallerSet;
+        return overlapRatio >= 0.5;
+    }
+    normalizeForComparison(text) {
+        return text
+            .toLowerCase()
+            .replace(/[^a-z0-9]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+    getSignificantWords(text) {
+        const words = this.normalizeForComparison(text).split(' ');
+        return new Set(words.filter((w) => w.length > 2 && !STOP_WORDS.has(w)));
+    }
+    async trackQuestionTask(questionId, author, question, commentId, fileContext) {
+        coreExports.info(`Tracking question task: ${questionId} from ${author}`);
+        coreExports.debug(`Question: ${question.substring(0, 100)}...`);
+        if (fileContext) {
+            coreExports.debug(`File context: ${fileContext.path}:${fileContext.line || 'N/A'}`);
+        }
+        try {
+            const comment = await this.octokit.issues.getComment({
+                owner: this.config.github.owner,
+                repo: this.config.github.repo,
+                comment_id: Number(commentId)
+            });
+            const existingBody = comment.data.body || '';
+            const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/;
+            if (rmcocRegex.test(existingBody)) {
+                return;
+            }
+            const rmcocData = {
+                type: 'question',
+                status: 'PENDING',
+                author,
+                question: question.substring(0, 200),
+                file_context: fileContext,
+                tracked_at: new Date().toISOString()
+            };
+            const updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``;
+            await this.octokit.issues.updateComment({
+                owner: this.config.github.owner,
+                repo: this.config.github.repo,
+                comment_id: Number(commentId),
+                body: updatedBody
+            });
+            coreExports.debug(`Added PENDING rmcoc block to question ${commentId}`);
+        }
+        catch (error) {
+            coreExports.warning(`Failed to track question task: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    async markQuestionInProgress(questionId) {
+        coreExports.info(`Marking question ${questionId} as in progress`);
+        // Update the original comment with rmcoc block showing IN_PROGRESS status
+        try {
+            const comment = await this.octokit.issues.getComment({
+                owner: this.config.github.owner,
+                repo: this.config.github.repo,
+                comment_id: Number(questionId)
+            });
+            const rmcocData = {
+                type: 'question',
+                status: 'IN_PROGRESS',
+                started_at: new Date().toISOString()
+            };
+            const existingBody = comment.data.body || '';
+            const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/;
+            let updatedBody;
+            if (rmcocRegex.test(existingBody)) {
+                updatedBody = existingBody.replace(rmcocRegex, `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``);
+            }
+            else {
+                updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``;
+            }
+            await this.octokit.issues.updateComment({
+                owner: this.config.github.owner,
+                repo: this.config.github.repo,
+                comment_id: Number(questionId),
+                body: updatedBody
+            });
+        }
+        catch (error) {
+            coreExports.warning(`Failed to update question status to IN_PROGRESS: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    async markQuestionAnswered(questionId) {
+        coreExports.info(`Marking question ${questionId} as answered`);
+        // Update the original comment with rmcoc block showing ANSWERED status
+        try {
+            const comment = await this.octokit.issues.getComment({
+                owner: this.config.github.owner,
+                repo: this.config.github.repo,
+                comment_id: Number(questionId)
+            });
+            const rmcocData = {
+                type: 'question',
+                status: 'ANSWERED',
+                completed_at: new Date().toISOString()
+            };
+            const existingBody = comment.data.body || '';
+            const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/;
+            let updatedBody;
+            if (rmcocRegex.test(existingBody)) {
+                updatedBody = existingBody.replace(rmcocRegex, `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``);
+            }
+            else {
+                updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``;
+            }
+            await this.octokit.issues.updateComment({
+                owner: this.config.github.owner,
+                repo: this.config.github.repo,
+                comment_id: Number(questionId),
+                body: updatedBody
+            });
+        }
+        catch (error) {
+            coreExports.warning(`Failed to update question status to ANSWERED: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    async trackManualReviewRequest(requestId, author, commentId) {
+        coreExports.info(`Tracking manual review request: ${requestId} from ${author}`);
+        coreExports.debug(`Comment ID: ${commentId}`);
+        // The tracking is done when we update the comment status
+    }
+    async markManualReviewInProgress(requestId) {
+        coreExports.info(`Marking manual review ${requestId} as in progress`);
+        try {
+            const comment = await this.octokit.issues.getComment({
+                owner: this.config.github.owner,
+                repo: this.config.github.repo,
+                comment_id: Number(requestId)
+            });
+            const rmcocData = {
+                type: 'manual-pr-review',
+                status: 'IN_PROGRESS',
+                started_at: new Date().toISOString()
+            };
+            const existingBody = comment.data.body || '';
+            const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/;
+            let updatedBody;
+            if (rmcocRegex.test(existingBody)) {
+                updatedBody = existingBody.replace(rmcocRegex, `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``);
+            }
+            else {
+                updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``;
+            }
+            await this.octokit.issues.updateComment({
+                owner: this.config.github.owner,
+                repo: this.config.github.repo,
+                comment_id: Number(requestId),
+                body: updatedBody
+            });
+        }
+        catch (error) {
+            coreExports.warning(`Failed to update manual review status to IN_PROGRESS: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    async markManualReviewCompleted(requestId) {
+        coreExports.info(`Marking manual review ${requestId} as completed`);
+        try {
+            const comment = await this.octokit.issues.getComment({
+                owner: this.config.github.owner,
+                repo: this.config.github.repo,
+                comment_id: Number(requestId)
+            });
+            const rmcocData = {
+                type: 'manual-pr-review',
+                status: 'COMPLETED',
+                completed_at: new Date().toISOString()
+            };
+            const existingBody = comment.data.body || '';
+            const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/;
+            let updatedBody;
+            if (rmcocRegex.test(existingBody)) {
+                updatedBody = existingBody.replace(rmcocRegex, `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``);
+            }
+            else {
+                updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``;
+            }
+            await this.octokit.issues.updateComment({
+                owner: this.config.github.owner,
+                repo: this.config.github.repo,
+                comment_id: Number(requestId),
+                body: updatedBody
+            });
+        }
+        catch (error) {
+            coreExports.warning(`Failed to update manual review status to COMPLETED: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    async dismissManualReview(requestId, dismissedBy) {
+        coreExports.info(`Dismissing manual review ${requestId}, dismissed by: ${dismissedBy}`);
+        try {
+            const comment = await this.octokit.issues.getComment({
+                owner: this.config.github.owner,
+                repo: this.config.github.repo,
+                comment_id: Number(requestId)
+            });
+            const rmcocData = {
+                type: 'manual-pr-review',
+                status: 'DISMISSED_BY_AUTO_REVIEW',
+                dismissed_at: new Date().toISOString(),
+                dismissed_reason: `Dismissed by ${dismissedBy}`
+            };
+            const existingBody = comment.data.body || '';
+            const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/;
+            let updatedBody;
+            if (rmcocRegex.test(existingBody)) {
+                updatedBody = existingBody.replace(rmcocRegex, `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``);
+            }
+            else {
+                updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``;
+            }
+            await this.octokit.issues.updateComment({
+                owner: this.config.github.owner,
+                repo: this.config.github.repo,
+                comment_id: Number(requestId),
+                body: updatedBody
+            });
+        }
+        catch (error) {
+            coreExports.warning(`Failed to dismiss manual review: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    /**
+     * Record that an auto review was triggered by a PR event.
+     * This is used to preserve merge gate behavior when reviews are cancelled.
+     * Persists to a hidden PR comment so it survives workflow restarts.
+     */
+    async recordAutoReviewTrigger(action, sha) {
+        coreExports.info(`Recording auto review trigger: ${action} for SHA ${sha}`);
+        this.autoReviewTrigger = {
+            action,
+            sha,
+            triggeredAt: new Date().toISOString(),
+            cancelled: false
+        };
+        await this.persistAutoReviewTrigger();
+    }
+    /**
+     * Check if there's a pending (cancelled/incomplete) auto review for the current SHA.
+     * Returns the trigger info if found, null otherwise.
+     */
+    async getPendingAutoReviewTrigger(currentSha) {
+        coreExports.debug(`Checking for pending auto review trigger for SHA ${currentSha}`);
+        await this.loadAutoReviewTrigger();
+        if (!this.autoReviewTrigger) {
+            return null;
+        }
+        if (this.autoReviewTrigger.sha !== currentSha) {
+            coreExports.debug(`Auto review trigger SHA ${this.autoReviewTrigger.sha} doesn't match current SHA ${currentSha}`);
+            return null;
+        }
+        if (this.autoReviewTrigger.completedAt) {
+            coreExports.debug('Auto review trigger already completed');
+            return null;
+        }
+        coreExports.info(`Found pending auto review trigger: ${this.autoReviewTrigger.action} for SHA ${currentSha}`);
+        return { action: this.autoReviewTrigger.action };
+    }
+    /**
+     * Mark the auto review trigger as cancelled (workflow was interrupted).
+     */
+    async markAutoReviewCancelled() {
+        if (this.autoReviewTrigger) {
+            this.autoReviewTrigger.cancelled = true;
+            await this.persistAutoReviewTrigger();
+            coreExports.info('Marked auto review as cancelled');
+        }
+    }
+    /**
+     * Mark an auto review as completed.
+     */
+    async markAutoReviewCompleted() {
+        coreExports.info('Marking auto review as completed');
+        if (this.autoReviewTrigger) {
+            this.autoReviewTrigger.completedAt = new Date().toISOString();
+            await this.persistAutoReviewTrigger();
+        }
+    }
+    /**
+     * Clear the auto review trigger after a review is complete.
+     * This resets the trigger state so future runs don't see stale data.
+     */
+    async clearAutoReviewTrigger() {
+        coreExports.info('Clearing auto review trigger');
+        if (this.autoReviewTrigger) {
+            this.autoReviewTrigger.completedAt = new Date().toISOString();
+            await this.persistAutoReviewTrigger();
+            this.autoReviewTrigger = null;
+        }
+    }
+    /**
+     * Check if the current execution was triggered by an auto review (PR event).
+     * This is used to determine if blocking issues should fail the action.
+     */
+    wasAutoReviewTriggered() {
+        return (this.autoReviewTrigger !== null && !this.autoReviewTrigger.completedAt);
+    }
+    /**
+     * Persist auto review trigger to a hidden PR comment.
+     */
+    async persistAutoReviewTrigger() {
+        const { owner, repo, prNumber } = this.config.github;
+        const rmcocData = {
+            type: 'auto-review-trigger',
+            ...this.autoReviewTrigger
+        };
+        const body = `<!-- rmcoc-auto-review-trigger -->\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``;
+        try {
+            if (this.autoReviewCommentId) {
+                await this.octokit.issues.updateComment({
+                    owner,
+                    repo,
+                    comment_id: this.autoReviewCommentId,
+                    body
+                });
+            }
+            else {
+                const response = await this.octokit.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: prNumber,
+                    body
+                });
+                this.autoReviewCommentId = response.data.id;
+            }
+        }
+        catch (error) {
+            coreExports.warning(`Failed to persist auto review trigger: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    /**
+     * Load auto review trigger from PR comments.
+     */
+    async loadAutoReviewTrigger() {
+        if (this.autoReviewTrigger) {
+            return;
+        }
+        const { owner, repo, prNumber } = this.config.github;
+        try {
+            const comments = await this.octokit.paginate(this.octokit.issues.listComments, {
+                owner,
+                repo,
+                issue_number: prNumber,
+                per_page: 100
+            });
+            for (const comment of comments) {
+                if (comment.body?.includes('<!-- rmcoc-auto-review-trigger -->')) {
+                    const match = comment.body.match(/```rmcoc\s*\n([\s\S]*?)\n```/);
+                    if (match?.[1]) {
+                        try {
+                            const parsed = JSON.parse(match[1]);
+                            if (parsed.type === 'auto-review-trigger') {
+                                this.autoReviewTrigger = {
+                                    action: parsed.action,
+                                    sha: parsed.sha,
+                                    triggeredAt: parsed.triggeredAt,
+                                    cancelled: parsed.cancelled || false,
+                                    completedAt: parsed.completedAt
+                                };
+                                this.autoReviewCommentId = comment.id;
+                                coreExports.debug(`Loaded auto review trigger from comment ${comment.id}`);
+                                return;
+                            }
+                        }
+                        catch {
+                            coreExports.debug('Failed to parse auto review trigger comment');
+                        }
+                    }
+                }
+            }
+        }
+        catch (error) {
+            coreExports.warning(`Failed to load auto review trigger: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+}
+const STOP_WORDS = new Set([
+    'a',
+    'an',
+    'the',
+    'is',
+    'are',
+    'was',
+    'were',
+    'be',
+    'been',
+    'being',
+    'have',
+    'has',
+    'had',
+    'do',
+    'does',
+    'did',
+    'will',
+    'would',
+    'could',
+    'should',
+    'may',
+    'might',
+    'must',
+    'shall',
+    'can',
+    'need',
+    'dare',
+    'ought',
+    'used',
+    'to',
+    'of',
+    'in',
+    'for',
+    'on',
+    'with',
+    'at',
+    'by',
+    'from',
+    'as',
+    'into',
+    'through',
+    'during',
+    'before',
+    'after',
+    'above',
+    'below',
+    'between',
+    'under',
+    'again',
+    'further',
+    'then',
+    'once',
+    'here',
+    'there',
+    'when',
+    'where',
+    'why',
+    'how',
+    'all',
+    'each',
+    'few',
+    'more',
+    'most',
+    'other',
+    'some',
+    'such',
+    'no',
+    'nor',
+    'not',
+    'only',
+    'own',
+    'same',
+    'so',
+    'than',
+    'too',
+    'very',
+    'just',
+    'and',
+    'but',
+    'if',
+    'or',
+    'because',
+    'until',
+    'while',
+    'this',
+    'that',
+    'these',
+    'those'
+]);
+class StateError extends Error {
+    cause;
+    constructor(message, cause) {
+        super(message);
+        this.cause = cause;
+        this.name = 'StateError';
+    }
+}
+
 /**
  * rmcoc block serialization and parsing utilities.
  *
@@ -41865,6 +42022,38 @@ function extractRmcocBlock(commentBody) {
  * - Unresolved disputes (developer replies to review threads)
  * - Review requests (auto PR events or manual @ mentions)
  */
+/**
+ * Check if a comment body contains a bot mention outside of code blocks
+ *
+ * Filters out mentions that appear in:
+ * - Fenced code blocks (```)
+ * - Inline code (`)
+ *
+ * This prevents false positives when users include bot mentions in examples
+ */
+function containsBotMentionOutsideCodeBlocks(body) {
+    // Remove fenced code blocks first (multi-line)
+    let cleaned = body.replace(/```[\s\S]*?```/g, '');
+    // Remove inline code
+    cleaned = cleaned.replace(/`[^`]+`/g, '');
+    return cleaned.includes(BOT_MENTION);
+}
+/**
+ * Create a hash of question text for detecting edits
+ *
+ * Uses a simple hash to detect if the question text has changed
+ * after being marked as answered
+ */
+function hashQuestionText(text) {
+    let hash = 0;
+    const normalized = text.toLowerCase().trim();
+    for (let i = 0; i < normalized.length; i++) {
+        const char = normalized.charCodeAt(i);
+        hash = (hash << 5) - hash + char;
+        hash = hash & hash; // Convert to 32bit integer
+    }
+    return hash.toString(16);
+}
 /**
  * Detects all pending tasks across a PR
  */
@@ -41928,31 +42117,44 @@ class TaskDetector {
         // Get all review threads with PENDING or DISPUTED status
         const activeThreads = reviewThreads.filter((t) => t.status === 'PENDING' || t.status === 'DISPUTED');
         for (const thread of activeThreads) {
-            // Check if there are new developer replies
-            const hasNewReply = await githubApi.hasNewDeveloperReply(thread.id);
-            if (hasNewReply) {
-                // Get the thread comments to find the latest reply
-                const comments = await githubApi.getThreadComments(thread.id);
-                const botUsers = ['github-actions[bot]', 'opencode-reviewer[bot]'];
-                // Find latest developer reply
-                const developerReplies = comments
-                    .filter((c) => !botUsers.includes(c.user?.login || ''))
-                    .sort((a, b) => new Date(b.created_at).getTime() -
-                    new Date(a.created_at).getTime());
-                const latestReply = developerReplies[0];
-                if (latestReply) {
-                    disputes.push({
-                        type: 'dispute-resolution',
-                        priority: 1,
-                        disputeContext: {
-                            threadId: thread.id,
-                            replyCommentId: String(latestReply.id),
-                            replyBody: latestReply.body || '',
-                            replyAuthor: latestReply.user?.login || 'unknown',
-                            file: thread.file,
-                            line: thread.line
-                        }
-                    });
+            try {
+                // Check if there are new developer replies
+                const hasNewReply = await githubApi.hasNewDeveloperReply(thread.id);
+                if (hasNewReply) {
+                    // Get the thread comments to find the latest reply
+                    const comments = await githubApi.getThreadComments(thread.id);
+                    // Find latest developer reply
+                    const developerReplies = comments
+                        .filter((c) => !BOT_USERS.includes(c.user?.login || ''))
+                        .sort((a, b) => new Date(b.created_at).getTime() -
+                        new Date(a.created_at).getTime());
+                    const latestReply = developerReplies[0];
+                    if (latestReply) {
+                        disputes.push({
+                            type: 'dispute-resolution',
+                            priority: 1,
+                            disputeContext: {
+                                threadId: thread.id,
+                                replyCommentId: String(latestReply.id),
+                                replyBody: latestReply.body || '',
+                                replyAuthor: latestReply.user?.login || 'unknown',
+                                file: thread.file,
+                                line: thread.line
+                            }
+                        });
+                    }
+                }
+            }
+            catch (error) {
+                // Thread may have been deleted or is inaccessible
+                // Log and continue with other threads
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                if (errorMessage.includes('404') ||
+                    errorMessage.includes('Not Found')) {
+                    logger.warning(`Thread ${thread.id} appears to be deleted, skipping`);
+                }
+                else {
+                    logger.warning(`Error checking thread ${thread.id}: ${errorMessage}`);
                 }
             }
         }
@@ -41966,7 +42168,6 @@ class TaskDetector {
      */
     async detectPendingQuestions(githubApi) {
         const questions = [];
-        const botMention = '@review-my-code-bot';
         // Get all issue comments
         const allComments = await githubApi.getAllIssueComments();
         // Build a set of answered question IDs by looking for question-answer blocks
@@ -41982,27 +42183,49 @@ class TaskDetector {
                 }
             }
         }
+        // Build a map of answered questions with their text hash for edit detection
+        const answeredQuestionHashes = new Map();
         for (const comment of allComments) {
-            if (!comment.body?.includes(botMention)) {
+            const rmcocBlock = extractRmcocBlock(comment.body || '');
+            if (rmcocBlock?.type === 'question-answer') {
+                const answerBlock = rmcocBlock;
+                if (answerBlock.reply_to_comment_id && answerBlock.question_hash) {
+                    answeredQuestionHashes.set(answerBlock.reply_to_comment_id, answerBlock.question_hash);
+                }
+            }
+        }
+        for (const comment of allComments) {
+            // Use code-block-aware bot mention detection
+            if (!containsBotMentionOutsideCodeBlocks(comment.body || '')) {
                 continue;
             }
             const commentId = String(comment.id);
             // Check rmcoc block to see if already handled
-            const rmcocBlock = extractRmcocBlock(comment.body);
+            const rmcocBlock = extractRmcocBlock(comment.body || '');
             // Skip if already answered (original comment marked as ANSWERED)
             if (rmcocBlock?.type === 'question' && rmcocBlock.status === 'ANSWERED') {
                 continue;
             }
             // Skip if we found a question-answer reply to this comment
             if (answeredQuestionIds.has(commentId)) {
-                continue;
+                // Check if the question was edited after being answered
+                const currentHash = hashQuestionText((comment.body || '').replace(BOT_MENTION, '').trim());
+                const answeredHash = answeredQuestionHashes.get(commentId);
+                // If hash matches or no hash stored, question hasn't changed - skip
+                if (!answeredHash || currentHash === answeredHash) {
+                    continue;
+                }
+                // Question was edited after being answered - process it as a new question
+                logger.info(`Question ${commentId} was edited after being answered, reprocessing`);
             }
             // Skip if this is a manual review request (not a question)
             if (rmcocBlock?.type === 'manual-pr-review') {
                 continue;
             }
             // Extract question text
-            const textAfterMention = comment.body.replace(botMention, '').trim();
+            const textAfterMention = (comment.body || '')
+                .replace(BOT_MENTION, '')
+                .trim();
             if (!textAfterMention) {
                 continue;
             }
@@ -42010,13 +42233,14 @@ class TaskDetector {
             const intent = await this.intentClassifier.classifyBotMention(textAfterMention);
             if (intent === 'question') {
                 // Get conversation history for follow-ups
-                const conversationHistory = await this.getConversationHistory(githubApi, commentId, allComments);
+                const conversationHistory = await this.getConversationHistory(commentId, allComments);
                 questions.push({
                     type: 'question-answering',
                     priority: 2,
                     questionContext: {
                         commentId,
                         question: textAfterMention,
+                        questionHash: hashQuestionText(textAfterMention),
                         author: comment.user?.login || 'unknown',
                         fileContext: undefined // Issue comments don't have file context
                     },
@@ -42032,10 +42256,28 @@ class TaskDetector {
      * Detect if a review should be performed based on config
      *
      * Checks for:
+     * - Cancelled auto reviews that need to be resumed
      * - Auto reviews (triggered by PR events)
      * - Manual review requests (@ mentions)
      */
-    async detectReviewRequestFromConfig(_githubApi, config) {
+    async detectReviewRequestFromConfig(githubApi, config) {
+        // First, check for a cancelled auto review that needs to be resumed
+        // This preserves the merge gate behavior when a review was cancelled
+        const currentSHA = await githubApi.getCurrentSHA();
+        const pendingAutoReview = await this.stateManager.getPendingAutoReviewTrigger(currentSHA);
+        if (pendingAutoReview) {
+            logger.info(`Resuming cancelled auto review (${pendingAutoReview.action}) for SHA ${currentSHA}`);
+            return {
+                type: 'full-review',
+                priority: 3,
+                isManual: false,
+                triggeredBy: pendingAutoReview.action,
+                resumingCancelled: true,
+                // Resumed auto reviews still affect merge gate
+                affectsMergeGate: true
+            };
+        }
+        // Check if this run is configured to do a full review
         if (config.execution.mode === 'full-review') {
             const isManual = config.execution.isManuallyTriggered;
             return {
@@ -42126,47 +42368,44 @@ class TaskDetector {
      * Get conversation history for a question
      *
      * Includes ALL comments in chronological order (developers often post
-     * follow-ups without tagging)
+     * follow-ups without tagging). This provides the full context needed
+     * for answering follow-up questions accurately.
      */
-    async getConversationHistory(githubApi, commentId, allComments) {
+    getConversationHistory(commentId, allComments) {
         const currentComment = allComments.find((c) => String(c.id) === commentId);
         if (!currentComment) {
             return [];
         }
-        const botUsers = ['github-actions[bot]', 'opencode-reviewer[bot]'];
-        const botMention = '@review-my-code-bot';
         const conversationMessages = [];
         // Get all comments before current one
         const priorComments = allComments
             .filter((c) => new Date(c.created_at) < new Date(currentComment.created_at))
             .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-        // Build conversation (all dev/bot exchanges)
+        // Include ALL comments in conversation history for full context
+        // Developers often post follow-ups without explicitly tagging the bot
         for (const comment of priorComments) {
-            const isBot = botUsers.includes(comment.user?.login || '');
-            // Include if it's a bot mention or a bot reply
-            if (comment.body?.includes(botMention) || isBot) {
-                conversationMessages.push({
-                    author: comment.user?.login || 'unknown',
-                    body: comment.body || '',
-                    timestamp: comment.created_at,
-                    isBot
-                });
-            }
+            const isBot = BOT_USERS.includes(comment.user?.login || '');
+            conversationMessages.push({
+                author: comment.user?.login || 'unknown',
+                body: comment.body || '',
+                timestamp: comment.created_at,
+                isBot
+            });
         }
         return conversationMessages;
     }
 }
 
-class ExecutionOrchestrator {
+class TaskOrchestrator {
     config;
     githubApi;
-    reviewOrchestrator;
+    reviewExecutor;
     stateManager;
     taskDetector;
-    constructor(config, githubApi, reviewOrchestrator, stateManager, llmClient) {
+    constructor(config, githubApi, reviewExecutor, stateManager, llmClient) {
         this.config = config;
         this.githubApi = githubApi;
-        this.reviewOrchestrator = reviewOrchestrator;
+        this.reviewExecutor = reviewExecutor;
         this.stateManager = stateManager;
         this.taskDetector = new TaskDetector(llmClient, stateManager);
     }
@@ -42251,7 +42490,7 @@ class ExecutionOrchestrator {
     async executeDisputeTask(task) {
         return await logger.group(`Executing Dispute Resolution (thread ${task.disputeContext.threadId})`, async () => {
             try {
-                await this.reviewOrchestrator.executeDisputeResolution(task.disputeContext);
+                await this.reviewExecutor.executeDisputeResolution(task.disputeContext);
                 return {
                     type: 'dispute-resolution',
                     success: true,
@@ -42270,7 +42509,7 @@ class ExecutionOrchestrator {
                 await this.stateManager.trackQuestionTask(task.questionContext.commentId, task.questionContext.author, task.questionContext.question, task.questionContext.commentId, task.questionContext.fileContext);
                 await this.stateManager.markQuestionInProgress(task.questionContext.commentId);
                 // Pass the question context and conversation history to the orchestrator
-                await this.reviewOrchestrator.executeQuestionAnswering(task.questionContext, task.conversationHistory);
+                await this.reviewExecutor.executeQuestionAnswering(task.questionContext, task.conversationHistory);
                 await this.stateManager.markQuestionAnswered(task.questionContext.commentId);
                 return {
                     type: 'question-answering',
@@ -42291,7 +42530,7 @@ class ExecutionOrchestrator {
                     await this.stateManager.trackManualReviewRequest(task.triggerCommentId, 'unknown', task.triggerCommentId);
                     await this.stateManager.markManualReviewInProgress(task.triggerCommentId);
                 }
-                const reviewOutput = await this.reviewOrchestrator.executeReview();
+                const reviewOutput = await this.reviewExecutor.executeReview();
                 if (task.isManual && task.triggerCommentId) {
                     await this.stateManager.markManualReviewCompleted(task.triggerCommentId);
                 }
@@ -50240,7 +50479,7 @@ const appRouter = router({
     github: router({
         getRunState: publicProcedure.query(async ({ ctx }) => {
             logger.debug('tRPC: github.getRunState called');
-            const state = ctx.orchestrator.getState();
+            const state = ctx.executor.getState();
             return {
                 threads: state?.threads || [],
                 lastCommitSha: state?.lastCommitSha || '',
@@ -50260,7 +50499,7 @@ const appRouter = router({
                 sessionId: 'trpc-session'
             });
             logger.debug(`tRPC: github.postReviewComment called for ${input.file}:${input.line} (score: ${input.assessment.score})`);
-            const config = ctx.orchestrator.getConfig();
+            const config = ctx.executor.getConfig();
             if (input.assessment.score < config.scoring.problemThreshold) {
                 logger.info(`Comment filtered: score ${input.assessment.score} below threshold ${config.scoring.problemThreshold}`);
                 return {
@@ -50268,7 +50507,7 @@ const appRouter = router({
                     reason: `Score ${input.assessment.score} below threshold ${config.scoring.problemThreshold}`
                 };
             }
-            const existingThread = ctx.orchestrator.findDuplicateThread(input.file, input.line, input.assessment.finding);
+            const existingThread = ctx.executor.findDuplicateThread(input.file, input.line, input.assessment.finding);
             if (existingThread) {
                 logger.info(`Comment deduplicated: existing thread ${existingThread.id} for ${input.file}:${input.line} with similar finding`);
                 return {
@@ -50294,7 +50533,7 @@ const appRouter = router({
                 line: input.line,
                 body: commentBody
             });
-            await ctx.orchestrator.addThread({
+            await ctx.executor.addThread({
                 id: commentId,
                 file: input.file,
                 line: input.line,
@@ -50325,7 +50564,7 @@ const appRouter = router({
                 sessionId: 'trpc-session'
             });
             logger.debug(`tRPC: github.replyToThread called for ${input.threadId}`);
-            const state = ctx.orchestrator.getState();
+            const state = ctx.executor.getState();
             const thread = state?.threads.find((t) => t.id === input.threadId);
             if (thread?.status === 'RESOLVED') {
                 logger.info(`Thread ${input.threadId} is already resolved, skipping reply`);
@@ -50342,11 +50581,12 @@ const appRouter = router({
             }
             await ctx.github.replyToComment(input.threadId, input.body);
             if (input.isConcession) {
-                await ctx.orchestrator.updateThreadStatus(input.threadId, 'RESOLVED');
+                await ctx.github.resolveThread(input.threadId, 'Agent conceded to developer explanation');
+                await ctx.executor.updateThreadStatus(input.threadId, 'RESOLVED');
                 logger.info(`Thread ${input.threadId} marked as RESOLVED (agent conceded)`);
             }
             else {
-                await ctx.orchestrator.updateThreadStatus(input.threadId, 'DISPUTED');
+                await ctx.executor.updateThreadStatus(input.threadId, 'DISPUTED');
                 logger.info(`Thread ${input.threadId} marked as DISPUTED`);
             }
             return { success: true, skipped: false };
@@ -50363,7 +50603,7 @@ const appRouter = router({
                 sessionId: 'trpc-session'
             });
             logger.debug(`tRPC: github.resolveThread called for ${input.threadId}`);
-            const state = ctx.orchestrator.getState();
+            const state = ctx.executor.getState();
             const thread = state?.threads.find((t) => t.id === input.threadId);
             if (thread?.status === 'RESOLVED') {
                 logger.info(`Thread ${input.threadId} is already resolved, skipping duplicate resolution`);
@@ -50373,7 +50613,7 @@ const appRouter = router({
                 };
             }
             await ctx.github.resolveThread(input.threadId, input.reason);
-            await ctx.orchestrator.updateThreadStatus(input.threadId, 'RESOLVED');
+            await ctx.executor.updateThreadStatus(input.threadId, 'RESOLVED');
             logger.info(`Thread ${input.threadId} resolved: ${input.reason}`);
             return { success: true, alreadyResolved: false };
         }),
@@ -50388,7 +50628,7 @@ const appRouter = router({
                 sessionId: 'trpc-session'
             });
             logger.debug(`tRPC: github.escalateDispute called for ${input.threadId}`);
-            const config = ctx.orchestrator.getConfig();
+            const config = ctx.executor.getConfig();
             if (!config.dispute.enableHumanEscalation) {
                 logger.warning('Human escalation is not enabled - escalation request ignored');
                 return {
@@ -50404,7 +50644,7 @@ const appRouter = router({
                 };
             }
             await ctx.github.escalateToHumanReviewers(input.threadId, input.agentPosition, input.developerPosition, config.dispute.humanReviewers);
-            await ctx.orchestrator.updateThreadStatus(input.threadId, 'ESCALATED');
+            await ctx.executor.updateThreadStatus(input.threadId, 'ESCALATED');
             logger.info(`Thread ${input.threadId} escalated to human reviewers`);
             return { success: true };
         })
@@ -50414,7 +50654,7 @@ const appRouter = router({
             .input(submitPassResultsSchema)
             .mutation(async ({ ctx, input }) => {
             logger.info(`tRPC: review.submitPassResults called for pass ${input.passNumber}`);
-            if (!ctx.orchestrator.isInMultiPassReview()) {
+            if (!ctx.executor.isInMultiPassReview()) {
                 logger.warning(`submit_pass_results called outside of multi-pass review phase - rejecting`);
                 return {
                     success: false,
@@ -50422,7 +50662,7 @@ const appRouter = router({
                     nextPass: null
                 };
             }
-            const alreadyCompleted = ctx.orchestrator.isPassCompleted(input.passNumber);
+            const alreadyCompleted = ctx.executor.isPassCompleted(input.passNumber);
             if (alreadyCompleted) {
                 logger.warning(`Pass ${input.passNumber} already completed - rejecting duplicate submission`);
                 return {
@@ -50431,7 +50671,7 @@ const appRouter = router({
                     nextPass: null
                 };
             }
-            ctx.orchestrator.recordPassCompletion({
+            ctx.executor.recordPassCompletion({
                 passNumber: input.passNumber,
                 completed: true,
                 hasBlockingIssues: input.hasBlockingIssues
@@ -50448,20 +50688,20 @@ const appRouter = router({
 });
 
 class TRPCServer {
-    orchestrator;
+    executor;
     github;
     llmClient;
     port;
     server = null;
-    constructor(orchestrator, github, llmClient, port = TRPC_SERVER_PORT) {
-        this.orchestrator = orchestrator;
+    constructor(executor, github, llmClient, port = TRPC_SERVER_PORT) {
+        this.executor = executor;
         this.github = github;
         this.llmClient = llmClient;
         this.port = port;
     }
     async start() {
         const context = {
-            orchestrator: this.orchestrator,
+            executor: this.executor,
             github: this.github,
             llmClient: this.llmClient
         };
@@ -50498,7 +50738,7 @@ class TRPCServer {
 async function run() {
     let openCodeServer = null;
     let trpcServer = null;
-    let reviewOrchestrator = null;
+    let reviewExecutor = null;
     let exitCode = 0;
     try {
         logger.info('Starting OpenCode PR Reviewer...');
@@ -50517,13 +50757,13 @@ async function run() {
             model: config.opencode.model
         });
         const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
-        reviewOrchestrator = new ReviewOrchestrator(opencode, llmClient, github, config, workspaceRoot);
-        const stateManager = new StateManager(config, llmClient);
-        const executionOrchestrator = new ExecutionOrchestrator(config, github, reviewOrchestrator, stateManager, llmClient);
-        trpcServer = new TRPCServer(reviewOrchestrator, github, llmClient);
+        const stateManager = new StateManager(config, llmClient, github.getOctokit());
+        reviewExecutor = new ReviewExecutor(opencode, stateManager, github, config, workspaceRoot);
+        const taskOrchestrator = new TaskOrchestrator(config, github, reviewExecutor, stateManager, llmClient);
+        trpcServer = new TRPCServer(reviewExecutor, github, llmClient);
         await trpcServer.start();
         logger.info('Executing multi-task workflow...');
-        const executionResult = await executionOrchestrator.execute();
+        const executionResult = await taskOrchestrator.execute();
         logger.info(`Execution complete: ${executionResult.totalTasks} task(s) executed`);
         let totalIssuesFound = 0;
         let totalBlockingIssues = 0;
@@ -50574,21 +50814,21 @@ async function run() {
         exitCode = 1;
     }
     finally {
-        await cleanup(reviewOrchestrator, trpcServer, openCodeServer);
+        await cleanup(reviewExecutor, trpcServer, openCodeServer);
         process.exit(exitCode);
     }
 }
-async function cleanup(orchestrator, trpcServer, openCodeServer) {
+async function cleanup(executor, trpcServer, openCodeServer) {
     logger.debug('Cleanup: Starting cleanup sequence');
     try {
-        if (orchestrator) {
-            logger.debug('Cleanup: Cleaning up orchestrator...');
-            await orchestrator.cleanup();
-            logger.debug('Cleanup: Orchestrator cleanup complete');
+        if (executor) {
+            logger.debug('Cleanup: Cleaning up executor...');
+            await executor.cleanup();
+            logger.debug('Cleanup: Executor cleanup complete');
         }
     }
     catch (error) {
-        logger.warning(`Error during orchestrator cleanup: ${error instanceof Error ? error.message : String(error)}`);
+        logger.warning(`Error during executor cleanup: ${error instanceof Error ? error.message : String(error)}`);
     }
     try {
         if (trpcServer) {

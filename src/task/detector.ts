@@ -7,9 +7,10 @@
  * - Review requests (auto PR events or manual @ mentions)
  */
 
+import { BOT_MENTION, BOT_USERS } from '../config/constants.js'
 import type { GitHubAPI } from '../github/api.js'
 import type { LLMClient } from '../opencode/llm-client.js'
-import type { ReviewConfig } from '../review/types.js'
+import type { ReviewConfig } from '../execution/types.js'
 import type { StateManager } from '../state/manager.js'
 import { extractRmcocBlock, type RmcocBlock } from '../state/serializer.js'
 import { logger } from '../utils/logger.js'
@@ -21,6 +22,40 @@ import type {
   ReviewTask,
   Task
 } from './types.js'
+
+/**
+ * Check if a comment body contains a bot mention outside of code blocks
+ *
+ * Filters out mentions that appear in:
+ * - Fenced code blocks (```)
+ * - Inline code (`)
+ *
+ * This prevents false positives when users include bot mentions in examples
+ */
+function containsBotMentionOutsideCodeBlocks(body: string): boolean {
+  // Remove fenced code blocks first (multi-line)
+  let cleaned = body.replace(/```[\s\S]*?```/g, '')
+  // Remove inline code
+  cleaned = cleaned.replace(/`[^`]+`/g, '')
+  return cleaned.includes(BOT_MENTION)
+}
+
+/**
+ * Create a hash of question text for detecting edits
+ *
+ * Uses a simple hash to detect if the question text has changed
+ * after being marked as answered
+ */
+function hashQuestionText(text: string): string {
+  let hash = 0
+  const normalized = text.toLowerCase().trim()
+  for (let i = 0; i < normalized.length; i++) {
+    const char = normalized.charCodeAt(i)
+    hash = (hash << 5) - hash + char
+    hash = hash & hash // Convert to 32bit integer
+  }
+  return hash.toString(16)
+}
 
 /**
  * Detects all pending tasks across a PR
@@ -117,37 +152,51 @@ export class TaskDetector {
     )
 
     for (const thread of activeThreads) {
-      // Check if there are new developer replies
-      const hasNewReply = await githubApi.hasNewDeveloperReply(thread.id)
+      try {
+        // Check if there are new developer replies
+        const hasNewReply = await githubApi.hasNewDeveloperReply(thread.id)
 
-      if (hasNewReply) {
-        // Get the thread comments to find the latest reply
-        const comments = await githubApi.getThreadComments(thread.id)
-        const botUsers = ['github-actions[bot]', 'opencode-reviewer[bot]']
+        if (hasNewReply) {
+          // Get the thread comments to find the latest reply
+          const comments = await githubApi.getThreadComments(thread.id)
 
-        // Find latest developer reply
-        const developerReplies = comments
-          .filter((c) => !botUsers.includes(c.user?.login || ''))
-          .sort(
-            (a, b) =>
-              new Date(b.created_at).getTime() -
-              new Date(a.created_at).getTime()
-          )
+          // Find latest developer reply
+          const developerReplies = comments
+            .filter((c) => !BOT_USERS.includes(c.user?.login || ''))
+            .sort(
+              (a, b) =>
+                new Date(b.created_at).getTime() -
+                new Date(a.created_at).getTime()
+            )
 
-        const latestReply = developerReplies[0]
-        if (latestReply) {
-          disputes.push({
-            type: 'dispute-resolution',
-            priority: 1,
-            disputeContext: {
-              threadId: thread.id,
-              replyCommentId: String(latestReply.id),
-              replyBody: latestReply.body || '',
-              replyAuthor: latestReply.user?.login || 'unknown',
-              file: thread.file,
-              line: thread.line
-            }
-          })
+          const latestReply = developerReplies[0]
+          if (latestReply) {
+            disputes.push({
+              type: 'dispute-resolution',
+              priority: 1,
+              disputeContext: {
+                threadId: thread.id,
+                replyCommentId: String(latestReply.id),
+                replyBody: latestReply.body || '',
+                replyAuthor: latestReply.user?.login || 'unknown',
+                file: thread.file,
+                line: thread.line
+              }
+            })
+          }
+        }
+      } catch (error) {
+        // Thread may have been deleted or is inaccessible
+        // Log and continue with other threads
+        const errorMessage =
+          error instanceof Error ? error.message : String(error)
+        if (
+          errorMessage.includes('404') ||
+          errorMessage.includes('Not Found')
+        ) {
+          logger.warning(`Thread ${thread.id} appears to be deleted, skipping`)
+        } else {
+          logger.warning(`Error checking thread ${thread.id}: ${errorMessage}`)
         }
       }
     }
@@ -165,7 +214,6 @@ export class TaskDetector {
     githubApi: GitHubAPI
   ): Promise<QuestionTask[]> {
     const questions: QuestionTask[] = []
-    const botMention = '@review-my-code-bot'
 
     // Get all issue comments
     const allComments = await githubApi.getAllIssueComments()
@@ -184,15 +232,34 @@ export class TaskDetector {
       }
     }
 
+    // Build a map of answered questions with their text hash for edit detection
+    const answeredQuestionHashes = new Map<string, string>()
     for (const comment of allComments) {
-      if (!comment.body?.includes(botMention)) {
+      const rmcocBlock = extractRmcocBlock(comment.body || '')
+      if (rmcocBlock?.type === 'question-answer') {
+        const answerBlock = rmcocBlock as {
+          reply_to_comment_id?: string
+          question_hash?: string
+        }
+        if (answerBlock.reply_to_comment_id && answerBlock.question_hash) {
+          answeredQuestionHashes.set(
+            answerBlock.reply_to_comment_id,
+            answerBlock.question_hash
+          )
+        }
+      }
+    }
+
+    for (const comment of allComments) {
+      // Use code-block-aware bot mention detection
+      if (!containsBotMentionOutsideCodeBlocks(comment.body || '')) {
         continue
       }
 
       const commentId = String(comment.id)
 
       // Check rmcoc block to see if already handled
-      const rmcocBlock = extractRmcocBlock(comment.body)
+      const rmcocBlock = extractRmcocBlock(comment.body || '')
 
       // Skip if already answered (original comment marked as ANSWERED)
       if (rmcocBlock?.type === 'question' && rmcocBlock.status === 'ANSWERED') {
@@ -201,7 +268,21 @@ export class TaskDetector {
 
       // Skip if we found a question-answer reply to this comment
       if (answeredQuestionIds.has(commentId)) {
-        continue
+        // Check if the question was edited after being answered
+        const currentHash = hashQuestionText(
+          (comment.body || '').replace(BOT_MENTION, '').trim()
+        )
+        const answeredHash = answeredQuestionHashes.get(commentId)
+
+        // If hash matches or no hash stored, question hasn't changed - skip
+        if (!answeredHash || currentHash === answeredHash) {
+          continue
+        }
+
+        // Question was edited after being answered - process it as a new question
+        logger.info(
+          `Question ${commentId} was edited after being answered, reprocessing`
+        )
       }
 
       // Skip if this is a manual review request (not a question)
@@ -210,7 +291,9 @@ export class TaskDetector {
       }
 
       // Extract question text
-      const textAfterMention = comment.body.replace(botMention, '').trim()
+      const textAfterMention = (comment.body || '')
+        .replace(BOT_MENTION, '')
+        .trim()
       if (!textAfterMention) {
         continue
       }
@@ -222,7 +305,6 @@ export class TaskDetector {
       if (intent === 'question') {
         // Get conversation history for follow-ups
         const conversationHistory = await this.getConversationHistory(
-          githubApi,
           commentId,
           allComments
         )
@@ -233,6 +315,7 @@ export class TaskDetector {
           questionContext: {
             commentId,
             question: textAfterMention,
+            questionHash: hashQuestionText(textAfterMention),
             author: comment.user?.login || 'unknown',
             fileContext: undefined // Issue comments don't have file context
           },
@@ -250,13 +333,36 @@ export class TaskDetector {
    * Detect if a review should be performed based on config
    *
    * Checks for:
+   * - Cancelled auto reviews that need to be resumed
    * - Auto reviews (triggered by PR events)
    * - Manual review requests (@ mentions)
    */
   private async detectReviewRequestFromConfig(
-    _githubApi: GitHubAPI,
+    githubApi: GitHubAPI,
     config: ReviewConfig
   ): Promise<ReviewTask | null> {
+    // First, check for a cancelled auto review that needs to be resumed
+    // This preserves the merge gate behavior when a review was cancelled
+    const currentSHA = await githubApi.getCurrentSHA()
+    const pendingAutoReview =
+      await this.stateManager.getPendingAutoReviewTrigger(currentSHA)
+
+    if (pendingAutoReview) {
+      logger.info(
+        `Resuming cancelled auto review (${pendingAutoReview.action}) for SHA ${currentSHA}`
+      )
+      return {
+        type: 'full-review',
+        priority: 3,
+        isManual: false,
+        triggeredBy: pendingAutoReview.action,
+        resumingCancelled: true,
+        // Resumed auto reviews still affect merge gate
+        affectsMergeGate: true
+      }
+    }
+
+    // Check if this run is configured to do a full review
     if (config.execution.mode === 'full-review') {
       const isManual = config.execution.isManuallyTriggered
       return {
@@ -378,20 +484,18 @@ export class TaskDetector {
    * Get conversation history for a question
    *
    * Includes ALL comments in chronological order (developers often post
-   * follow-ups without tagging)
+   * follow-ups without tagging). This provides the full context needed
+   * for answering follow-up questions accurately.
    */
-  private async getConversationHistory(
-    githubApi: GitHubAPI,
+  private getConversationHistory(
     commentId: string,
     allComments: Awaited<ReturnType<GitHubAPI['getAllIssueComments']>>
-  ): Promise<ConversationMessage[]> {
+  ): ConversationMessage[] {
     const currentComment = allComments.find((c) => String(c.id) === commentId)
     if (!currentComment) {
       return []
     }
 
-    const botUsers = ['github-actions[bot]', 'opencode-reviewer[bot]']
-    const botMention = '@review-my-code-bot'
     const conversationMessages: ConversationMessage[] = []
 
     // Get all comments before current one
@@ -404,19 +508,17 @@ export class TaskDetector {
           new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
       )
 
-    // Build conversation (all dev/bot exchanges)
+    // Include ALL comments in conversation history for full context
+    // Developers often post follow-ups without explicitly tagging the bot
     for (const comment of priorComments) {
-      const isBot = botUsers.includes(comment.user?.login || '')
+      const isBot = BOT_USERS.includes(comment.user?.login || '')
 
-      // Include if it's a bot mention or a bot reply
-      if (comment.body?.includes(botMention) || isBot) {
-        conversationMessages.push({
-          author: comment.user?.login || 'unknown',
-          body: comment.body || '',
-          timestamp: comment.created_at,
-          isBot
-        })
-      }
+      conversationMessages.push({
+        author: comment.user?.login || 'unknown',
+        body: comment.body || '',
+        timestamp: comment.created_at,
+        isBot
+      })
     }
 
     return conversationMessages

@@ -9,7 +9,7 @@ import {
 } from '../config/constants.js'
 import type { GitHubAPI } from '../github/api.js'
 import type { LLMClient } from '../opencode/llm-client.js'
-import type { ReviewOrchestrator } from '../review/orchestrator.js'
+import type { ReviewExecutor } from '../execution/orchestrator.js'
 import { logger } from '../utils/logger.js'
 import { appRouter, type TRPCContext } from './router.js'
 
@@ -17,7 +17,7 @@ export class TRPCServer {
   private server: Server | null = null
 
   constructor(
-    private orchestrator: ReviewOrchestrator,
+    private executor: ReviewExecutor,
     private github: GitHubAPI,
     private llmClient: LLMClient,
     private port: number = TRPC_SERVER_PORT
@@ -25,7 +25,7 @@ export class TRPCServer {
 
   async start(): Promise<void> {
     const context: TRPCContext = {
-      orchestrator: this.orchestrator,
+      executor: this.executor,
       github: this.github,
       llmClient: this.llmClient
     }

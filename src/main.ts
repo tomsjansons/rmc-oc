@@ -6,17 +6,17 @@ import { GitHubAPI } from './github/api.js'
 import { OpenCodeClientImpl } from './opencode/client.js'
 import { LLMClientImpl } from './opencode/llm-client.js'
 import { OpenCodeServer } from './opencode/server.js'
-import { ReviewOrchestrator } from './review/orchestrator.js'
+import { ReviewExecutor } from './execution/orchestrator.js'
 import { setupToolsInWorkspace } from './setup/tools.js'
 import { StateManager } from './state/manager.js'
-import { ExecutionOrchestrator } from './task/orchestrator.js'
+import { TaskOrchestrator } from './task/orchestrator.js'
 import { TRPCServer } from './trpc/server.js'
 import { logger } from './utils/logger.js'
 
 export async function run(): Promise<void> {
   let openCodeServer: OpenCodeServer | null = null
   let trpcServer: TRPCServer | null = null
-  let reviewOrchestrator: ReviewOrchestrator | null = null
+  let reviewExecutor: ReviewExecutor | null = null
   let exitCode = 0
 
   try {
@@ -56,7 +56,7 @@ export async function run(): Promise<void> {
       github.getOctokit()
     )
 
-    reviewOrchestrator = new ReviewOrchestrator(
+    reviewExecutor = new ReviewExecutor(
       opencode,
       stateManager,
       github,
@@ -64,19 +64,19 @@ export async function run(): Promise<void> {
       workspaceRoot
     )
 
-    const executionOrchestrator = new ExecutionOrchestrator(
+    const taskOrchestrator = new TaskOrchestrator(
       config,
       github,
-      reviewOrchestrator,
+      reviewExecutor,
       stateManager,
       llmClient
     )
 
-    trpcServer = new TRPCServer(reviewOrchestrator, github, llmClient)
+    trpcServer = new TRPCServer(reviewExecutor, github, llmClient)
     await trpcServer.start()
 
     logger.info('Executing multi-task workflow...')
-    const executionResult = await executionOrchestrator.execute()
+    const executionResult = await taskOrchestrator.execute()
 
     logger.info(
       `Execution complete: ${executionResult.totalTasks} task(s) executed`
@@ -129,27 +129,27 @@ export async function run(): Promise<void> {
     }
     exitCode = 1
   } finally {
-    await cleanup(reviewOrchestrator, trpcServer, openCodeServer)
+    await cleanup(reviewExecutor, trpcServer, openCodeServer)
     process.exit(exitCode)
   }
 }
 
 async function cleanup(
-  orchestrator: ReviewOrchestrator | null,
+  executor: ReviewExecutor | null,
   trpcServer: TRPCServer | null,
   openCodeServer: OpenCodeServer | null
 ): Promise<void> {
   logger.debug('Cleanup: Starting cleanup sequence')
 
   try {
-    if (orchestrator) {
-      logger.debug('Cleanup: Cleaning up orchestrator...')
-      await orchestrator.cleanup()
-      logger.debug('Cleanup: Orchestrator cleanup complete')
+    if (executor) {
+      logger.debug('Cleanup: Cleaning up executor...')
+      await executor.cleanup()
+      logger.debug('Cleanup: Executor cleanup complete')
     }
   } catch (error) {
     logger.warning(
-      `Error during orchestrator cleanup: ${error instanceof Error ? error.message : String(error)}`
+      `Error during executor cleanup: ${error instanceof Error ? error.message : String(error)}`
     )
   }
 

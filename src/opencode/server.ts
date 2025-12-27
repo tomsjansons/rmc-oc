@@ -6,7 +6,7 @@ import {
   OPENCODE_SERVER_HOST,
   OPENCODE_SERVER_PORT
 } from '../config/constants.js'
-import type { ReviewConfig } from '../review/types.js'
+import type { ReviewConfig } from '../execution/types.js'
 import { OpenCodeError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
 

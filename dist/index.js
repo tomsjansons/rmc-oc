@@ -42509,7 +42509,11 @@ class TaskOrchestrator {
                 await this.stateManager.trackQuestionTask(task.questionContext.commentId, task.questionContext.author, task.questionContext.question, task.questionContext.commentId, task.questionContext.fileContext);
                 await this.stateManager.markQuestionInProgress(task.questionContext.commentId);
                 // Pass the question context and conversation history to the orchestrator
-                await this.reviewExecutor.executeQuestionAnswering(task.questionContext, task.conversationHistory);
+                const answer = await this.reviewExecutor.executeQuestionAnswering(task.questionContext, task.conversationHistory);
+                // Post the answer as a reply to the original comment
+                const formattedAnswer = this.formatQuestionAnswer(task.questionContext, answer);
+                await this.githubApi.replyToIssueComment(task.questionContext.commentId, formattedAnswer);
+                coreExports.info(`Posted answer to question ${task.questionContext.commentId}`);
                 await this.stateManager.markQuestionAnswered(task.questionContext.commentId);
                 return {
                     type: 'question-answering',
@@ -42522,6 +42526,22 @@ class TaskOrchestrator {
                 throw new Error(`Question answering failed: ${error instanceof Error ? error.message : String(error)}`);
             }
         });
+    }
+    formatQuestionAnswer(context, answer) {
+        const rmcocBlock = {
+            type: 'question-answer',
+            reply_to_comment_id: context.commentId,
+            question_hash: context.questionHash,
+            answered_at: new Date().toISOString()
+        };
+        return `${answer}
+
+---
+*Answered by @review-my-code-bot*
+
+\`\`\`rmcoc
+${JSON.stringify(rmcocBlock, null, 2)}
+\`\`\``;
     }
     async executeReviewTask(task) {
         return await logger.group(`Executing Full Review (${task.isManual ? 'manual' : 'auto'})`, async () => {

@@ -165,9 +165,23 @@ export class TaskOrchestrator {
           )
 
           // Pass the question context and conversation history to the orchestrator
-          await this.reviewExecutor.executeQuestionAnswering(
+          const answer = await this.reviewExecutor.executeQuestionAnswering(
             task.questionContext,
             task.conversationHistory
+          )
+
+          // Post the answer as a reply to the original comment
+          const formattedAnswer = this.formatQuestionAnswer(
+            task.questionContext,
+            answer
+          )
+          await this.githubApi.replyToIssueComment(
+            task.questionContext.commentId,
+            formattedAnswer
+          )
+
+          core.info(
+            `Posted answer to question ${task.questionContext.commentId}`
           )
 
           await this.stateManager.markQuestionAnswered(
@@ -187,6 +201,27 @@ export class TaskOrchestrator {
         }
       }
     )
+  }
+
+  private formatQuestionAnswer(
+    context: QuestionTask['questionContext'],
+    answer: string
+  ): string {
+    const rmcocBlock = {
+      type: 'question-answer',
+      reply_to_comment_id: context.commentId,
+      question_hash: context.questionHash,
+      answered_at: new Date().toISOString()
+    }
+
+    return `${answer}
+
+---
+*Answered by @review-my-code-bot*
+
+\`\`\`rmcoc
+${JSON.stringify(rmcocBlock, null, 2)}
+\`\`\``
   }
 
   private async executeReviewTask(task: ReviewTask): Promise<TaskResult> {

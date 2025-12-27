@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@jest/globals'
 
 import type { LLMClient } from '../src/opencode/llm-client.js'
-import { IntentClassifier } from '../src/utils/intent-classifier.js'
+import { IntentClassifier } from '../src/task/classifier.js'
 
 describe('IntentClassifier', () => {
   describe('classifyBotMention', () => {

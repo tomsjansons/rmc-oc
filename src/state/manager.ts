@@ -624,6 +624,49 @@ Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`
     const words = this.normalizeForComparison(text).split(' ')
     return new Set(words.filter((w) => w.length > 2 && !STOP_WORDS.has(w)))
   }
+
+  async trackQuestionTask(
+    questionId: string,
+    _author: string,
+    _question: string,
+    _commentId: string,
+    _fileContext?: { path: string; line?: number }
+  ): Promise<void> {
+    core.info(`Tracking question task: ${questionId}`)
+  }
+
+  async markQuestionInProgress(questionId: string): Promise<void> {
+    core.info(`Marking question ${questionId} as in progress`)
+  }
+
+  async markQuestionAnswered(questionId: string): Promise<void> {
+    core.info(`Marking question ${questionId} as answered`)
+  }
+
+  async trackManualReviewRequest(
+    requestId: string,
+    _author: string,
+    _commentId: string
+  ): Promise<void> {
+    core.info(`Tracking manual review request: ${requestId}`)
+  }
+
+  async markManualReviewInProgress(requestId: string): Promise<void> {
+    core.info(`Marking manual review ${requestId} as in progress`)
+  }
+
+  async markManualReviewCompleted(requestId: string): Promise<void> {
+    core.info(`Marking manual review ${requestId} as completed`)
+  }
+
+  async dismissManualReview(
+    requestId: string,
+    dismissedBy: string
+  ): Promise<void> {
+    core.info(
+      `Dismissing manual review ${requestId}, dismissed by: ${dismissedBy}`
+    )
+  }
 }
 
 const STOP_WORDS = new Set([

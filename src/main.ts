@@ -8,13 +8,15 @@ import { LLMClientImpl } from './opencode/llm-client.js'
 import { OpenCodeServer } from './opencode/server.js'
 import { ReviewOrchestrator } from './review/orchestrator.js'
 import { setupToolsInWorkspace } from './setup/tools.js'
+import { StateManager } from './state/manager.js'
+import { ExecutionOrchestrator } from './task/orchestrator.js'
 import { TRPCServer } from './trpc/server.js'
 import { logger } from './utils/logger.js'
 
 export async function run(): Promise<void> {
   let openCodeServer: OpenCodeServer | null = null
   let trpcServer: TRPCServer | null = null
-  let orchestrator: ReviewOrchestrator | null = null
+  let reviewOrchestrator: ReviewOrchestrator | null = null
   let exitCode = 0
 
   try {
@@ -48,7 +50,7 @@ export async function run(): Promise<void> {
     })
     const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd()
 
-    orchestrator = new ReviewOrchestrator(
+    reviewOrchestrator = new ReviewOrchestrator(
       opencode,
       llmClient,
       github,
@@ -56,146 +58,51 @@ export async function run(): Promise<void> {
       workspaceRoot
     )
 
-    trpcServer = new TRPCServer(orchestrator, github, llmClient)
+    const stateManager = new StateManager(config, llmClient)
+
+    const executionOrchestrator = new ExecutionOrchestrator(
+      config,
+      github,
+      reviewOrchestrator,
+      stateManager,
+      llmClient
+    )
+
+    trpcServer = new TRPCServer(reviewOrchestrator, github, llmClient)
     await trpcServer.start()
 
-    if (config.execution.mode === 'question-answering') {
-      logger.info('Execution mode: Question Answering')
+    logger.info('Executing multi-task workflow...')
+    const executionResult = await executionOrchestrator.execute()
 
-      let originalCommentBody = ''
+    logger.info(
+      `Execution complete: ${executionResult.totalTasks} task(s) executed`
+    )
 
-      if (
-        config.execution.isManuallyTriggered &&
-        config.execution.triggerCommentId &&
-        config.execution.manualTriggerComments.enableStartComment
-      ) {
-        logger.info('Updating trigger comment with answering start status')
+    let totalIssuesFound = 0
+    let totalBlockingIssues = 0
 
-        originalCommentBody = await github.getIssueComment(
-          config.execution.triggerCommentId
-        )
+    for (const result of executionResult.results) {
+      totalIssuesFound += result.issuesFound
+      totalBlockingIssues += result.blockingIssues
+    }
 
-        const updatedBody = `${originalCommentBody}\n\n---\n\n🤖 **Status:** Analyzing your question ⏳\n\n_I'm searching the codebase for an answer. This may take a moment..._`
+    if (executionResult.reviewCompleted) {
+      core.setOutput('review_status', 'completed')
+      core.setOutput('issues_found', String(totalIssuesFound))
+      core.setOutput('blocking_issues', String(totalBlockingIssues))
 
-        await github.updateIssueComment(
-          config.execution.triggerCommentId,
-          updatedBody
-        )
-      }
-
-      const answer = await orchestrator.executeQuestionAnswering()
-
-      const questionContext = config.execution.questionContext
-      if (questionContext) {
-        logger.info('Posting answer as comment reply')
-        const formattedAnswer = `**@${questionContext.author}** asked: "${questionContext.question}"
-
-${answer}
-
----
-*Answered by @review-my-code-bot using codebase analysis*`
-
-        await github.replyToIssueComment(
-          questionContext.commentId,
-          formattedAnswer
-        )
-        logger.info('Answer posted successfully')
-      }
-
-      if (
-        config.execution.isManuallyTriggered &&
-        config.execution.triggerCommentId &&
-        config.execution.manualTriggerComments.enableEndComment
-      ) {
-        logger.info('Updating trigger comment with answer completion status')
-
-        const statusMessage =
-          '✅ **Status:** Answer Posted\n\n_See the answer in the reply below._'
-
-        const updatedBody = `${originalCommentBody}\n\n---\n\n${statusMessage}`
-
-        await github.updateIssueComment(
-          config.execution.triggerCommentId,
-          updatedBody
-        )
-      }
-
-      core.setOutput('review_status', 'question_answered')
-      core.setOutput('issues_found', '0')
-      core.setOutput('blocking_issues', '0')
-    } else if (config.execution.mode === 'full-review') {
-      logger.info('Execution mode: Full Review')
-
-      let originalCommentBody = ''
-
-      if (
-        config.execution.isManuallyTriggered &&
-        config.execution.triggerCommentId &&
-        config.execution.manualTriggerComments.enableStartComment
-      ) {
-        logger.info('Updating trigger comment with review start status')
-
-        originalCommentBody = await github.getIssueComment(
-          config.execution.triggerCommentId
-        )
-
-        const updatedBody = `${originalCommentBody}\n\n---\n\n🤖 **Review Status:** In Progress ⏳\n\n_I'm analyzing your code now. This may take a few minutes..._`
-
-        await github.updateIssueComment(
-          config.execution.triggerCommentId,
-          updatedBody
-        )
-      }
-
-      const result = await orchestrator.executeReview()
-
-      core.setOutput('review_status', result.status)
-      core.setOutput('issues_found', String(result.issuesFound))
-      core.setOutput('blocking_issues', String(result.blockingIssues))
-
-      if (
-        config.execution.isManuallyTriggered &&
-        config.execution.triggerCommentId &&
-        config.execution.manualTriggerComments.enableEndComment
-      ) {
-        logger.info('Updating trigger comment with review end status')
-
-        let statusMessage = '✅ **Review Status:** Complete\n\n'
-
-        if (result.issuesFound === 0) {
-          statusMessage += 'No issues found. Great work! 🎉'
-        } else if (result.blockingIssues > 0) {
-          statusMessage += `Found ${result.issuesFound} issue(s), including ${result.blockingIssues} blocking issue(s). ⚠️\n\nPlease address the review comments above before merging.`
-        } else {
-          statusMessage += `Found ${result.issuesFound} issue(s). Please review the comments above.`
-        }
-
-        const updatedBody = `${originalCommentBody}\n\n---\n\n${statusMessage}`
-
-        await github.updateIssueComment(
-          config.execution.triggerCommentId,
-          updatedBody
-        )
-      }
-
-      if (result.issuesFound > 0) {
-        const message =
-          result.blockingIssues > 0
-            ? `Review found ${result.issuesFound} issue(s), including ${result.blockingIssues} blocking issue(s). Please address the review comments before merging.`
-            : `Review found ${result.issuesFound} issue(s). Please address the review comments before merging.`
+      if (executionResult.hasBlockingIssues) {
+        const message = `Review found ${totalIssuesFound} issue(s), including ${totalBlockingIssues} blocking issue(s). Please address the review comments before merging.`
         core.setFailed(message)
         exitCode = 1
+      } else if (totalIssuesFound > 0) {
+        const message = `Review found ${totalIssuesFound} issue(s). Please review the comments.`
+        core.warning(message)
       }
-    } else if (config.execution.mode === 'dispute-resolution') {
-      logger.info('Execution mode: Dispute Resolution Only')
-
-      await orchestrator.executeDisputeResolution(
-        config.execution.disputeContext
-      )
-
-      core.setOutput('review_status', 'disputes_evaluated')
-      core.setOutput('issues_found', '0')
-      core.setOutput('blocking_issues', '0')
+    } else {
+      core.setOutput('review_status', 'tasks_executed')
+      core.setOutput('issues_found', String(totalIssuesFound))
+      core.setOutput('blocking_issues', String(totalBlockingIssues))
     }
 
     logger.info('OpenCode PR Reviewer completed')
@@ -210,7 +117,7 @@ ${answer}
     }
     exitCode = 1
   } finally {
-    await cleanup(orchestrator, trpcServer, openCodeServer)
+    await cleanup(reviewOrchestrator, trpcServer, openCodeServer)
     process.exit(exitCode)
   }
 }

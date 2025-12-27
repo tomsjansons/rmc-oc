@@ -31,9 +31,9 @@ jest.unstable_mockModule('@octokit/rest', () => ({
   Octokit: jest.fn(() => mockOctokit)
 }))
 
-const { StateManager, StateError } = await import('../src/github/state.js')
+const { StateManager, StateError } = await import('../src/state/manager.js')
 import type { ReviewConfig } from '../src/review/types.js'
-import type { ReviewState, ReviewThread } from '../src/github/state.js'
+import type { ReviewState, ReviewThread } from '../src/state/manager.js'
 import type { LLMClient } from '../src/opencode/llm-client.js'
 
 describe('StateManager', () => {

@@ -6,7 +6,7 @@ import {
   type ReviewState,
   type ReviewThread,
   StateManager
-} from '../github/state.js'
+} from '../state/manager.js'
 import type { OpenCodeClient } from '../opencode/client.js'
 import type { LLMClient } from '../opencode/llm-client.js'
 import { OrchestratorError } from '../utils/errors.js'

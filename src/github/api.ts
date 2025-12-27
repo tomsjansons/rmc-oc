@@ -1,8 +1,14 @@
 import { Octokit } from '@octokit/rest'
+import type { RestEndpointMethodTypes } from '@octokit/rest'
 
 import type { ReviewConfig } from '../review/types.js'
 import { GitHubAPIError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
+
+type IssueComment =
+  RestEndpointMethodTypes['issues']['listComments']['response']['data'][0]
+type ReviewComment =
+  RestEndpointMethodTypes['pulls']['listReviewComments']['response']['data'][0]
 
 export type PostReviewCommentArgs = {
   path: string
@@ -401,6 +407,156 @@ ${reviewerTags} - Please review this dispute and make a final decision.
         `Failed to fetch PR context: ${error instanceof Error ? error.message : String(error)}`
       )
       return { files: [] }
+    }
+  }
+
+  async getAllIssueComments(): Promise<IssueComment[]> {
+    try {
+      logger.debug('Fetching all issue comments')
+
+      const comments = await this.octokit.paginate(
+        this.octokit.issues.listComments,
+        {
+          owner: this.owner,
+          repo: this.repo,
+          issue_number: this.prNumber,
+          per_page: 100
+        }
+      )
+
+      logger.info(`Fetched ${comments.length} issue comments`)
+
+      return comments
+    } catch (error) {
+      throw new GitHubAPIError(
+        `Failed to fetch issue comments: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async getComment(commentId: string): Promise<IssueComment> {
+    try {
+      logger.debug(`Fetching comment ${commentId}`)
+
+      const response = await this.octokit.issues.getComment({
+        owner: this.owner,
+        repo: this.repo,
+        comment_id: Number(commentId)
+      })
+
+      return response.data
+    } catch (error) {
+      throw new GitHubAPIError(
+        `Failed to fetch comment: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async updateComment(commentId: string, body: string): Promise<void> {
+    try {
+      logger.debug(`Updating comment ${commentId}`)
+
+      await this.octokit.issues.updateComment({
+        owner: this.owner,
+        repo: this.repo,
+        comment_id: Number(commentId),
+        body
+      })
+
+      logger.info(`Updated comment ${commentId}`)
+    } catch (error) {
+      throw new GitHubAPIError(
+        `Failed to update comment: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async getCurrentSHA(): Promise<string> {
+    try {
+      logger.debug('Fetching current PR SHA')
+
+      const pr = await this.octokit.pulls.get({
+        owner: this.owner,
+        repo: this.repo,
+        pull_number: this.prNumber
+      })
+
+      const sha = pr.data.head.sha
+
+      logger.debug(`Current SHA: ${sha}`)
+
+      return sha
+    } catch (error) {
+      throw new GitHubAPIError(
+        `Failed to fetch current SHA: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async hasNewDeveloperReply(threadId: string): Promise<boolean> {
+    try {
+      logger.debug(`Checking for new developer replies in thread ${threadId}`)
+
+      const comments = await this.getThreadComments(threadId)
+      const botUsers = ['github-actions[bot]', 'opencode-reviewer[bot]']
+
+      const lastBotComment = comments
+        .filter((c) => botUsers.includes(c.user?.login || ''))
+        .sort(
+          (a, b) =>
+            new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        )[0]
+
+      if (!lastBotComment) {
+        return false
+      }
+
+      const hasNewReply = comments.some(
+        (c) =>
+          !botUsers.includes(c.user?.login || '') &&
+          new Date(c.created_at) > new Date(lastBotComment.created_at)
+      )
+
+      logger.debug(`Thread ${threadId} has new developer reply: ${hasNewReply}`)
+
+      return hasNewReply
+    } catch (error) {
+      throw new GitHubAPIError(
+        `Failed to check for new developer replies: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async getThreadComments(threadId: string): Promise<ReviewComment[]> {
+    try {
+      logger.debug(`Fetching comments for thread ${threadId}`)
+
+      const comments = await this.octokit.paginate(
+        this.octokit.pulls.listReviewComments,
+        {
+          owner: this.owner,
+          repo: this.repo,
+          pull_number: this.prNumber,
+          per_page: 100
+        }
+      )
+
+      const threadComments = comments.filter(
+        (c) =>
+          String(c.id) === threadId ||
+          String(c.in_reply_to_id) === threadId ||
+          c.in_reply_to_id === Number(threadId)
+      )
+
+      logger.debug(
+        `Found ${threadComments.length} comments in thread ${threadId}`
+      )
+
+      return threadComments
+    } catch (error) {
+      throw new GitHubAPIError(
+        `Failed to fetch thread comments: ${error instanceof Error ? error.message : String(error)}`
+      )
     }
   }
 }

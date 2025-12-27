@@ -8,7 +8,7 @@ import type {
   QuestionContext,
   ReviewConfig
 } from '../review/types.js'
-import { IntentClassifier } from '../utils/intent-classifier.js'
+import { IntentClassifier } from '../task/classifier.js'
 
 export async function parseInputs(): Promise<ReviewConfig> {
   const apiKey = core.getInput('openrouter_api_key', { required: true })

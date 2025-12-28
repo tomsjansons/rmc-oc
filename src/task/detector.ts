@@ -276,6 +276,12 @@ export class TaskDetector {
     }
 
     for (const comment of allComments) {
+      // Skip comments from bots - they can't ask questions
+      const commentAuthor = comment.user?.login || ''
+      if (BOT_USERS.includes(commentAuthor)) {
+        continue
+      }
+
       // Use code-block-aware bot mention detection
       if (!containsBotMentionOutsideCodeBlocks(comment.body || '')) {
         continue

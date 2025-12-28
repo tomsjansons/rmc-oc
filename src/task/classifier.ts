@@ -123,7 +123,7 @@ Response:`
       /\b(?:can|could)\s+you\s+review/i,
       /\bdo\s+a\s+review/i,
       /\brun\s+(?:a\s+)?review/i,
-      /\bcheck\s+(?:this\s+)?(?:the\s+)?(?:pr|code)\b/i, // Removed "changes" - too generic
+      /\bcheck\s+(?:this\s+)?(?:the\s+)?(?:pr|code|changes)\b/i,
       /\blgtm\?/i,
       /\bready\s+for\s+review/i,
       /\btake\s+a\s+look/i

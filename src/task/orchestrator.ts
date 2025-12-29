@@ -248,9 +248,17 @@ ${JSON.stringify(rmcocBlock, null, 2)}
             )
           }
 
+          // A review is successful if it completed, regardless of whether it found
+          // blocking issues. The status 'has_blocking_issues' means the review ran
+          // successfully but found problems - that's still a successful execution.
+          // Only 'failed' status indicates the review itself failed to run.
+          const reviewSucceeded =
+            reviewOutput.status === 'completed' ||
+            reviewOutput.status === 'has_blocking_issues'
+
           return {
             type: 'full-review',
-            success: reviewOutput.status === 'completed',
+            success: reviewSucceeded,
             issuesFound: reviewOutput.issuesFound,
             blockingIssues: reviewOutput.blockingIssues
           }

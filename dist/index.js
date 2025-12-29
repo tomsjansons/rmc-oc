@@ -35547,6 +35547,30 @@ class GitHubAPI {
             return { files: [] };
         }
     }
+    async getPRInfo() {
+        try {
+            const pr = await this.octokit.pulls.get({
+                owner: this.owner,
+                repo: this.repo,
+                pull_number: this.prNumber
+            });
+            return {
+                base: {
+                    ref: pr.data.base.ref,
+                    sha: pr.data.base.sha
+                },
+                head: {
+                    ref: pr.data.head.ref,
+                    sha: pr.data.head.sha
+                },
+                title: pr.data.title,
+                number: pr.data.number
+            };
+        }
+        catch (error) {
+            throw new GitHubAPIError(`Failed to fetch PR info: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
     async postReviewComment(args) {
         try {
             logger.debug(`Posting review comment on ${args.path}:${args.line} in PR #${this.prNumber}`);
@@ -40798,7 +40822,17 @@ class ReviewExecutor {
         this.passResults = [];
         const files = await this.github.getPRFiles();
         const securitySensitivity = await this.detectSecuritySensitivity();
-        logger.info(`Fetched ${files.length} changed files`);
+        // Log detailed file information for debugging
+        logger.info(`Fetched ${files.length} changed files for review`);
+        logger.info('=== FILES TO BE REVIEWED ===');
+        for (const file of files) {
+            logger.info(`  - ${file}`);
+        }
+        logger.info('=== END FILES LIST ===');
+        // Log PR diff range info
+        const prInfo = await this.github.getPRInfo();
+        logger.info(`PR diff range: ${prInfo.base.sha.substring(0, 7)}...${prInfo.head.sha.substring(0, 7)}`);
+        logger.info(`Base branch: ${prInfo.base.ref}, Head branch: ${prInfo.head.ref}`);
         logger.info('Starting 3-pass review in single OpenCode session (context preserved across all passes)');
         await this.executePass(1, REVIEW_PROMPTS.PASS_1(files));
         await this.executePass(2, REVIEW_PROMPTS.PASS_2());

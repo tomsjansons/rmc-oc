@@ -140,7 +140,23 @@ export class ReviewExecutor {
     const files = await this.github.getPRFiles()
     const securitySensitivity = await this.detectSecuritySensitivity()
 
-    logger.info(`Fetched ${files.length} changed files`)
+    // Log detailed file information for debugging
+    logger.info(`Fetched ${files.length} changed files for review`)
+    logger.info('=== FILES TO BE REVIEWED ===')
+    for (const file of files) {
+      logger.info(`  - ${file}`)
+    }
+    logger.info('=== END FILES LIST ===')
+
+    // Log PR diff range info
+    const prInfo = await this.github.getPRInfo()
+    logger.info(
+      `PR diff range: ${prInfo.base.sha.substring(0, 7)}...${prInfo.head.sha.substring(0, 7)}`
+    )
+    logger.info(
+      `Base branch: ${prInfo.base.ref}, Head branch: ${prInfo.head.ref}`
+    )
+
     logger.info(
       'Starting 3-pass review in single OpenCode session (context preserved across all passes)'
     )

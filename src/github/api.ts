@@ -78,6 +78,38 @@ export class GitHubAPI {
     }
   }
 
+  async getPRInfo(): Promise<{
+    base: { ref: string; sha: string }
+    head: { ref: string; sha: string }
+    title: string
+    number: number
+  }> {
+    try {
+      const pr = await this.octokit.pulls.get({
+        owner: this.owner,
+        repo: this.repo,
+        pull_number: this.prNumber
+      })
+
+      return {
+        base: {
+          ref: pr.data.base.ref,
+          sha: pr.data.base.sha
+        },
+        head: {
+          ref: pr.data.head.ref,
+          sha: pr.data.head.sha
+        },
+        title: pr.data.title,
+        number: pr.data.number
+      }
+    } catch (error) {
+      throw new GitHubAPIError(
+        `Failed to fetch PR info: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
   async postReviewComment(args: PostReviewCommentArgs): Promise<string> {
     try {
       logger.debug(

@@ -37,6 +37,7 @@ export class ReviewExecutor {
   private processState: ProcessState | null = null
   private currentSessionId: string | null = null
   private currentPhase: ReviewPhase = 'idle'
+  private passCompletionResolvers: Map<number, () => void> = new Map()
 
   constructor(
     private opencode: OpenCodeClient,
@@ -344,7 +345,42 @@ export class ReviewExecutor {
       logger.info(`Starting pass ${passNumber}`)
       logger.debug(`Pass ${passNumber} prompt length: ${prompt.length} chars`)
 
+      // Create a promise that resolves when submit_pass_results is called
+      const passCompletionPromise = new Promise<void>((resolve) => {
+        this.passCompletionResolvers.set(passNumber, resolve)
+      })
+
+      // Send the prompt and wait for idle (with grace period)
       await this.sendPromptToOpenCode(prompt)
+
+      // Check if submit_pass_results was already called during execution
+      // This is the common case - model calls the tool then goes idle
+      if (!this.isPassCompleted(passNumber)) {
+        // Model went idle without calling submit_pass_results
+        // Wait a bit longer in case it resumes, but don't wait forever
+        const PASS_COMPLETION_TIMEOUT_MS = 30000
+        logger.info(
+          `Pass ${passNumber}: session idle but submit_pass_results not called, waiting up to ${PASS_COMPLETION_TIMEOUT_MS / 1000}s...`
+        )
+
+        const timeoutPromise = new Promise<'timeout'>((resolve) => {
+          setTimeout(() => resolve('timeout'), PASS_COMPLETION_TIMEOUT_MS)
+        })
+
+        const result = await Promise.race([
+          passCompletionPromise.then(() => 'completed' as const),
+          timeoutPromise
+        ])
+
+        if (result === 'timeout') {
+          logger.warning(
+            `Pass ${passNumber}: timed out waiting for submit_pass_results, proceeding anyway`
+          )
+        }
+      }
+
+      // Clean up the resolver
+      this.passCompletionResolvers.delete(passNumber)
 
       const duration = Date.now() - startTime
       logger.info(`Pass ${passNumber} completed in ${duration}ms`)
@@ -425,6 +461,13 @@ export class ReviewExecutor {
       this.passResults[existingIndex] = result
     } else {
       this.passResults.push(result)
+    }
+
+    // Resolve the pass completion promise if one is waiting
+    const resolver = this.passCompletionResolvers.get(result.passNumber)
+    if (resolver) {
+      logger.debug(`Resolving pass ${result.passNumber} completion promise`)
+      resolver()
     }
 
     if (this.processState) {

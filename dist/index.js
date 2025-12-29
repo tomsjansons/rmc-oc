@@ -37631,9 +37631,13 @@ class OpenCodeClientImpl {
         const startTime = Date.now();
         const abortController = new AbortController();
         let sawBusy = false;
+        // Grace period to wait after idle before considering session complete
+        // This handles reasoning models that may pause briefly during thinking
+        const IDLE_GRACE_PERIOD_MS = 10000;
         this.resetLoopDetection();
         return new Promise((resolve, reject) => {
             let resolved = false;
+            let idleGraceTimerId = null;
             const timeoutId = setTimeout(() => {
                 if (!resolved) {
                     resolved = true;
@@ -37643,7 +37647,18 @@ class OpenCodeClientImpl {
             }, this.timeoutMs);
             const cleanup = () => {
                 clearTimeout(timeoutId);
+                if (idleGraceTimerId) {
+                    clearTimeout(idleGraceTimerId);
+                    idleGraceTimerId = null;
+                }
                 abortController.abort();
+            };
+            const cancelIdleGrace = () => {
+                if (idleGraceTimerId) {
+                    logger.debug(`Session ${sessionId} became active again, cancelling idle grace period`);
+                    clearTimeout(idleGraceTimerId);
+                    idleGraceTimerId = null;
+                }
             };
             const processEvents = async () => {
                 try {
@@ -37674,20 +37689,36 @@ class OpenCodeClientImpl {
                                 return;
                             }
                         }
+                        // Any non-idle status means the model is active
                         if (event.type === 'session.status' &&
                             props.status &&
                             props.status.type !== 'idle') {
                             sawBusy = true;
+                            // Cancel any pending idle grace timer since model is active again
+                            cancelIdleGrace();
+                        }
+                        // Message updates also indicate activity
+                        if (event.type === 'message.updated' ||
+                            event.type === 'message.part.updated') {
+                            cancelIdleGrace();
                         }
                         const isIdle = event.type === 'session.idle' ||
                             (event.type === 'session.status' && props.status?.type === 'idle');
                         if (isIdle && sawBusy) {
-                            const duration = Date.now() - startTime;
-                            logger.info(`Session ${sessionId} completed after ${duration}ms`);
-                            resolved = true;
-                            cleanup();
-                            resolve();
-                            return;
+                            // Don't immediately complete - wait for grace period
+                            // This allows reasoning models time to resume after brief pauses
+                            if (!idleGraceTimerId) {
+                                logger.debug(`Session ${sessionId} went idle, waiting ${IDLE_GRACE_PERIOD_MS}ms grace period...`);
+                                idleGraceTimerId = setTimeout(() => {
+                                    if (!resolved) {
+                                        const duration = Date.now() - startTime;
+                                        logger.info(`Session ${sessionId} completed after ${duration}ms (idle for ${IDLE_GRACE_PERIOD_MS}ms)`);
+                                        resolved = true;
+                                        cleanup();
+                                        resolve();
+                                    }
+                                }, IDLE_GRACE_PERIOD_MS);
+                            }
                         }
                         if (event.type === 'session.status' &&
                             props.status?.type === 'retry') {
@@ -40708,6 +40739,7 @@ class ReviewExecutor {
     processState = null;
     currentSessionId = null;
     currentPhase = 'idle';
+    passCompletionResolvers = new Map();
     constructor(opencode, stateManager, github, config, workspaceRoot) {
         this.opencode = opencode;
         this.stateManager = stateManager;
@@ -40866,7 +40898,32 @@ class ReviewExecutor {
             const startTime = Date.now();
             logger.info(`Starting pass ${passNumber}`);
             logger.debug(`Pass ${passNumber} prompt length: ${prompt.length} chars`);
+            // Create a promise that resolves when submit_pass_results is called
+            const passCompletionPromise = new Promise((resolve) => {
+                this.passCompletionResolvers.set(passNumber, resolve);
+            });
+            // Send the prompt and wait for idle (with grace period)
             await this.sendPromptToOpenCode(prompt);
+            // Check if submit_pass_results was already called during execution
+            // This is the common case - model calls the tool then goes idle
+            if (!this.isPassCompleted(passNumber)) {
+                // Model went idle without calling submit_pass_results
+                // Wait a bit longer in case it resumes, but don't wait forever
+                const PASS_COMPLETION_TIMEOUT_MS = 30000;
+                logger.info(`Pass ${passNumber}: session idle but submit_pass_results not called, waiting up to ${PASS_COMPLETION_TIMEOUT_MS / 1000}s...`);
+                const timeoutPromise = new Promise((resolve) => {
+                    setTimeout(() => resolve('timeout'), PASS_COMPLETION_TIMEOUT_MS);
+                });
+                const result = await Promise.race([
+                    passCompletionPromise.then(() => 'completed'),
+                    timeoutPromise
+                ]);
+                if (result === 'timeout') {
+                    logger.warning(`Pass ${passNumber}: timed out waiting for submit_pass_results, proceeding anyway`);
+                }
+            }
+            // Clean up the resolver
+            this.passCompletionResolvers.delete(passNumber);
             const duration = Date.now() - startTime;
             logger.info(`Pass ${passNumber} completed in ${duration}ms`);
         });
@@ -40928,6 +40985,12 @@ class ReviewExecutor {
         }
         else {
             this.passResults.push(result);
+        }
+        // Resolve the pass completion promise if one is waiting
+        const resolver = this.passCompletionResolvers.get(result.passNumber);
+        if (resolver) {
+            logger.debug(`Resolving pass ${result.passNumber} completion promise`);
+            resolver();
         }
         if (this.processState) {
             this.stateManager.recordPassCompletion(result).catch((error) => {

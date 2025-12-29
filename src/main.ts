@@ -44,15 +44,19 @@ export async function run(): Promise<void> {
       config.opencode.debugLogging,
       config.review.timeoutMs
     )
-    const llmClient = new LLMClientImpl({
+    // LLM client for classification and sentiment analysis tasks
+    // Uses injection_verification_model which is faster and doesn't have
+    // reasoning token issues that can cause empty responses with reasoning models
+    const classificationLlmClient = new LLMClientImpl({
       apiKey: config.opencode.apiKey,
-      model: config.opencode.model
+      model: config.security.injectionVerificationModel
     })
+
     const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd()
 
     const stateManager = new StateManager(
       config,
-      llmClient,
+      classificationLlmClient,
       github.getOctokit()
     )
 
@@ -69,10 +73,10 @@ export async function run(): Promise<void> {
       github,
       reviewExecutor,
       stateManager,
-      llmClient
+      classificationLlmClient
     )
 
-    trpcServer = new TRPCServer(reviewExecutor, github, llmClient)
+    trpcServer = new TRPCServer(reviewExecutor, github, classificationLlmClient)
     await trpcServer.start()
 
     logger.info('Executing multi-task workflow...')

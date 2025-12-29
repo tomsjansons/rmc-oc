@@ -50929,15 +50929,18 @@ async function run() {
         await openCodeServer.start();
         const github = new GitHubAPI(config);
         const opencode = new OpenCodeClientImpl(OPENCODE_SERVER_URL, config.opencode.debugLogging, config.review.timeoutMs);
-        const llmClient = new LLMClientImpl({
+        // LLM client for classification and sentiment analysis tasks
+        // Uses injection_verification_model which is faster and doesn't have
+        // reasoning token issues that can cause empty responses with reasoning models
+        const classificationLlmClient = new LLMClientImpl({
             apiKey: config.opencode.apiKey,
-            model: config.opencode.model
+            model: config.security.injectionVerificationModel
         });
         const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
-        const stateManager = new StateManager(config, llmClient, github.getOctokit());
+        const stateManager = new StateManager(config, classificationLlmClient, github.getOctokit());
         reviewExecutor = new ReviewExecutor(opencode, stateManager, github, config, workspaceRoot);
-        const taskOrchestrator = new TaskOrchestrator(config, github, reviewExecutor, stateManager, llmClient);
-        trpcServer = new TRPCServer(reviewExecutor, github, llmClient);
+        const taskOrchestrator = new TaskOrchestrator(config, github, reviewExecutor, stateManager, classificationLlmClient);
+        trpcServer = new TRPCServer(reviewExecutor, github, classificationLlmClient);
         await trpcServer.start();
         logger.info('Executing multi-task workflow...');
         const executionResult = await taskOrchestrator.execute();

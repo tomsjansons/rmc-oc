@@ -98,19 +98,26 @@ Every \`github_post_review_comment\` must include:
    - \`score\`: Severity score from 1-10
 3. Optional: Additional context, examples, or suggestions
 
-### Comment Formatting for Coding Agents
+### Comment Formatting for Coding Agents (CRITICAL)
 
-Format your comments so developers can copy-paste them directly into a coding agent. Each comment should:
+**EVERY comment MUST start with the file path and line number.** This is required so developers can copy-paste comments directly into a coding agent.
 
-1. **Always specify the file path** at the start of actionable suggestions
+**REQUIRED FORMAT - First line of every comment:**
+\`\`\`
+**\`path/to/file.ts:123\`** - Brief description of issue
+\`\`\`
+
+Each comment must:
+1. **START with file path and line** in the format \`**\`file:line\`**\` - this is NOT optional
 2. **Be self-contained** - include enough context to understand the issue without reading the PR
 3. **Provide concrete instructions** - describe exactly what to change, not just what's wrong
 
 **Good Example:**
 \`\`\`
-In \`src/utils/auth.ts\`, the \`validateToken\` function at line 42 doesn't handle expired tokens.
+**\`src/utils/auth.ts:42\`** - Missing token expiration check
 
-Add an expiration check before the signature validation:
+The \`validateToken\` function doesn't handle expired tokens. Add an expiration check before the signature validation:
+
 \`\`\`typescript
 // src/utils/auth.ts - validateToken function
 if (token.exp < Date.now() / 1000) {
@@ -121,7 +128,7 @@ if (token.exp < Date.now() / 1000) {
 This prevents the security vulnerability where expired tokens could still be accepted.
 \`\`\`
 
-**Bad Example:**
+**Bad Example (missing file path - DO NOT DO THIS):**
 \`\`\`
 This function has a bug with token expiration.
 \`\`\`

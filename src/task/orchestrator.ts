@@ -238,6 +238,25 @@ ${JSON.stringify(rmcocBlock, null, 2)}
             await this.stateManager.markManualReviewInProgress(
               task.triggerCommentId
             )
+
+            // Post visible start comment if enabled
+            if (
+              this.config.execution.manualTriggerComments.enableStartComment
+            ) {
+              await this.githubApi.replyToIssueComment(
+                task.triggerCommentId,
+                "🔍 **Review started.** I'm analyzing this PR now..."
+              )
+            }
+          }
+
+          // For auto reviews, record the trigger so it can be resumed if cancelled
+          if (!task.isManual && task.triggeredBy !== 'manual-request') {
+            const prInfo = await this.githubApi.getPRInfo()
+            await this.stateManager.recordAutoReviewTrigger(
+              task.triggeredBy as 'opened' | 'synchronize' | 'ready_for_review',
+              prInfo.head.sha
+            )
           }
 
           const reviewOutput = await this.reviewExecutor.executeReview()
@@ -246,6 +265,20 @@ ${JSON.stringify(rmcocBlock, null, 2)}
             await this.stateManager.markManualReviewCompleted(
               task.triggerCommentId
             )
+
+            // Post visible end comment if enabled
+            if (this.config.execution.manualTriggerComments.enableEndComment) {
+              const endMessage = this.formatManualReviewEndComment(reviewOutput)
+              await this.githubApi.replyToIssueComment(
+                task.triggerCommentId,
+                endMessage
+              )
+            }
+          }
+
+          // For auto reviews, clear the trigger since review completed
+          if (!task.isManual && task.triggeredBy !== 'manual-request') {
+            await this.stateManager.clearAutoReviewTrigger()
           }
 
           // A review is successful if it completed, regardless of whether it found
@@ -268,6 +301,29 @@ ${JSON.stringify(rmcocBlock, null, 2)}
           )
         }
       }
+    )
+  }
+
+  private formatManualReviewEndComment(reviewOutput: {
+    status: string
+    issuesFound: number
+    blockingIssues: number
+  }): string {
+    if (reviewOutput.issuesFound === 0) {
+      return '✅ **Review complete.** No issues found!'
+    }
+
+    if (reviewOutput.blockingIssues > 0) {
+      return (
+        `⚠️ **Review complete.** Found ${reviewOutput.issuesFound} issue(s), ` +
+        `including ${reviewOutput.blockingIssues} blocking issue(s). ` +
+        `Please review the comments above.`
+      )
+    }
+
+    return (
+      `📝 **Review complete.** Found ${reviewOutput.issuesFound} issue(s). ` +
+      `Please review the comments above.`
     )
   }
 

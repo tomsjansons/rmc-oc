@@ -1,12 +1,12 @@
 import * as core from '@actions/core'
 import { Octokit } from '@octokit/rest'
 
+import { BOT_USERS } from '../config/constants.js'
 import type { LLMClient } from '../opencode/llm-client.js'
-import type { PassResult, ReviewConfig } from '../review/types.js'
+import type { PassResult, ReviewConfig } from '../execution/types.js'
 import { sanitizeDelimiters } from '../utils/security.js'
 
 const STATE_SCHEMA_VERSION = 1
-const BOT_USERS = ['opencode-reviewer[bot]', 'github-actions[bot]']
 
 export type ReviewThread = {
   id: string
@@ -32,7 +32,13 @@ export type ReviewThread = {
   escalated_at?: string
 }
 
-export type ReviewState = {
+/**
+ * The main state object for tracking all PR review activity.
+ *
+ * This type was renamed from ReviewState to ProcessState to better reflect
+ * that it tracks all task types (reviews, disputes, questions), not just reviews.
+ */
+export type ProcessState = {
   version: number
   prNumber: number
   lastCommitSha: string
@@ -44,28 +50,40 @@ export type ReviewState = {
   }
 }
 
+/**
+ * @deprecated Use ProcessState instead. This alias exists for backward compatibility.
+ */
+export type ReviewState = ProcessState
+
+type AutoReviewTrigger = {
+  action: 'opened' | 'synchronize' | 'ready_for_review'
+  sha: string
+  triggeredAt: string
+  cancelled: boolean
+  completedAt?: string
+}
+
 export class StateManager {
-  private octokit: Octokit
   private sentimentCache: Map<string, boolean>
-  private currentState: ReviewState | null = null
+  private currentState: ProcessState | null = null
+  private autoReviewTrigger: AutoReviewTrigger | null = null
+  private autoReviewCommentId: number | null = null
 
   constructor(
     private config: ReviewConfig,
-    private llmClient: LLMClient
+    private llmClient: LLMClient,
+    private octokit: Octokit
   ) {
-    this.octokit = new Octokit({
-      auth: config.github.token
-    })
     this.sentimentCache = new Map()
   }
 
-  updateState(state: ReviewState): void {
+  updateState(state: ProcessState): void {
     state.version = STATE_SCHEMA_VERSION
     state.metadata.updated_at = new Date().toISOString()
     this.currentState = state
   }
 
-  async rebuildStateFromComments(): Promise<ReviewState> {
+  async rebuildStateFromComments(): Promise<ProcessState> {
     core.info('Rebuilding state from GitHub PR comments')
 
     try {
@@ -120,11 +138,7 @@ export class StateManager {
         const status = this.determineThreadStatus(replies)
 
         const developerReplies = replies
-          .filter(
-            (r) =>
-              r.user?.login !== 'opencode-reviewer[bot]' &&
-              r.user?.login !== 'github-actions[bot]'
-          )
+          .filter((r) => !BOT_USERS.includes(r.user?.login || ''))
           .map((r) => ({
             author: r.user?.login || 'unknown',
             body: r.body,
@@ -148,7 +162,7 @@ export class StateManager {
         })
       }
 
-      const state: ReviewState = {
+      const state: ProcessState = {
         version: STATE_SCHEMA_VERSION,
         prNumber,
         lastCommitSha,
@@ -176,9 +190,7 @@ export class StateManager {
     replies: Array<{ body: string; user?: { login?: string } | null }>
   ): 'PENDING' | 'RESOLVED' | 'DISPUTED' | 'ESCALATED' {
     for (const reply of replies) {
-      const isBot =
-        reply.user?.login === 'opencode-reviewer[bot]' ||
-        reply.user?.login === 'github-actions[bot]'
+      const isBot = BOT_USERS.includes(reply.user?.login || '')
 
       if (!isBot) {
         continue
@@ -363,7 +375,7 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
     return false
   }
 
-  async getOrCreateState(): Promise<ReviewState> {
+  async getOrCreateState(): Promise<ProcessState> {
     if (this.currentState) {
       return this.currentState
     }
@@ -438,8 +450,7 @@ Respond with ONLY "true" if this is a concession, or "false" if it is not.`
         .filter(
           (comment) =>
             comment.in_reply_to_id === Number(threadId) &&
-            comment.user?.login !== 'opencode-reviewer[bot]' &&
-            comment.user?.login !== 'github-actions[bot]'
+            !BOT_USERS.includes(comment.user?.login || '')
         )
         .map((comment) => ({
           author: comment.user?.login || 'unknown',
@@ -623,6 +634,476 @@ Respond with ONLY one word: acknowledgment, dispute, question, or out_of_scope`
   private getSignificantWords(text: string): Set<string> {
     const words = this.normalizeForComparison(text).split(' ')
     return new Set(words.filter((w) => w.length > 2 && !STOP_WORDS.has(w)))
+  }
+
+  async trackQuestionTask(
+    questionId: string,
+    author: string,
+    question: string,
+    commentId: string,
+    fileContext?: { path: string; line?: number }
+  ): Promise<void> {
+    core.info(`Tracking question task: ${questionId} from ${author}`)
+    core.debug(`Question: ${question.substring(0, 100)}...`)
+    if (fileContext) {
+      core.debug(
+        `File context: ${fileContext.path}:${fileContext.line || 'N/A'}`
+      )
+    }
+
+    try {
+      const comment = await this.octokit.issues.getComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(commentId)
+      })
+
+      const existingBody = comment.data.body || ''
+      const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/
+
+      if (rmcocRegex.test(existingBody)) {
+        return
+      }
+
+      const rmcocData = {
+        type: 'question',
+        status: 'PENDING',
+        author,
+        question: question.substring(0, 200),
+        file_context: fileContext,
+        tracked_at: new Date().toISOString()
+      }
+
+      const updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+
+      await this.octokit.issues.updateComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(commentId),
+        body: updatedBody
+      })
+
+      core.debug(`Added PENDING rmcoc block to question ${commentId}`)
+    } catch (error) {
+      core.warning(
+        `Failed to track question task: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async markQuestionInProgress(questionId: string): Promise<void> {
+    core.info(`Marking question ${questionId} as in progress`)
+    // Update the original comment with rmcoc block showing IN_PROGRESS status
+    try {
+      const comment = await this.octokit.issues.getComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(questionId)
+      })
+
+      const rmcocData = {
+        type: 'question',
+        status: 'IN_PROGRESS',
+        started_at: new Date().toISOString()
+      }
+
+      const existingBody = comment.data.body || ''
+      const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/
+      let updatedBody: string
+
+      if (rmcocRegex.test(existingBody)) {
+        updatedBody = existingBody.replace(
+          rmcocRegex,
+          `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+        )
+      } else {
+        updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+      }
+
+      await this.octokit.issues.updateComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(questionId),
+        body: updatedBody
+      })
+    } catch (error) {
+      core.warning(
+        `Failed to update question status to IN_PROGRESS: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async markQuestionAnswered(questionId: string): Promise<void> {
+    core.info(`Marking question ${questionId} as answered`)
+    // Update the original comment with rmcoc block showing ANSWERED status
+    try {
+      const comment = await this.octokit.issues.getComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(questionId)
+      })
+
+      const rmcocData = {
+        type: 'question',
+        status: 'ANSWERED',
+        completed_at: new Date().toISOString()
+      }
+
+      const existingBody = comment.data.body || ''
+      const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/
+      let updatedBody: string
+
+      if (rmcocRegex.test(existingBody)) {
+        updatedBody = existingBody.replace(
+          rmcocRegex,
+          `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+        )
+      } else {
+        updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+      }
+
+      await this.octokit.issues.updateComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(questionId),
+        body: updatedBody
+      })
+    } catch (error) {
+      core.warning(
+        `Failed to update question status to ANSWERED: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async trackManualReviewRequest(
+    requestId: string,
+    author: string,
+    commentId: string
+  ): Promise<void> {
+    core.info(`Tracking manual review request: ${requestId} from ${author}`)
+    core.debug(`Comment ID: ${commentId}`)
+    // The tracking is done when we update the comment status
+  }
+
+  async markManualReviewInProgress(requestId: string): Promise<void> {
+    core.info(`Marking manual review ${requestId} as in progress`)
+    try {
+      const comment = await this.octokit.issues.getComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(requestId)
+      })
+
+      const rmcocData = {
+        type: 'manual-pr-review',
+        status: 'IN_PROGRESS',
+        started_at: new Date().toISOString()
+      }
+
+      const existingBody = comment.data.body || ''
+      const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/
+      let updatedBody: string
+
+      if (rmcocRegex.test(existingBody)) {
+        updatedBody = existingBody.replace(
+          rmcocRegex,
+          `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+        )
+      } else {
+        updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+      }
+
+      await this.octokit.issues.updateComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(requestId),
+        body: updatedBody
+      })
+    } catch (error) {
+      core.warning(
+        `Failed to update manual review status to IN_PROGRESS: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async markManualReviewCompleted(requestId: string): Promise<void> {
+    core.info(`Marking manual review ${requestId} as completed`)
+    try {
+      const comment = await this.octokit.issues.getComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(requestId)
+      })
+
+      const rmcocData = {
+        type: 'manual-pr-review',
+        status: 'COMPLETED',
+        completed_at: new Date().toISOString()
+      }
+
+      const existingBody = comment.data.body || ''
+      const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/
+      let updatedBody: string
+
+      if (rmcocRegex.test(existingBody)) {
+        updatedBody = existingBody.replace(
+          rmcocRegex,
+          `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+        )
+      } else {
+        updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+      }
+
+      await this.octokit.issues.updateComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(requestId),
+        body: updatedBody
+      })
+    } catch (error) {
+      core.warning(
+        `Failed to update manual review status to COMPLETED: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async dismissManualReview(
+    requestId: string,
+    dismissedBy: string
+  ): Promise<void> {
+    core.info(
+      `Dismissing manual review ${requestId}, dismissed by: ${dismissedBy}`
+    )
+    try {
+      const comment = await this.octokit.issues.getComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(requestId)
+      })
+
+      const rmcocData = {
+        type: 'manual-pr-review',
+        status: 'DISMISSED_BY_AUTO_REVIEW',
+        dismissed_at: new Date().toISOString(),
+        dismissed_reason: `Dismissed by ${dismissedBy}`
+      }
+
+      const existingBody = comment.data.body || ''
+      const rmcocRegex = /```rmcoc\s*\n[\s\S]*?\n```/
+      let updatedBody: string
+
+      if (rmcocRegex.test(existingBody)) {
+        updatedBody = existingBody.replace(
+          rmcocRegex,
+          `\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+        )
+      } else {
+        updatedBody = `${existingBody}\n\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+      }
+
+      await this.octokit.issues.updateComment({
+        owner: this.config.github.owner,
+        repo: this.config.github.repo,
+        comment_id: Number(requestId),
+        body: updatedBody
+      })
+    } catch (error) {
+      core.warning(
+        `Failed to dismiss manual review: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  /**
+   * Record that an auto review was triggered by a PR event.
+   * This is used to preserve merge gate behavior when reviews are cancelled.
+   * Persists to a hidden PR comment so it survives workflow restarts.
+   */
+  async recordAutoReviewTrigger(
+    action: 'opened' | 'synchronize' | 'ready_for_review',
+    sha: string
+  ): Promise<void> {
+    core.info(`Recording auto review trigger: ${action} for SHA ${sha}`)
+
+    this.autoReviewTrigger = {
+      action,
+      sha,
+      triggeredAt: new Date().toISOString(),
+      cancelled: false
+    }
+
+    await this.persistAutoReviewTrigger()
+  }
+
+  /**
+   * Check if there's a pending (cancelled/incomplete) auto review for the current SHA.
+   * Returns the trigger info if found, null otherwise.
+   */
+  async getPendingAutoReviewTrigger(
+    currentSha: string
+  ): Promise<{ action: 'opened' | 'synchronize' | 'ready_for_review' } | null> {
+    core.debug(`Checking for pending auto review trigger for SHA ${currentSha}`)
+
+    await this.loadAutoReviewTrigger()
+
+    if (!this.autoReviewTrigger) {
+      return null
+    }
+
+    if (this.autoReviewTrigger.sha !== currentSha) {
+      core.debug(
+        `Auto review trigger SHA ${this.autoReviewTrigger.sha} doesn't match current SHA ${currentSha}`
+      )
+      return null
+    }
+
+    if (this.autoReviewTrigger.completedAt) {
+      core.debug('Auto review trigger already completed')
+      return null
+    }
+
+    core.info(
+      `Found pending auto review trigger: ${this.autoReviewTrigger.action} for SHA ${currentSha}`
+    )
+    return { action: this.autoReviewTrigger.action }
+  }
+
+  /**
+   * Mark the auto review trigger as cancelled (workflow was interrupted).
+   */
+  async markAutoReviewCancelled(): Promise<void> {
+    if (this.autoReviewTrigger) {
+      this.autoReviewTrigger.cancelled = true
+      await this.persistAutoReviewTrigger()
+      core.info('Marked auto review as cancelled')
+    }
+  }
+
+  /**
+   * Mark an auto review as completed.
+   */
+  async markAutoReviewCompleted(): Promise<void> {
+    core.info('Marking auto review as completed')
+
+    if (this.autoReviewTrigger) {
+      this.autoReviewTrigger.completedAt = new Date().toISOString()
+      await this.persistAutoReviewTrigger()
+    }
+  }
+
+  /**
+   * Clear the auto review trigger after a review is complete.
+   * This resets the trigger state so future runs don't see stale data.
+   */
+  async clearAutoReviewTrigger(): Promise<void> {
+    core.info('Clearing auto review trigger')
+
+    if (this.autoReviewTrigger) {
+      this.autoReviewTrigger.completedAt = new Date().toISOString()
+      await this.persistAutoReviewTrigger()
+      this.autoReviewTrigger = null
+    }
+  }
+
+  /**
+   * Check if the current execution was triggered by an auto review (PR event).
+   * This is used to determine if blocking issues should fail the action.
+   */
+  wasAutoReviewTriggered(): boolean {
+    return (
+      this.autoReviewTrigger !== null && !this.autoReviewTrigger.completedAt
+    )
+  }
+
+  /**
+   * Persist auto review trigger to a hidden PR comment.
+   */
+  private async persistAutoReviewTrigger(): Promise<void> {
+    const { owner, repo, prNumber } = this.config.github
+
+    const rmcocData = {
+      type: 'auto-review-trigger',
+      ...this.autoReviewTrigger
+    }
+
+    const body = `<!-- rmcoc-auto-review-trigger -->\n\`\`\`rmcoc\n${JSON.stringify(rmcocData, null, 2)}\n\`\`\``
+
+    try {
+      if (this.autoReviewCommentId) {
+        await this.octokit.issues.updateComment({
+          owner,
+          repo,
+          comment_id: this.autoReviewCommentId,
+          body
+        })
+      } else {
+        const response = await this.octokit.issues.createComment({
+          owner,
+          repo,
+          issue_number: prNumber,
+          body
+        })
+        this.autoReviewCommentId = response.data.id
+      }
+    } catch (error) {
+      core.warning(
+        `Failed to persist auto review trigger: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  /**
+   * Load auto review trigger from PR comments.
+   */
+  private async loadAutoReviewTrigger(): Promise<void> {
+    if (this.autoReviewTrigger) {
+      return
+    }
+
+    const { owner, repo, prNumber } = this.config.github
+
+    try {
+      const comments = await this.octokit.paginate(
+        this.octokit.issues.listComments,
+        {
+          owner,
+          repo,
+          issue_number: prNumber,
+          per_page: 100
+        }
+      )
+
+      for (const comment of comments) {
+        if (comment.body?.includes('<!-- rmcoc-auto-review-trigger -->')) {
+          const match = comment.body.match(/```rmcoc\s*\n([\s\S]*?)\n```/)
+          if (match?.[1]) {
+            try {
+              const parsed = JSON.parse(match[1])
+              if (parsed.type === 'auto-review-trigger') {
+                this.autoReviewTrigger = {
+                  action: parsed.action,
+                  sha: parsed.sha,
+                  triggeredAt: parsed.triggeredAt,
+                  cancelled: parsed.cancelled || false,
+                  completedAt: parsed.completedAt
+                }
+                this.autoReviewCommentId = comment.id
+                core.debug(
+                  `Loaded auto review trigger from comment ${comment.id}`
+                )
+                return
+              }
+            } catch {
+              core.debug('Failed to parse auto review trigger comment')
+            }
+          }
+        }
+      }
+    } catch (error) {
+      core.warning(
+        `Failed to load auto review trigger: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
   }
 }
 

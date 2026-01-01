@@ -16,4 +16,6 @@ We will work on tasks within the broader poject.
 
 # Task
 
-Please create a detailed README and update it in place about the funcionality of this review agent. mention review passes, issue scoring, threshold and other features
+Please create a detailed README and update it in place about the funcionality of
+this review agent. mention review passes, issue scoring, threshold and other
+features

@@ -44,7 +44,12 @@ describe('Configuration Parser', () => {
           injectionVerificationModel: 'openai/gpt-4o-mini'
         },
         execution: {
-          mode: 'full-review'
+          mode: 'full-review',
+          isManuallyTriggered: false,
+          manualTriggerComments: {
+            enableStartComment: true,
+            enableEndComment: true
+          }
         }
       }
 
@@ -169,7 +174,12 @@ describe('Configuration Parser', () => {
           injectionVerificationModel: 'openai/gpt-4o-mini'
         },
         execution: {
-          mode: 'full-review'
+          mode: 'full-review',
+          isManuallyTriggered: false,
+          manualTriggerComments: {
+            enableStartComment: true,
+            enableEndComment: true
+          }
         }
       }
 
@@ -209,7 +219,12 @@ describe('Configuration Parser', () => {
           injectionVerificationModel: 'openai/gpt-4o-mini'
         },
         execution: {
-          mode: 'full-review'
+          mode: 'full-review',
+          isManuallyTriggered: false,
+          manualTriggerComments: {
+            enableStartComment: true,
+            enableEndComment: true
+          }
         }
       }
 

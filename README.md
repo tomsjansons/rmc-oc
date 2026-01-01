@@ -3,8 +3,7 @@
 A GitHub Action that uses OpenCode to do LLM-powered code reviews. The reivew process should behave like a real developer review. No silly diagrams and
 other nonsense. Ask follow up questions, argue in comments and fix what's broken!
 
-> [disclaimer]
->
+> [!NOTE]
 > This project is in no way associated with the OpenCode team
 
 ## The Idea

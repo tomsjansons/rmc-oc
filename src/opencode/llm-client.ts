@@ -42,8 +42,8 @@ export class LLMClientImpl implements LLMClient {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.config.apiKey}`,
-          'HTTP-Referer': 'https://github.com/opencode-pr-reviewer',
-          'X-Title': 'OpenCode PR Reviewer',
+          'HTTP-Referer': 'https://github.com/tomsjansons/rmc-oc',
+          'X-Title': 'Review My Code, OpenCode!',
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(requestBody)

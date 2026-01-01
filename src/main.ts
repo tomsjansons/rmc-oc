@@ -20,7 +20,7 @@ export async function run(): Promise<void> {
   let exitCode = 0
 
   try {
-    logger.info('Starting OpenCode PR Reviewer...')
+    logger.info('Starting Review My Code, OpenCode!...')
 
     const config = await parseInputs()
     validateConfig(config)
@@ -121,7 +121,7 @@ export async function run(): Promise<void> {
       core.setOutput('blocking_issues', String(totalBlockingIssues))
     }
 
-    logger.info('OpenCode PR Reviewer completed')
+    logger.info('Review My Code, OpenCode! completed')
   } catch (error) {
     if (error instanceof Error) {
       logger.error(error)

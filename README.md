@@ -4,7 +4,8 @@ A GitHub Action that uses OpenCode to do LLM-powered code reviews. The reivew
 process should behave like a real developer review. No silly diagrams and other
 nonsense. Ask follow up questions, argue in comments and fix what's broken!
 
-> [!NOTE] This project is in no way associated with the OpenCode team
+> [!NOTE] 
+> This project is in no way associated with the OpenCode team
 
 ## The Idea
 
@@ -186,8 +187,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run Review My Code, OpenCode!
-        uses: your-org/review-my-code-opencode@v1
+      - name: Reivew My Code, OpenCode!
+        uses: tomsjansons/rmc-oc@latest
         with:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -222,8 +223,8 @@ jobs:
 ### Advanced Example
 
 ```yaml
-- name: Run Review My Code, OpenCode!
-  uses: your-org/review-my-code-opencode@v1
+- name: Reivew My Code, OpenCode!
+  uses: tomsjansons/rmc-oc@latest
   with:
     openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
     github_token: ${{ secrets.GITHUB_TOKEN }}

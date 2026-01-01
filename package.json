@@ -43,7 +43,7 @@
   "license": "MIT",
   "dependencies": {
     "@actions/cache": "^5.0.1",
-    "@actions/core": "^1.11.1",
+    "@actions/core": "^2.0.1",
     "@actions/github": "^6.0.1",
     "@andersmyrmel/vard": "^1.2.0",
     "@octokit/rest": "^22.0.1",

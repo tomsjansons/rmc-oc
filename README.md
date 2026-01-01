@@ -1,10 +1,9 @@
 # Review My Code, OpenCode!
 
-An AI-powered PR reviewer that behaves like a senior developer on your team. Not
-just a linter that dumps findings - a conversational agent you can mention for
-early feedback, ask questions about your code, and argue with when you disagree.
+A GitHub Action that uses OpenCode to do LLM-powered code reviews. The reivew process should behave like a real developer review. No silly diagrams and
+other nonsense. Ask follow up questions, argue in comments and fix what's broken!
 
-## The Vision
+## The Idea
 
 Traditional code review tools are either too shallow (linters that miss context)
 or too noisy (AI reviewers that nit-pick everything). This agent aims to be
@@ -288,30 +287,3 @@ This is a work in progress. Known limitations:
 - PR description not yet considered in review context
 - Human escalation partially implemented
 - Some edge cases in dispute resolution
-
-## Development
-
-```bash
-pnpm install
-pnpm run bundle
-pnpm test
-```
-
-Local testing:
-
-```bash
-pnpx @github/local-action . src/main.ts .env
-```
-
-See [.env.example](./.env.example) for required environment variables.
-
-## Contributing
-
-1. Code passes linting: `pnpm run lint`
-2. Tests pass: `pnpm test`
-3. Code is bundled: `pnpm run bundle`
-4. Follow [AGENTS.md](./AGENTS.md) development contract
-
-## License
-
-MIT

@@ -22,7 +22,9 @@ export default tool({
     line: tool.schema.number().describe('Line number in the file'),
     body: tool.schema
       .string()
-      .describe('Human-readable comment explaining the issue'),
+      .describe(
+        'Human-readable comment. MUST start with **`file:line`** format (e.g., **`src/utils/auth.ts:42`**) followed by issue description'
+      ),
     assessment: tool.schema
       .object({
         finding: tool.schema

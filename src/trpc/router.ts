@@ -3,7 +3,7 @@ import superjson from 'superjson'
 
 import type { GitHubAPI } from '../github/api.js'
 import type { LLMClient } from '../opencode/llm-client.js'
-import type { ReviewOrchestrator } from '../review/orchestrator.js'
+import type { ReviewExecutor } from '../execution/orchestrator.js'
 import { logger } from '../utils/logger.js'
 import { auditToolCall } from '../utils/security.js'
 import { validateComment } from './comment-validator.js'
@@ -16,7 +16,7 @@ import {
 } from './schemas.js'
 
 export type TRPCContext = {
-  orchestrator: ReviewOrchestrator
+  executor: ReviewExecutor
   github: GitHubAPI
   llmClient: LLMClient
 }
@@ -32,7 +32,7 @@ export const appRouter = router({
   github: router({
     getRunState: publicProcedure.query(async ({ ctx }) => {
       logger.debug('tRPC: github.getRunState called')
-      const state = ctx.orchestrator.getState()
+      const state = ctx.executor.getState()
 
       return {
         threads: state?.threads || [],
@@ -58,7 +58,7 @@ export const appRouter = router({
           `tRPC: github.postReviewComment called for ${input.file}:${input.line} (score: ${input.assessment.score})`
         )
 
-        const config = ctx.orchestrator.getConfig()
+        const config = ctx.executor.getConfig()
         if (input.assessment.score < config.scoring.problemThreshold) {
           logger.info(
             `Comment filtered: score ${input.assessment.score} below threshold ${config.scoring.problemThreshold}`
@@ -69,7 +69,7 @@ export const appRouter = router({
           }
         }
 
-        const existingThread = ctx.orchestrator.findDuplicateThread(
+        const existingThread = ctx.executor.findDuplicateThread(
           input.file,
           input.line,
           input.assessment.finding
@@ -112,7 +112,7 @@ export const appRouter = router({
           body: commentBody
         })
 
-        await ctx.orchestrator.addThread({
+        await ctx.executor.addThread({
           id: commentId,
           file: input.file,
           line: input.line,
@@ -148,7 +148,7 @@ export const appRouter = router({
 
         logger.debug(`tRPC: github.replyToThread called for ${input.threadId}`)
 
-        const state = ctx.orchestrator.getState()
+        const state = ctx.executor.getState()
         const thread = state?.threads.find((t) => t.id === input.threadId)
 
         if (thread?.status === 'RESOLVED') {
@@ -174,12 +174,16 @@ export const appRouter = router({
         await ctx.github.replyToComment(input.threadId, input.body)
 
         if (input.isConcession) {
-          await ctx.orchestrator.updateThreadStatus(input.threadId, 'RESOLVED')
+          await ctx.github.resolveThread(
+            input.threadId,
+            'Agent conceded to developer explanation'
+          )
+          await ctx.executor.updateThreadStatus(input.threadId, 'RESOLVED')
           logger.info(
             `Thread ${input.threadId} marked as RESOLVED (agent conceded)`
           )
         } else {
-          await ctx.orchestrator.updateThreadStatus(input.threadId, 'DISPUTED')
+          await ctx.executor.updateThreadStatus(input.threadId, 'DISPUTED')
           logger.info(`Thread ${input.threadId} marked as DISPUTED`)
         }
 
@@ -200,7 +204,7 @@ export const appRouter = router({
 
         logger.debug(`tRPC: github.resolveThread called for ${input.threadId}`)
 
-        const state = ctx.orchestrator.getState()
+        const state = ctx.executor.getState()
         const thread = state?.threads.find((t) => t.id === input.threadId)
 
         if (thread?.status === 'RESOLVED') {
@@ -214,7 +218,7 @@ export const appRouter = router({
         }
 
         await ctx.github.resolveThread(input.threadId, input.reason)
-        await ctx.orchestrator.updateThreadStatus(input.threadId, 'RESOLVED')
+        await ctx.executor.updateThreadStatus(input.threadId, 'RESOLVED')
 
         logger.info(`Thread ${input.threadId} resolved: ${input.reason}`)
 
@@ -236,7 +240,7 @@ export const appRouter = router({
           `tRPC: github.escalateDispute called for ${input.threadId}`
         )
 
-        const config = ctx.orchestrator.getConfig()
+        const config = ctx.executor.getConfig()
 
         if (!config.dispute.enableHumanEscalation) {
           logger.warning(
@@ -263,7 +267,7 @@ export const appRouter = router({
           config.dispute.humanReviewers
         )
 
-        await ctx.orchestrator.updateThreadStatus(input.threadId, 'ESCALATED')
+        await ctx.executor.updateThreadStatus(input.threadId, 'ESCALATED')
 
         logger.info(`Thread ${input.threadId} escalated to human reviewers`)
 
@@ -279,7 +283,7 @@ export const appRouter = router({
           `tRPC: review.submitPassResults called for pass ${input.passNumber}`
         )
 
-        if (!ctx.orchestrator.isInMultiPassReview()) {
+        if (!ctx.executor.isInMultiPassReview()) {
           logger.warning(
             `submit_pass_results called outside of multi-pass review phase - rejecting`
           )
@@ -291,9 +295,7 @@ export const appRouter = router({
           }
         }
 
-        const alreadyCompleted = ctx.orchestrator.isPassCompleted(
-          input.passNumber
-        )
+        const alreadyCompleted = ctx.executor.isPassCompleted(input.passNumber)
 
         if (alreadyCompleted) {
           logger.warning(
@@ -306,7 +308,7 @@ export const appRouter = router({
           }
         }
 
-        ctx.orchestrator.recordPassCompletion({
+        ctx.executor.recordPassCompletion({
           passNumber: input.passNumber,
           completed: true,
           hasBlockingIssues: input.hasBlockingIssues

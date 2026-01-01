@@ -2,13 +2,13 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import type { GitHubAPI } from '../github/api.js'
-import {
-  type ReviewState,
-  type ReviewThread,
+import type {
+  ProcessState,
+  ReviewThread,
   StateManager
-} from '../github/state.js'
+} from '../state/manager.js'
 import type { OpenCodeClient } from '../opencode/client.js'
-import type { LLMClient } from '../opencode/llm-client.js'
+
 import { OrchestratorError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
 import {
@@ -17,13 +17,13 @@ import {
 } from '../utils/prompt-injection-detector.js'
 import { REVIEW_PROMPTS, buildSecuritySensitivity } from './prompts.js'
 import type {
+  ConversationMessage,
   DisputeContext,
-  PassResult,
-  ReviewConfig,
-  ReviewOutput
-} from './types.js'
+  QuestionContext
+} from '../task/types.js'
+import type { PassResult, ReviewConfig, ReviewOutput } from './types.js'
 
-type PassNumber = 1 | 2 | 3 | 4
+type PassNumber = 1 | 2 | 3
 
 type ReviewPhase =
   | 'idle'
@@ -31,22 +31,21 @@ type ReviewPhase =
   | 'dispute-resolution'
   | 'multi-pass-review'
 
-export class ReviewOrchestrator {
-  private stateManager: StateManager
+export class ReviewExecutor {
   private injectionDetector: PromptInjectionDetector
   private passResults: PassResult[] = []
-  private reviewState: ReviewState | null = null
+  private processState: ProcessState | null = null
   private currentSessionId: string | null = null
   private currentPhase: ReviewPhase = 'idle'
+  private passCompletionResolvers: Map<number, () => void> = new Map()
 
   constructor(
     private opencode: OpenCodeClient,
-    llmClient: LLMClient,
+    private stateManager: StateManager,
     private github: GitHubAPI,
     private config: ReviewConfig,
     private workspaceRoot: string
   ) {
-    this.stateManager = new StateManager(config, llmClient)
     this.injectionDetector = createPromptInjectionDetector(
       config.opencode.apiKey,
       config.security.injectionVerificationModel,
@@ -75,12 +74,12 @@ export class ReviewOrchestrator {
             this.passResults = []
           }
 
-          this.reviewState = await this.stateManager.getOrCreateState()
+          this.processState = await this.stateManager.getOrCreateState()
           logger.info(
-            `Loaded review state with ${this.reviewState.threads.length} existing threads`
+            `Loaded review state with ${this.processState.threads.length} existing threads`
           )
 
-          const hasExistingIssues = this.reviewState.threads.some(
+          const hasExistingIssues = this.processState.threads.some(
             (t) => t.status === 'PENDING' || t.status === 'DISPUTED'
           )
 
@@ -141,7 +140,23 @@ export class ReviewOrchestrator {
     const files = await this.github.getPRFiles()
     const securitySensitivity = await this.detectSecuritySensitivity()
 
-    logger.info(`Fetched ${files.length} changed files`)
+    // Log detailed file information for debugging
+    logger.info(`Fetched ${files.length} changed files for review`)
+    logger.info('=== FILES TO BE REVIEWED ===')
+    for (const file of files) {
+      logger.info(`  - ${file}`)
+    }
+    logger.info('=== END FILES LIST ===')
+
+    // Log PR diff range info
+    const prInfo = await this.github.getPRInfo()
+    logger.info(
+      `PR diff range: ${prInfo.base.sha.substring(0, 7)}...${prInfo.head.sha.substring(0, 7)}`
+    )
+    logger.info(
+      `Base branch: ${prInfo.base.ref}, Head branch: ${prInfo.head.ref}`
+    )
+
     logger.info(
       'Starting 3-pass review in single OpenCode session (context preserved across all passes)'
     )
@@ -157,7 +172,7 @@ export class ReviewOrchestrator {
 
   private async executeFixVerification(): Promise<void> {
     await logger.group('Fix Verification', async () => {
-      if (!this.reviewState) {
+      if (!this.processState) {
         throw new OrchestratorError('Review state not loaded')
       }
 
@@ -169,7 +184,7 @@ export class ReviewOrchestrator {
       const prompt = REVIEW_PROMPTS.FIX_VERIFICATION(previousIssues, newCommits)
 
       logger.info(
-        `Verifying ${this.reviewState.threads.filter((t) => t.status !== 'RESOLVED').length} unresolved issues`
+        `Verifying ${this.processState.threads.filter((t) => t.status !== 'RESOLVED').length} unresolved issues`
       )
 
       await this.sendPromptToOpenCode(prompt)
@@ -340,13 +355,48 @@ export class ReviewOrchestrator {
     passNumber: PassNumber,
     prompt: string
   ): Promise<void> {
-    await logger.group(`Pass ${passNumber} of 4`, async () => {
+    await logger.group(`Pass ${passNumber} of 3`, async () => {
       const startTime = Date.now()
 
       logger.info(`Starting pass ${passNumber}`)
       logger.debug(`Pass ${passNumber} prompt length: ${prompt.length} chars`)
 
+      // Create a promise that resolves when submit_pass_results is called
+      const passCompletionPromise = new Promise<void>((resolve) => {
+        this.passCompletionResolvers.set(passNumber, resolve)
+      })
+
+      // Send the prompt and wait for idle (with grace period)
       await this.sendPromptToOpenCode(prompt)
+
+      // Check if submit_pass_results was already called during execution
+      // This is the common case - model calls the tool then goes idle
+      if (!this.isPassCompleted(passNumber)) {
+        // Model went idle without calling submit_pass_results
+        // Wait a bit longer in case it resumes, but don't wait forever
+        const PASS_COMPLETION_TIMEOUT_MS = 30000
+        logger.info(
+          `Pass ${passNumber}: session idle but submit_pass_results not called, waiting up to ${PASS_COMPLETION_TIMEOUT_MS / 1000}s...`
+        )
+
+        const timeoutPromise = new Promise<'timeout'>((resolve) => {
+          setTimeout(() => resolve('timeout'), PASS_COMPLETION_TIMEOUT_MS)
+        })
+
+        const result = await Promise.race([
+          passCompletionPromise.then(() => 'completed' as const),
+          timeoutPromise
+        ])
+
+        if (result === 'timeout') {
+          logger.warning(
+            `Pass ${passNumber}: timed out waiting for submit_pass_results, proceeding anyway`
+          )
+        }
+      }
+
+      // Clean up the resolver
+      this.passCompletionResolvers.delete(passNumber)
 
       const duration = Date.now() - startTime
       logger.info(`Pass ${passNumber} completed in ${duration}ms`)
@@ -429,7 +479,14 @@ export class ReviewOrchestrator {
       this.passResults.push(result)
     }
 
-    if (this.reviewState) {
+    // Resolve the pass completion promise if one is waiting
+    const resolver = this.passCompletionResolvers.get(result.passNumber)
+    if (resolver) {
+      logger.debug(`Resolving pass ${result.passNumber} completion promise`)
+      resolver()
+    }
+
+    if (this.processState) {
       this.stateManager.recordPassCompletion(result).catch((error) => {
         logger.warning(`Failed to record pass completion: ${error}`)
       })
@@ -478,18 +535,18 @@ export class ReviewOrchestrator {
   }
 
   private formatPreviousIssues(): string {
-    if (!this.reviewState) {
+    if (!this.processState) {
       return 'No previous issues'
     }
 
-    const pendingCount = this.reviewState.threads.filter(
+    const pendingCount = this.processState.threads.filter(
       (t) => t.status === 'PENDING'
     ).length
-    const disputedCount = this.reviewState.threads.filter(
+    const disputedCount = this.processState.threads.filter(
       (t) => t.status === 'DISPUTED'
     ).length
 
-    const issueList = this.reviewState.threads
+    const issueList = this.processState.threads
       .filter((t) => t.status !== 'RESOLVED')
       .map((thread) => {
         return `- **${thread.file}:${thread.line}** [${thread.status}] (score: ${thread.score})
@@ -505,7 +562,7 @@ ${issueList}`
   }
 
   private async getNewCommitsSummary(): Promise<string> {
-    if (!this.reviewState) {
+    if (!this.processState) {
       return 'No commit history available'
     }
 
@@ -513,7 +570,7 @@ ${issueList}`
       const files = await this.github.getPRFiles()
 
       return `New commits since last review:
-- Last reviewed commit: ${this.reviewState.lastCommitSha.substring(0, 7)}
+- Last reviewed commit: ${this.processState.lastCommitSha.substring(0, 7)}
 - Current HEAD: New changes detected
 - Files changed: ${files.length}
 - Changed files: ${files.join(', ')}
@@ -528,13 +585,13 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
       )
 
       return `New commits since last review:
-- Last reviewed commit: ${this.reviewState.lastCommitSha.substring(0, 7)}
+- Last reviewed commit: ${this.processState.lastCommitSha.substring(0, 7)}
 - Unable to fetch file list - use OpenCode tools to explore`
     }
   }
 
   private buildReviewOutput(): ReviewOutput {
-    if (!this.reviewState) {
+    if (!this.processState) {
       return {
         status: 'failed',
         issuesFound: 0,
@@ -542,7 +599,7 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
       }
     }
 
-    const activeThreads = this.reviewState.threads.filter(
+    const activeThreads = this.processState.threads.filter(
       (t) => t.status !== 'RESOLVED'
     )
 
@@ -594,8 +651,8 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
   ): Promise<void> {
     await this.stateManager.updateThreadStatus(threadId, status)
 
-    if (this.reviewState) {
-      const thread = this.reviewState.threads.find((t) => t.id === threadId)
+    if (this.processState) {
+      const thread = this.processState.threads.find((t) => t.id === threadId)
       if (thread) {
         thread.status = status
       }
@@ -605,20 +662,20 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
   async addThread(thread: ReviewThread): Promise<void> {
     await this.stateManager.addThread(thread)
 
-    if (this.reviewState) {
-      const existingIndex = this.reviewState.threads.findIndex(
+    if (this.processState) {
+      const existingIndex = this.processState.threads.findIndex(
         (t) => t.id === thread.id
       )
       if (existingIndex >= 0) {
-        this.reviewState.threads[existingIndex] = thread
+        this.processState.threads[existingIndex] = thread
       } else {
-        this.reviewState.threads.push(thread)
+        this.processState.threads.push(thread)
       }
     }
   }
 
-  getState(): ReviewState | null {
-    return this.reviewState
+  getState(): ProcessState | null {
+    return this.processState
   }
 
   getConfig(): ReviewConfig {
@@ -626,44 +683,52 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
   }
 
   async getThreadsRequiringVerification(): Promise<ReviewThread[]> {
-    if (!this.reviewState) {
+    if (!this.processState) {
       return []
     }
 
-    return this.reviewState.threads.filter(
+    return this.processState.threads.filter(
       (t) => t.status === 'PENDING' || t.status === 'DISPUTED'
     )
   }
 
   async getResolvedThreadsCount(): Promise<number> {
-    if (!this.reviewState) {
+    if (!this.processState) {
       return 0
     }
 
-    return this.reviewState.threads.filter((t) => t.status === 'RESOLVED')
+    return this.processState.threads.filter((t) => t.status === 'RESOLVED')
       .length
   }
 
-  async executeQuestionAnswering(): Promise<string> {
+  async executeQuestionAnswering(
+    questionContext?: QuestionContext,
+    conversationHistory?: ConversationMessage[]
+  ): Promise<string> {
     return await logger.group('Answering Developer Question', async () => {
-      const questionContext = this.config.execution.questionContext
+      // Use passed context or fall back to config (for backward compatibility)
+      const context = questionContext || this.config.execution.questionContext
 
-      if (!questionContext) {
+      if (!context) {
         throw new OrchestratorError('No question context provided')
       }
 
       const sanitizedQuestion = await this.sanitizeExternalInput(
-        questionContext.question,
-        `question from ${questionContext.author}`
+        context.question,
+        `question from ${context.author}`
       )
 
-      logger.info(
-        `Question from ${questionContext.author}: "${sanitizedQuestion}"`
-      )
+      logger.info(`Question from ${context.author}: "${sanitizedQuestion}"`)
 
-      if (questionContext.fileContext) {
+      if (context.fileContext) {
         logger.info(
-          `Context: ${questionContext.fileContext.path}${questionContext.fileContext.line ? `:${questionContext.fileContext.line}` : ''}`
+          `Context: ${context.fileContext.path}${context.fileContext.line ? `:${context.fileContext.line}` : ''}`
+        )
+      }
+
+      if (conversationHistory && conversationHistory.length > 0) {
+        logger.info(
+          `Including ${conversationHistory.length} prior messages in conversation`
         )
       }
 
@@ -677,12 +742,33 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
         REVIEW_PROMPTS.QUESTION_ANSWERING_SYSTEM
       )
 
-      const prompt = REVIEW_PROMPTS.ANSWER_QUESTION(
-        sanitizedQuestion,
-        questionContext.author,
-        questionContext.fileContext,
-        prContext.files.length > 0 ? prContext : undefined
-      )
+      // Build prompt based on question type
+      let prompt: string
+      if (context.requiresFreshAnalysis) {
+        // For summary/overview questions, use fresh analysis prompt
+        // that instructs the agent to run git diff and examine actual changes
+        logger.info('Using fresh analysis prompt (summary-type question)')
+        prompt = REVIEW_PROMPTS.ANSWER_FRESH_ANALYSIS_QUESTION(
+          sanitizedQuestion,
+          context.author,
+          prContext.files.length > 0 ? prContext : undefined
+        )
+      } else if (conversationHistory && conversationHistory.length > 0) {
+        prompt = REVIEW_PROMPTS.ANSWER_FOLLOWUP_QUESTION(
+          sanitizedQuestion,
+          context.author,
+          conversationHistory,
+          context.fileContext,
+          prContext.files.length > 0 ? prContext : undefined
+        )
+      } else {
+        prompt = REVIEW_PROMPTS.ANSWER_QUESTION(
+          sanitizedQuestion,
+          context.author,
+          context.fileContext,
+          prContext.files.length > 0 ? prContext : undefined
+        )
+      }
 
       logger.info('Sending question to OpenCode agent')
 

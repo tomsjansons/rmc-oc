@@ -23,7 +23,8 @@ jobs:
       (github.event_name == 'pull_request' && !github.event.pull_request.draft) ||
       (github.event_name == 'issue_comment' && 
        github.event.issue.pull_request && 
-       contains(github.event.comment.body, '@review-my-code-bot')) ||
+       (contains(github.event.comment.body, '@review-my-code-bot') || 
+        contains(github.event.comment.body, '@rmc-bot'))) ||
       (github.event_name == 'pull_request_review_comment' &&
        github.event.comment.in_reply_to_id != '')
 
@@ -39,6 +40,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || '' }}
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: |
+          git fetch origin main:refs/remotes/origin/main || \
+          git fetch origin master:refs/remotes/origin/master || \
+          echo "Warning: Could not fetch main or master branch"
 
       - name: Checkout PR head for comment events
         if:
@@ -54,11 +62,13 @@ jobs:
         with:
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          model: 'openai/gpt-5.1-codex-mini'
-          injection_verification_model: 'openai/gpt-oss-20b'
+          model: 'minimax/minimax-m2.1'
+          injection_verification_model: 'moonshotai/kimi-k2-0905'
           problem_score_threshold: 5
           review_timeout_minutes: 30
           max_review_retries: 1
           enable_web: false
           enable_human_escalation: false
           debug_logging: true
+          review_manual_trigger_enable_start_comment: true
+          review_manual_trigger_enable_end_comment: true

@@ -42,8 +42,8 @@ export class LLMClientImpl implements LLMClient {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.config.apiKey}`,
-          'HTTP-Referer': 'https://github.com/opencode-pr-reviewer',
-          'X-Title': 'OpenCode PR Reviewer',
+          'HTTP-Referer': 'https://github.com/tomsjansons/rmc-oc',
+          'X-Title': 'Review My Code, OpenCode!',
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(requestBody)
@@ -76,7 +76,19 @@ export class LLMClientImpl implements LLMClient {
         )
       }
 
-      return choice?.message?.content?.trim() ?? null
+      const content = choice?.message?.content?.trim() ?? null
+
+      // Log if we got an empty or null response for debugging
+      if (!content) {
+        logger.warning(
+          `LLM returned empty/null response. ` +
+            `Finish reason: ${choice?.finish_reason ?? 'unknown'}, ` +
+            `Usage: ${JSON.stringify(data.usage ?? {})}, ` +
+            `Model: ${this.config.model}`
+        )
+      }
+
+      return content
     } catch (error) {
       logger.warning(
         `LLM completion failed: ${error instanceof Error ? error.message : String(error)}`

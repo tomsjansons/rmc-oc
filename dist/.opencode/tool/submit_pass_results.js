@@ -15,8 +15,8 @@ var submit_pass_results = tool({
         passNumber: tool.schema
             .number()
             .min(1)
-            .max(4)
-            .describe('Pass number that was completed (1-4)'),
+            .max(3)
+            .describe('Pass number that was completed (1-3)'),
         hasBlockingIssues: tool.schema
             .boolean()
             .describe('Whether blocking issues (score >= 8) were found')

@@ -1,13 +1,17 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
+
+import { BOT_MENTION, BOT_MENTIONS, BOT_USERS } from './constants.js'
+import { LLMClientImpl } from '../opencode/llm-client.js'
 import type {
   DisputeContext,
   ExecutionMode,
   QuestionContext,
   ReviewConfig
-} from '../review/types.js'
+} from '../execution/types.js'
+import { IntentClassifier } from '../task/classifier.js'
 
-export function parseInputs(): ReviewConfig {
+export async function parseInputs(): Promise<ReviewConfig> {
   const apiKey = core.getInput('openrouter_api_key', { required: true })
   const model = core.getInput('model', { required: true })
   const enableWeb = core.getBooleanInput('enable_web', { required: false })
@@ -77,10 +81,32 @@ export function parseInputs(): ReviewConfig {
     { required: true }
   )
 
+  const enableStartComment = core.getBooleanInput(
+    'review_manual_trigger_enable_start_comment',
+    { required: false }
+  )
+
+  const enableEndComment = core.getBooleanInput(
+    'review_manual_trigger_enable_end_comment',
+    { required: false }
+  )
+
   const context = github.context
 
-  const { mode, prNumber, questionContext, disputeContext } =
-    detectExecutionMode(context)
+  const tempLlmClient = new LLMClientImpl({
+    apiKey,
+    model: injectionVerificationModel
+  })
+  const intentClassifier = new IntentClassifier(tempLlmClient)
+
+  const {
+    mode,
+    prNumber,
+    questionContext,
+    disputeContext,
+    isManuallyTriggered,
+    triggerCommentId
+  } = await detectExecutionMode(context, intentClassifier)
 
   const owner = context.repo.owner
   const repo = context.repo.repo
@@ -125,17 +151,41 @@ export function parseInputs(): ReviewConfig {
     execution: {
       mode,
       questionContext,
-      disputeContext
+      disputeContext,
+      isManuallyTriggered,
+      triggerCommentId,
+      manualTriggerComments: {
+        enableStartComment,
+        enableEndComment
+      }
     }
   }
 }
 
-function detectExecutionMode(context: typeof github.context): {
+/**
+ * Detect the execution mode based on the GitHub event that triggered this run.
+ *
+ * NOTE: This function provides the initial execution context based on the triggering
+ * event. The TaskDetector class performs comprehensive task detection that may find
+ * additional pending work (questions, disputes) beyond what triggered this run.
+ *
+ * The execution.mode field is used by TaskDetector as a hint for whether a full
+ * review was requested. TaskDetector's detectAllTasks() will scan for ALL pending
+ * work regardless of the triggering event.
+ *
+ * @internal
+ */
+async function detectExecutionMode(
+  context: typeof github.context,
+  intentClassifier: IntentClassifier
+): Promise<{
   mode: ExecutionMode
   prNumber: number
   questionContext?: QuestionContext
   disputeContext?: DisputeContext
-} {
+  isManuallyTriggered: boolean
+  triggerCommentId?: string
+}> {
   if (context.eventName === 'pull_request_review_comment') {
     const comment = context.payload.comment
     const pullRequest = context.payload.pull_request
@@ -157,8 +207,7 @@ function detectExecutionMode(context: typeof github.context): {
     }
 
     const commentAuthor = comment?.user?.login || 'unknown'
-    const botUsers = ['github-actions[bot]', 'opencode-reviewer[bot]']
-    if (botUsers.includes(commentAuthor)) {
+    if (BOT_USERS.includes(commentAuthor)) {
       core.info('Ignoring comment from bot user to prevent loops.')
       throw new Error('Skipping: Comment is from a bot user.')
     }
@@ -170,6 +219,8 @@ function detectExecutionMode(context: typeof github.context): {
     return {
       mode: 'dispute-resolution',
       prNumber: pullRequest.number,
+      isManuallyTriggered: true,
+      triggerCommentId: String(comment?.id || ''),
       disputeContext: {
         threadId: String(inReplyToId),
         replyCommentId: String(comment?.id || ''),
@@ -192,15 +243,32 @@ function detectExecutionMode(context: typeof github.context): {
     }
 
     const commentBody = comment?.body || ''
-    const botMention = '@review-my-code-bot'
 
-    if (commentBody.includes(botMention)) {
-      const question = commentBody.replace(botMention, '').trim()
+    const matchedMention = BOT_MENTIONS.find((mention) =>
+      commentBody.includes(mention)
+    )
+    if (matchedMention) {
+      const textAfterMention = commentBody.replace(matchedMention, '').trim()
 
-      if (!question) {
+      if (!textAfterMention) {
         throw new Error(
-          `Please provide a question after ${botMention}. Example: "${botMention} Why is this function needed?"`
+          `Please provide instructions after the bot mention. Examples:\n- "${BOT_MENTION} please review this PR"\n- "${BOT_MENTION} Why is this function needed?"`
         )
+      }
+
+      const intent = await intentClassifier.classifyBotMention(textAfterMention)
+      core.info(`Intent classified as: ${intent}`)
+
+      if (intent === 'review-request') {
+        core.info(`Review request detected via bot mention`)
+        core.info(`Requested by: ${comment?.user?.login || 'unknown'}`)
+
+        return {
+          mode: 'full-review',
+          prNumber: issue.number,
+          isManuallyTriggered: true,
+          triggerCommentId: String(comment?.id || '')
+        }
       }
 
       let fileContext: QuestionContext['fileContext'] | undefined
@@ -212,22 +280,24 @@ function detectExecutionMode(context: typeof github.context): {
         }
       }
 
-      core.info(`Question detected: "${question}"`)
+      core.info(`Question detected: "${textAfterMention}"`)
       core.info(`Asked by: ${comment?.user?.login || 'unknown'}`)
 
       return {
         mode: 'question-answering',
         prNumber: issue.number,
+        isManuallyTriggered: true,
+        triggerCommentId: String(comment?.id || ''),
         questionContext: {
           commentId: String(comment?.id || ''),
-          question,
+          question: textAfterMention,
           author: comment?.user?.login || 'unknown',
           fileContext
         }
       }
     }
 
-    core.info('Comment does not mention @review-my-code-bot, skipping')
+    core.info(`Comment does not mention ${BOT_MENTION} or shorthand, skipping`)
     throw new Error(
       'This action was triggered by a comment but no bot mention was found. Skipping.'
     )
@@ -259,7 +329,8 @@ function detectExecutionMode(context: typeof github.context): {
 
     return {
       mode: 'full-review',
-      prNumber
+      prNumber,
+      isManuallyTriggered: false
     }
   }
 

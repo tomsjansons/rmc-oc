@@ -76,7 +76,19 @@ export class LLMClientImpl implements LLMClient {
         )
       }
 
-      return choice?.message?.content?.trim() ?? null
+      const content = choice?.message?.content?.trim() ?? null
+
+      // Log if we got an empty or null response for debugging
+      if (!content) {
+        logger.warning(
+          `LLM returned empty/null response. ` +
+            `Finish reason: ${choice?.finish_reason ?? 'unknown'}, ` +
+            `Usage: ${JSON.stringify(data.usage ?? {})}, ` +
+            `Model: ${this.config.model}`
+        )
+      }
+
+      return content
     } catch (error) {
       logger.warning(
         `LLM completion failed: ${error instanceof Error ? error.message : String(error)}`

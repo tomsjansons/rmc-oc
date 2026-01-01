@@ -201,10 +201,15 @@ export class OpenCodeClientImpl implements OpenCodeClient {
     const abortController = new AbortController()
     let sawBusy = false
 
+    // Grace period to wait after idle before considering session complete
+    // This handles reasoning models that may pause briefly during thinking
+    const IDLE_GRACE_PERIOD_MS = 10000
+
     this.resetLoopDetection()
 
     return new Promise<void>((resolve, reject) => {
       let resolved = false
+      let idleGraceTimerId: ReturnType<typeof setTimeout> | null = null
 
       const timeoutId = setTimeout(() => {
         if (!resolved) {
@@ -220,7 +225,21 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
       const cleanup = (): void => {
         clearTimeout(timeoutId)
+        if (idleGraceTimerId) {
+          clearTimeout(idleGraceTimerId)
+          idleGraceTimerId = null
+        }
         abortController.abort()
+      }
+
+      const cancelIdleGrace = (): void => {
+        if (idleGraceTimerId) {
+          logger.debug(
+            `Session ${sessionId} became active again, cancelling idle grace period`
+          )
+          clearTimeout(idleGraceTimerId)
+          idleGraceTimerId = null
+        }
       }
 
       const processEvents = async (): Promise<void> => {
@@ -273,12 +292,23 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               }
             }
 
+            // Any non-idle status means the model is active
             if (
               event.type === 'session.status' &&
               props.status &&
               props.status.type !== 'idle'
             ) {
               sawBusy = true
+              // Cancel any pending idle grace timer since model is active again
+              cancelIdleGrace()
+            }
+
+            // Message updates also indicate activity
+            if (
+              event.type === 'message.updated' ||
+              event.type === 'message.part.updated'
+            ) {
+              cancelIdleGrace()
             }
 
             const isIdle =
@@ -286,12 +316,24 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               (event.type === 'session.status' && props.status?.type === 'idle')
 
             if (isIdle && sawBusy) {
-              const duration = Date.now() - startTime
-              logger.info(`Session ${sessionId} completed after ${duration}ms`)
-              resolved = true
-              cleanup()
-              resolve()
-              return
+              // Don't immediately complete - wait for grace period
+              // This allows reasoning models time to resume after brief pauses
+              if (!idleGraceTimerId) {
+                logger.debug(
+                  `Session ${sessionId} went idle, waiting ${IDLE_GRACE_PERIOD_MS}ms grace period...`
+                )
+                idleGraceTimerId = setTimeout(() => {
+                  if (!resolved) {
+                    const duration = Date.now() - startTime
+                    logger.info(
+                      `Session ${sessionId} completed after ${duration}ms (idle for ${IDLE_GRACE_PERIOD_MS}ms)`
+                    )
+                    resolved = true
+                    cleanup()
+                    resolve()
+                  }
+                }, IDLE_GRACE_PERIOD_MS)
+              }
             }
 
             if (

@@ -3,168 +3,65 @@
 A GitHub Action that uses OpenCode to do LLM-powered code reviews. The reivew process should behave like a real developer review. No silly diagrams and
 other nonsense. Ask follow up questions, argue in comments and fix what's broken!
 
-You can see it in action on this PR https://github.com/tomsjansons/rmc-oc/pull/8
+## The Idea
 
-## WIP
+Traditional code review tools are either too shallow (linters that miss context)
+or too noisy (AI reviewers that nit-pick everything). This agent aims to be
+different:
 
-This PR Review Agent is still very much wip and there will be rough edges but
-the main review loop works!
+- **Interactive**: Mention `@review-my-code-bot` (or `@rmc-bot` for short) to
+  request feedback on draft PRs or ask questions about your codebase
+- **Conversational**: Argue about findings in comments - explain your reasoning
+  and the bot may concede, or it will explain why the issue still matters
+- **Stateful**: All conversation history is preserved in PR comments, so the bot
+  remembers previous discussions across commits
+- **Proportional**: Suggestions match the scale of your changes - no module
+  rewrites for 2-line fixes
+- **Silent when appropriate**: If your code is good, the bot says nothing
 
-- PR description is currently not considered
-- Draft PRs with @review-my-code-bot not tested
-- Escalation for human review not working
-- Proably more missing/broken features
-- Overall state of the code is not ideal
+## How It Works
 
-## Features
+### Interacting Like a Developer
 
-### Multi-Pass Review System
+The bot is designed to feel like chatting with a teammate:
 
-The agent performs **3 sequential review passes** within a single OpenCode
-session, each building on the previous one:
+**Request early feedback on draft PRs:**
 
-1. **Pass 1: Atomic Diff Review**
-   - Line-by-line analysis of changes
-   - Syntax errors and typos
-   - Code style violations
-   - Local performance issues
+```
+@review-my-code-bot please review this
+@rmc-bot can you check this code?
+```
 
-2. **Pass 2: Structural/Layered Review**
-   - Broader codebase context analysis
-   - Function call chain tracing
-   - Interface contract verification
-   - Architectural impact assessment
-   - Pattern consistency checks
+**Ask questions about the codebase:**
 
-3. **Pass 3: Security & Compliance Audit**
-   - Access control issues
-   - Data integrity risks
-   - Project-specific rule enforcement (`AGENTS.md`)
-   - Security sensitivity scaling (PII, Financial data)
+```
+@review-my-code-bot Why is UserService injected here?
+@rmc-bot How does the auth flow work?
+```
 
-### Intelligent Issue Scoring (1-10 Scale)
+**Dispute a finding:**
 
-Every issue is assigned a severity score based on a detailed rubric. Only issues
-at or above the configured threshold are reported.
+When the bot raises an issue, reply to the comment with your reasoning:
 
-#### Level 1-2: Pure Nit-picks
+```
+This is intentional - we need the nested loop here because the data
+structure requires checking parent-child relationships. The array
+is always small (<100 items) so O(n^2) is acceptable.
+```
 
-_Items with zero impact on execution, security, or reliability_
+The bot will re-evaluate with your context. If your explanation is valid, it
+concedes and resolves the thread. If the issue still poses a risk, it explains
+why and keeps the thread open.
 
-- **Score 1 (Micro-Nit)**: Extremely subjective preferences
-  - Example: Suggesting `Array.from()` instead of spread operator where
-    performance is irrelevant
-  - Example: Preferring single quotes over double quotes when both are
-    acceptable
-- **Score 2 (Stylistic Nit)**: Minor inconsistencies not caught by linter but
-  don't hinder readability
-  - Example: Variable name `data` is generic, suggesting `userData` instead
-  - Example: Inconsistent spacing that doesn't affect code clarity
+### Stateful Without External Dependencies
 
-#### Level 3-4: Quality & Maintenance
+A key design goal: **no external state management**. No Redis, no databases, no
+GitHub Actions cache (which proved unreliable).
 
-_Items that impact developer experience and long-term health, but aren't bugs_
-
-- **Score 3 (Minor Improvement)**: Redundant code or slightly confusing naming
-  - Example: Function is 5 lines longer than necessary due to verbose if/else
-    block
-  - Example: Variable could be more descriptive but meaning is still clear from
-    context
-- **Score 4 (Readability/Documentation)**: Missing documentation on complex
-  public method or hard-to-parse exported type
-  - Example: Complex regex without explanation of what each group captures
-  - Example: Public API method missing JSDoc explaining parameters and return
-    value
-
-#### Level 5-6: Best Practices & Efficiency
-
-_The default threshold - deviations from industry standards or suboptimal
-patterns_
-
-- **Score 5 (Suboptimal Pattern)**: Pattern that works but is known to be
-  brittle
-  - Example: Passing 6 individual arguments instead of an options object
-  - Example: Using string concatenation instead of template literals for
-    readability
-- **Score 6 (Local Performance/Complexity)**: Unnecessarily heavy code
-  - Example: Mapping over a large array twice instead of once
-  - Example: Nested loop that could be replaced with a Map lookup
-  - Example: Synchronous file operations in a critical path
-
-#### Level 7-8: Logic, Edge Cases & Consistency
-
-_Serious issues where code might fail under specific conditions or violates
-rules_
-
-- **Score 7 (Logic Risk)**: Missing edge case that could cause failures
-  - Example: Handling success and error states, but UI crashes on empty array
-    response
-  - Example: Not validating user input before using it in a calculation
-  - Example: Missing null check on optional API response field
-- **Score 8 (Structural/Rule Violation)**: Direct violation of AGENTS.md or
-  architectural standards
-  - Example: UI component performing direct database queries instead of using
-    service layer
-  - Example: Violating established module boundaries or import patterns
-  - Example: Breaking established error handling conventions
-
-#### Level 9-10: Critical Failures
-
-_Issues requiring immediate PR blocking - objective and dangerous_
-
-- **Score 9 (Major Bug/Security Leak)**: High probability of failure or data
-  exposure
-  - Example: SQL injection vulnerability due to unsanitized user input
-  - Example: Missing authorization check on sensitive endpoint
-  - Example: Race condition in payment processing flow
-  - Example: Password or token exposed in logs
-- **Score 10 (Systemic Catastrophe)**: Fundamental failures with severe
-  consequences
-  - Example: Hardcoded production secrets or API keys committed to repository
-  - Example: Using broken/deprecated encryption (MD5 for passwords)
-  - Example: Logic that could cause mass data loss or corruption
-  - Example: Removing critical security middleware or authentication checks
-
-### Configurable Thresholds
-
-- **`problem_score_threshold`** (default: 5): Minimum score for reporting issues
-  - Set to 7 to focus only on logic errors and security issues
-  - Set to 3 to include code quality suggestions
-  - Agent remains silent on issues below threshold
-
-- **`blocking_score_threshold`** (default: same as problem_score_threshold):
-  Minimum score to fail the check
-  - Separate threshold for CI/CD blocking
-  - Issues at or above this score will cause the action to fail
-
-### Stateful Review Management
-
-The agent maintains review state across commits by storing structured data
-directly in GitHub PR comments:
-
-- **Comment-Based State Storage**: All review state is embedded in comments
-  using `rmcoc` code blocks
-- **Automatic State Reconstruction**: On each run, the agent rebuilds complete
-  state by parsing previous review comments
-- **Issue Tracking**: Remembers which issues were raised, resolved, disputed, or
-  escalated
-- **Fix Verification**: Automatically checks if previous issues are addressed in
-  new commits
-- **Cross-File Resolution**: Detects when an issue in `file_A.ts` is fixed by
-  changes in `file_B.ts`
-- **No External Dependencies**: State persists as long as PR comments exist
-
-#### Comment Format with Embedded State
-
-Every review comment includes a `rmcoc` JSON block containing structured
-assessment data:
+Instead, all state lives in PR comments using embedded `rmcoc` code blocks:
 
 ````markdown
-In `src/utils/auth.ts`, the `validateToken` function doesn't handle expired
-tokens.
-
-Add expiration validation before signature check to prevent accepting expired
-tokens.
+The `validateToken` function doesn't handle expired tokens...
 
 ---
 
@@ -177,147 +74,84 @@ tokens.
 ```
 ````
 
-The agent parses these blocks to reconstruct:
+On each run, the bot:
 
-- Thread status (PENDING, RESOLVED, DISPUTED, ESCALATED)
-- Issue severity scores
-- Original findings and assessments
-- Developer replies and dispute history
+1. Fetches all PR review comments via GitHub API
+2. Parses `rmcoc` blocks to reconstruct review state
+3. Tracks which issues are pending, resolved, disputed, or escalated
+4. Collects developer replies to understand dispute history
 
-### Intelligent Dispute Resolution
+This means state persists as long as the PR exists, survives action restarts,
+and requires zero infrastructure.
 
-The agent engages in technical discussions with developers:
+### Multi-Pass Review
 
-- **Developer Acknowledgment**: Resolves threads when developer commits to
-  fixing
-- **Developer Disputes**: Re-examines code with developer's context, concedes
-  when wrong
-- **Out-of-Scope Requests**: Evaluates risk of deferring fixes based on severity
-- **Questions**: Provides detailed clarifications with code references
-- **Human Escalation**: Optional escalation to human reviewers for unresolved
-  disputes (requires `enable_human_escalation: true`)
+The bot performs 3 sequential passes within a single session:
 
-### Security-First Approach
+1. **Atomic Diff Review**: Line-by-line analysis of changes
+2. **Structural Review**: Broader codebase context, call chains, architectural
+   impact
+3. **Security & Compliance**: Access control, data integrity, AGENTS.md rule
+   enforcement
 
-- **Contextual Sensitivity**: Automatically elevates security issue scores by +2
-  points for repositories handling PII or Financial data
-- **Prompt Injection Protection**: Built-in detection for malicious instructions
-  in code comments or developer responses
-- **Access Control**: Read-only workspace access with no file modification
-  capabilities
-- **Security Pass**: Dedicated security audit in Pass 3 focusing on:
-  - Cross-user data leakage
-  - Unauthorized access risks
-  - Encryption and data integrity
-  - Authentication/authorization issues
+### Issue Scoring
 
-### On-Demand Review Trigger
+Every finding gets a severity score (1-10). Only issues at or above your
+configured threshold are reported:
 
-Developers can trigger a review on draft PRs by mentioning `@review-my-code-bot`
-in a PR comment:
+| Score | Category                | Example                                         |
+| ----- | ----------------------- | ----------------------------------------------- |
+| 1-2   | Nit-picks               | Subjective style preferences                    |
+| 3-4   | Quality & Maintenance   | Redundant code, missing docs on complex methods |
+| 5-6   | Best Practices          | Suboptimal patterns, unnecessary complexity     |
+| 7-8   | Logic & Rule Violations | Missing edge cases, AGENTS.md violations        |
+| 9-10  | Critical                | Security vulnerabilities, potential data loss   |
 
-```
-@review-my-code-bot please review this PR
-```
+Set `problem_score_threshold: 7` to focus only on serious issues. The bot stays
+silent on everything below your threshold.
 
-This bypasses the normal "Ready for Review" trigger and runs the full 3-pass
-review process even on draft PRs, useful for getting early feedback before
-marking a PR as ready.
+### Dispute Resolution
 
-### Developer-Friendly Comments
+When you disagree with a finding:
 
-All comments are formatted for easy integration with coding agents:
+1. Reply to the comment explaining your reasoning
+2. The bot re-examines with your context
+3. If valid, it concedes and resolves the thread
+4. If the risk remains, it explains why (with option to escalate to human
+   reviewers)
 
-- **File paths included**: `src/utils/auth.ts` at the start of suggestions
-- **Self-contained**: Full context without needing to read the PR
-- **Concrete instructions**: Exactly what to change, not just what's wrong
-- **Code examples**: Markdown code blocks showing problematic and correct
-  approaches
-- **No committable suggestions**: Only provides guidance, never creates
-  auto-commit blocks
+The bot won't stubbornly hold its position - but it also won't rubber-stamp
+dismissals of genuine security risks.
 
-### Review Philosophy
+### Using as a Merge Gate
 
-The agent follows strict "Value-Add" principles:
+The review agent can act as a required status check to gate PR merges:
 
-- **Proportionality**: Suggestions match the scale of changes (no module
-  rewrites for 2-line fixes)
-- **Non-Obligatory Feedback**: If code is good, the agent says nothing (silence
-  over noise)
-- **Intellectual Honesty**: Concedes when developers provide valid
-  counter-arguments
-- **Contextual Awareness**: Reviews code holistically, not just diffs
+- **Pass**: Review completes with no blocking issues (clean code or all issues
+  below `blocking_score_threshold`)
+- **Fail**: Blocking issues found (issues at or above
+  `blocking_score_threshold`)
 
-## Usage
+The key insight: **disputes can unblock a failing review**. If the bot raises a
+blocking issue and you argue your case in the comments, the bot re-evaluates. If
+it concedes, the issue is resolved and the check passes - unblocking the merge.
 
-### Basic Setup
+This creates a workflow where:
+
+1. PR is marked ready for review
+2. Bot runs and finds a blocking issue (check fails)
+3. You reply explaining why it's not actually a problem
+4. Bot is triggered again, reads your explanation, concedes
+5. Issue resolved, check passes, PR can merge
+
+To set this up, add the action as a required status check in your branch
+protection rules.
+
+## Quick Start
 
 ```yaml
 name: Code Review
 
-on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review]
-
-jobs:
-  review:
-    runs-on: ubuntu-latest
-
-    permissions:
-      pull-requests: write
-      contents: read
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Run OpenCode PR Reviewer
-        uses: your-org/opencode-pr-reviewer@v1
-        with:
-          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-```
-
-### Advanced Configuration
-
-```yaml
-- name: Run OpenCode PR Reviewer
-  uses: your-org/opencode-pr-reviewer@v1
-  with:
-    # Required
-    openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-
-    # Model Selection
-    model: 'anthropic/claude-sonnet-4-20250514' # Default
-
-    # Threshold Configuration
-    problem_score_threshold: '7' # Only report serious issues
-    blocking_score_threshold: '9' # Only block on critical issues
-
-    # Timeout & Retries
-    review_timeout_minutes: '40' # Default: 40 minutes
-    max_review_retries: '1' # Default: 1 retry on timeout
-
-    # Optional Features
-    enable_web: 'true' # Enable web search for documentation
-    debug_logging: 'true' # Verbose LLM activity logging
-
-    # Human Escalation
-    enable_human_escalation: 'true'
-    human_reviewers: 'alice,bob' # GitHub usernames to tag
-
-    # Security
-    injection_detection_enabled: 'true' # Default
-    injection_verification_model: 'openai/gpt-4o-mini'
-```
-
-### With On-Demand Review Trigger
-
-Add `issue_comment` trigger to enable on-demand reviews via
-`@review-my-code-bot` mentions:
-
-```yaml
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review]
@@ -330,7 +164,8 @@ jobs:
       github.event_name == 'pull_request' || 
       (github.event_name == 'issue_comment' && 
        github.event.issue.pull_request && 
-       contains(github.event.comment.body, '@review-my-code-bot'))
+       (contains(github.event.comment.body, '@review-my-code-bot') ||
+        contains(github.event.comment.body, '@rmc-bot')))
 
     runs-on: ubuntu-latest
 
@@ -355,165 +190,100 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-## Inputs
+## Configuration
 
-| Input                          | Description                                                                  | Required | Default                              |
-| ------------------------------ | ---------------------------------------------------------------------------- | -------- | ------------------------------------ |
-| `openrouter_api_key`           | OpenRouter API key for LLM access                                            | Yes      | -                                    |
-| `github_token`                 | GitHub token for API access. Use PAT with repo scope to auto-resolve threads | Yes      | `${{ github.token }}`                |
-| `model`                        | LLM model via OpenRouter                                                     | No       | `anthropic/claude-sonnet-4-20250514` |
-| `problem_score_threshold`      | Minimum score (1-10) for reporting issues                                    | No       | `5`                                  |
-| `blocking_score_threshold`     | Minimum score (1-10) to fail the check                                       | No       | Same as problem_score_threshold      |
-| `review_timeout_minutes`       | Total timeout for review in minutes (5-120)                                  | No       | `40`                                 |
-| `max_review_retries`           | Maximum retry attempts on timeout (0-3)                                      | No       | `1`                                  |
-| `enable_web`                   | Enable web search and fetch capabilities                                     | No       | `false`                              |
-| `enable_human_escalation`      | Enable escalation to human reviewers                                         | No       | `false`                              |
-| `human_reviewers`              | Comma-separated GitHub usernames for escalation                              | No       | `''`                                 |
-| `debug_logging`                | Enable verbose debug logging                                                 | No       | `false`                              |
-| `injection_detection_enabled`  | Enable prompt injection detection                                            | No       | `true`                               |
-| `injection_verification_model` | Model for LLM-based injection verification                                   | No       | `openai/gpt-4o-mini`                 |
+### Inputs
 
-## Outputs
+| Input                      | Description                                 | Default                              |
+| -------------------------- | ------------------------------------------- | ------------------------------------ |
+| `openrouter_api_key`       | OpenRouter API key (required)               | -                                    |
+| `github_token`             | GitHub token for API access (required)      | `${{ github.token }}`                |
+| `model`                    | LLM model via OpenRouter                    | `anthropic/claude-sonnet-4-20250514` |
+| `problem_score_threshold`  | Minimum score (1-10) for reporting issues   | `5`                                  |
+| `blocking_score_threshold` | Minimum score to fail the check             | Same as problem_score_threshold      |
+| `review_timeout_minutes`   | Timeout in minutes (5-120)                  | `40`                                 |
+| `max_review_retries`       | Retry attempts on timeout (0-3)             | `1`                                  |
+| `enable_web`               | Enable web search for documentation         | `false`                              |
+| `enable_human_escalation`  | Enable escalation to human reviewers        | `false`                              |
+| `human_reviewers`          | GitHub usernames for escalation (comma-sep) | `''`                                 |
+| `debug_logging`            | Verbose LLM activity logging                | `false`                              |
 
-| Output            | Description                                                   |
-| ----------------- | ------------------------------------------------------------- |
-| `review_status`   | Status: `completed`, `failed`, or `has_blocking_issues`       |
-| `issues_found`    | Number of issues found and reported                           |
-| `blocking_issues` | Number of blocking issues (score >= blocking_score_threshold) |
+### Outputs
 
-## Project-Specific Rules
+| Output            | Description                                     |
+| ----------------- | ----------------------------------------------- |
+| `review_status`   | `completed`, `failed`, or `has_blocking_issues` |
+| `issues_found`    | Number of issues reported                       |
+| `blocking_issues` | Number of issues at or above blocking threshold |
 
-The agent automatically enforces rules defined in your repository's `AGENTS.md`
-file:
+### Advanced Example
 
-- **Pass 1**: Code style, naming conventions, formatting standards
-- **Pass 2**: Architectural rules, module boundaries, import patterns
-- **Pass 3**: Security requirements, data handling policies, testing
-  requirements
+```yaml
+- name: Run OpenCode PR Reviewer
+  uses: your-org/opencode-pr-reviewer@v1
+  with:
+    openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
 
-See [AGENTS.md](./AGENTS.md) for this repository's development contract.
+    # Only report serious issues
+    problem_score_threshold: '7'
 
-## How It Works
+    # Only block CI on critical issues
+    blocking_score_threshold: '9'
 
-### Review Flow
+    # Enable documentation lookups
+    enable_web: 'true'
 
-1. **State Reconstruction**: Rebuilds review state by parsing all PR review
-   comments containing `rmcoc` blocks
-2. **Dispute Resolution**: Evaluates developer responses to previous comments
-3. **Fix Verification**: Checks if previous issues are addressed in new commits
-4. **Multi-Pass Review**: Executes 3 sequential review passes
-5. **State Persistence**: State is automatically persisted in review comments
-   with `rmcoc` blocks
-
-### State Management
-
-State is stored and retrieved entirely through GitHub PR review comments using
-structured `rmcoc` code blocks:
-
-#### State Reconstruction Process
-
-1. **Fetch All Review Comments**: Agent retrieves all review comments from the
-   current PR
-2. **Identify Bot Comments**: Filters for comments posted by
-   `github-actions[bot]`
-3. **Parse rmcoc Blocks**: Extracts JSON assessment data from each comment's
-   `rmcoc` code block
-4. **Build Thread State**: Reconstructs thread status by analyzing comment
-   replies:
-   - **PENDING**: No bot replies yet, or discussion ongoing
-   - **RESOLVED**: Bot posted reply with `✅ **Issue Resolved**` marker or
-     `rmcoc` block with `status: "RESOLVED"`
-   - **DISPUTED**: Bot replied without conceding (maintains position)
-   - **ESCALATED**: Bot posted `🔺 **Escalated to Human Review**` marker or
-     `rmcoc` block with `status: "ESCALATED"`
-5. **Collect Developer Replies**: Gathers all non-bot replies to track dispute
-   history
-
-#### rmcoc Block Structure
-
-Every review comment includes:
-
-```json
-{
-  "finding": "Brief one-sentence description of the issue",
-  "assessment": "Detailed analysis of why this matters and the impact",
-  "score": 7
-}
+    # Escalate unresolved disputes to humans
+    enable_human_escalation: 'true'
+    human_reviewers: 'alice,bob'
 ```
 
-Resolution and escalation replies may include:
+## Under the Hood
 
-```json
-{
-  "status": "RESOLVED",
-  "reason": "Developer fixed the issue in commit abc123"
-}
-```
+### State Reconstruction
 
-#### Deduplication Logic
+On every run, the bot rebuilds state from PR comments:
 
-The agent prevents duplicate comments on the same issue by:
+1. **Fetch**: Get all review comments via GitHub API
+2. **Filter**: Identify bot-authored comments (`github-actions[bot]`)
+3. **Parse**: Extract `rmcoc` JSON blocks from each comment
+4. **Build**: Reconstruct thread status from replies:
+   - **PENDING**: No resolution yet
+   - **RESOLVED**: Bot posted resolution marker
+   - **DISPUTED**: Ongoing discussion
+   - **ESCALATED**: Handed off to human reviewer
+5. **Collect**: Gather developer replies for context
 
-- Comparing file path and line number
-- Using fuzzy matching on finding text (50% word overlap threshold using
-  significant words)
-- Skipping comments for issues already reported and unresolved
-- Filtering out common stop words to improve matching accuracy
+### Deduplication
 
-### Security Sensitivity Detection
+The bot prevents duplicate comments on the same issue:
 
-The agent automatically detects sensitive data handling by analyzing:
+- Matches file path and line number
+- Fuzzy matches finding text (50% word overlap threshold)
+- Filters stop words for accurate comparison
 
-- **Dependencies**: Checks for `stripe`, `payment`, `passport`, `auth`, `jwt`,
-  `encrypt`, `crypto`
-- **README**: Looks for mentions of `PII`, `GDPR`, `HIPAA`, `financial`,
-  `banking`, `healthcare`
+### Security Sensitivity
 
-When detected, security findings are automatically elevated by +2 points.
+The bot auto-detects repos handling sensitive data by checking:
 
-## Development
+- Dependencies: `stripe`, `passport`, `jwt`, `crypto`, etc.
+- README: mentions of `PII`, `GDPR`, `HIPAA`, `financial`, etc.
 
-### Setup
+When detected, security findings are elevated by +2 points.
 
-```bash
-pnpm install
-pnpm run bundle
-pnpm test
-```
+### Project Rules
 
-### Local Testing
+The bot enforces rules from your `AGENTS.md` file:
 
-```bash
-pnpx @github/local-action . src/main.ts .env
-```
+- **Pass 1**: Code style, naming conventions
+- **Pass 2**: Architectural rules, module boundaries
+- **Pass 3**: Security requirements, testing policies
 
-See [.env.example](./.env.example) for required environment variables.
+## Current Status
 
-### Project Structure
+This is a work in progress. Known limitations:
 
-- `src/main.ts`: Action entry point
-- `src/review/orchestrator.ts`: Multi-pass review orchestration
-- `src/review/prompts.ts`: LLM prompts and scoring rubric
-- `src/github/state.ts`: Review state management
-- `src/opencode/server.ts`: OpenCode server lifecycle
-- `src/trpc/router.ts`: Tool implementations for agent
-
-## License
-
-MIT
-
-## Contributing
-
-Contributions welcome! Please ensure:
-
-1. All code passes linting: `pnpm run lint`
-2. Tests pass: `pnpm test`
-3. Code is bundled: `pnpm run bundle`
-4. No dead code or unused exports
-5. Follow [AGENTS.md](./AGENTS.md) development contract
-
-## Support
-
-For issues or questions:
-
-- GitHub Issues: Report bugs or request features
+- PR description not yet considered in review context
+- Human escalation partially implemented
+- Some edge cases in dispute resolution

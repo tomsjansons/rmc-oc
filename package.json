@@ -47,10 +47,10 @@
     "@actions/github": "^6.0.1",
     "@andersmyrmel/vard": "^1.2.0",
     "@octokit/rest": "^22.0.1",
-    "@opencode-ai/sdk": "^1.0.0",
+    "@opencode-ai/sdk": "^1.0.203",
     "@trpc/client": "^11.8.1",
     "@trpc/server": "^11.8.1",
-    "opencode-ai": "^1.0.186",
+    "opencode-ai": "^1.0.203",
     "superjson": "^2.2.6",
     "zod": "^3.25.76"
   },

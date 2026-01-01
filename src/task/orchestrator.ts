@@ -217,7 +217,7 @@ export class TaskOrchestrator {
     return `${answer}
 
 ---
-*Answered by @review-my-code-bot*
+*Answered by review-my-code-bot*
 
 \`\`\`rmcoc
 ${JSON.stringify(rmcocBlock, null, 2)}

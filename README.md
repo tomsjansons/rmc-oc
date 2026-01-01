@@ -10,8 +10,8 @@ Traditional code review tools are either too shallow (linters that miss context)
 or too noisy (AI reviewers that nit-pick everything). This agent aims to be
 different:
 
-- **Interactive**: Mention `@review-my-code-bot` to request feedback on draft
-  PRs or ask questions about your codebase
+- **Interactive**: Mention `@review-my-code-bot` (or `@rmc-bot` for short) to
+  request feedback on draft PRs or ask questions about your codebase
 - **Conversational**: Argue about findings in comments - explain your reasoning
   and the bot may concede, or it will explain why the issue still matters
 - **Stateful**: All conversation history is preserved in PR comments, so the bot
@@ -30,14 +30,14 @@ The bot is designed to feel like chatting with a teammate:
 
 ```
 @review-my-code-bot please review this
-@review-my-code-bot can you check this code?
+@rmc-bot can you check this code?
 ```
 
 **Ask questions about the codebase:**
 
 ```
 @review-my-code-bot Why is UserService injected here?
-@review-my-code-bot How does the auth flow work?
+@rmc-bot How does the auth flow work?
 ```
 
 **Dispute a finding:**
@@ -165,7 +165,8 @@ jobs:
       github.event_name == 'pull_request' || 
       (github.event_name == 'issue_comment' && 
        github.event.issue.pull_request && 
-       contains(github.event.comment.body, '@review-my-code-bot'))
+       (contains(github.event.comment.body, '@review-my-code-bot') ||
+        contains(github.event.comment.body, '@rmc-bot')))
 
     runs-on: ubuntu-latest
 

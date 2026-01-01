@@ -1,7 +1,7 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
 
-import { BOT_MENTION, BOT_USERS } from './constants.js'
+import { BOT_MENTION, BOT_MENTIONS, BOT_USERS } from './constants.js'
 import { LLMClientImpl } from '../opencode/llm-client.js'
 import type {
   DisputeContext,
@@ -244,12 +244,15 @@ async function detectExecutionMode(
 
     const commentBody = comment?.body || ''
 
-    if (commentBody.includes(BOT_MENTION)) {
-      const textAfterMention = commentBody.replace(BOT_MENTION, '').trim()
+    const matchedMention = BOT_MENTIONS.find((mention) =>
+      commentBody.includes(mention)
+    )
+    if (matchedMention) {
+      const textAfterMention = commentBody.replace(matchedMention, '').trim()
 
       if (!textAfterMention) {
         throw new Error(
-          `Please provide instructions after ${BOT_MENTION}. Examples:\n- "${BOT_MENTION} please review this PR"\n- "${BOT_MENTION} Why is this function needed?"`
+          `Please provide instructions after the bot mention. Examples:\n- "${BOT_MENTION} please review this PR"\n- "${BOT_MENTION} Why is this function needed?"`
         )
       }
 
@@ -294,7 +297,7 @@ async function detectExecutionMode(
       }
     }
 
-    core.info(`Comment does not mention ${BOT_MENTION}, skipping`)
+    core.info(`Comment does not mention ${BOT_MENTION} or shorthand, skipping`)
     throw new Error(
       'This action was triggered by a comment but no bot mention was found. Skipping.'
     )

@@ -7,7 +7,7 @@
  * - Review requests (auto PR events or manual @ mentions)
  */
 
-import { BOT_MENTION, BOT_USERS } from '../config/constants.js'
+import { BOT_MENTIONS, BOT_USERS } from '../config/constants.js'
 import type { GitHubAPI } from '../github/api.js'
 import type { LLMClient } from '../opencode/llm-client.js'
 import type { ReviewConfig } from '../execution/types.js'
@@ -37,7 +37,18 @@ function containsBotMentionOutsideCodeBlocks(body: string): boolean {
   let cleaned = body.replace(/```[\s\S]*?```/g, '')
   // Remove inline code
   cleaned = cleaned.replace(/`[^`]+`/g, '')
-  return cleaned.includes(BOT_MENTION)
+  return BOT_MENTIONS.some((mention) => cleaned.includes(mention))
+}
+
+/**
+ * Remove all bot mentions from text and return the cleaned text
+ */
+function removeBotMentions(text: string): string {
+  let result = text
+  for (const mention of BOT_MENTIONS) {
+    result = result.replace(mention, '')
+  }
+  return result.trim()
 }
 
 /**
@@ -301,7 +312,7 @@ export class TaskDetector {
       if (answeredQuestionIds.has(commentId)) {
         // Check if the question was edited after being answered
         const currentHash = hashQuestionText(
-          (comment.body || '').replace(BOT_MENTION, '').trim()
+          removeBotMentions(comment.body || '')
         )
         const answeredHash = answeredQuestionHashes.get(commentId)
 
@@ -322,9 +333,7 @@ export class TaskDetector {
       }
 
       // Extract question text
-      const textAfterMention = (comment.body || '')
-        .replace(BOT_MENTION, '')
-        .trim()
+      const textAfterMention = removeBotMentions(comment.body || '')
       if (!textAfterMention) {
         continue
       }

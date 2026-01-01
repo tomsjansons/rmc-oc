@@ -110,7 +110,7 @@ Scans review thread comments for:
 
 Scans issue comments for:
 
-1. Comments containing `@review-my-code-bot`
+1. Comments containing `@review-my-code-bot` or `@rmc-bot`
 2. Not already answered (no `question-answer` rmcoc block)
 3. Question text extracted after @ mention
 

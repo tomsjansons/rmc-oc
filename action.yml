@@ -1,14 +1,15 @@
-name: OpenCode PR Reviewer
+name: Reivew My Code, OpenCode!
 description:
-  AI-powered code review agent using OpenCode SDK for comprehensive PR analysis
-author: OpenCode Team
+  A GitHub Action that uses OpenCode to do LLM-powered code reviews. The reivew
+  process should behave like a real developer review. No silly diagrams and
+  other nonsense. Ask follow up questions, argue in comments and fix what's
+  broken!
+author: Toms Jansons
 
-# Add your action's branding here. This will appear on the GitHub Marketplace.
 branding:
-  icon: check-circle
-  color: blue
+  icon: user-check
+  color: orange
 
-# Define your inputs here.
 inputs:
   openrouter_api_key:
     description: 'OpenRouter API key for LLM access'

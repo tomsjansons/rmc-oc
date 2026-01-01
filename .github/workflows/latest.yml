@@ -5,6 +5,8 @@ on:
 
 jobs:
   run:
+    permissions:
+      contents: write
     name: Run local action
     runs-on: ubuntu-latest
     steps:

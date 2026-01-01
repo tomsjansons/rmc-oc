@@ -6,21 +6,23 @@ import { GitHubAPI } from './github/api.js'
 import { OpenCodeClientImpl } from './opencode/client.js'
 import { LLMClientImpl } from './opencode/llm-client.js'
 import { OpenCodeServer } from './opencode/server.js'
-import { ReviewOrchestrator } from './review/orchestrator.js'
+import { ReviewExecutor } from './execution/orchestrator.js'
 import { setupToolsInWorkspace } from './setup/tools.js'
+import { StateManager } from './state/manager.js'
+import { TaskOrchestrator } from './task/orchestrator.js'
 import { TRPCServer } from './trpc/server.js'
 import { logger } from './utils/logger.js'
 
 export async function run(): Promise<void> {
   let openCodeServer: OpenCodeServer | null = null
   let trpcServer: TRPCServer | null = null
-  let orchestrator: ReviewOrchestrator | null = null
+  let reviewExecutor: ReviewExecutor | null = null
   let exitCode = 0
 
   try {
-    logger.info('Starting OpenCode PR Reviewer...')
+    logger.info('Starting Review My Code, OpenCode!...')
 
-    const config = parseInputs()
+    const config = await parseInputs()
     validateConfig(config)
 
     logger.info(
@@ -42,78 +44,84 @@ export async function run(): Promise<void> {
       config.opencode.debugLogging,
       config.review.timeoutMs
     )
-    const llmClient = new LLMClientImpl({
+    // LLM client for classification and sentiment analysis tasks
+    // Uses injection_verification_model which is faster and doesn't have
+    // reasoning token issues that can cause empty responses with reasoning models
+    const classificationLlmClient = new LLMClientImpl({
       apiKey: config.opencode.apiKey,
-      model: config.opencode.model
+      model: config.security.injectionVerificationModel
     })
+
     const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd()
 
-    orchestrator = new ReviewOrchestrator(
+    const stateManager = new StateManager(
+      config,
+      classificationLlmClient,
+      github.getOctokit()
+    )
+
+    reviewExecutor = new ReviewExecutor(
       opencode,
-      llmClient,
+      stateManager,
       github,
       config,
       workspaceRoot
     )
 
-    trpcServer = new TRPCServer(orchestrator, github, llmClient)
+    const taskOrchestrator = new TaskOrchestrator(
+      config,
+      github,
+      reviewExecutor,
+      stateManager,
+      classificationLlmClient
+    )
+
+    trpcServer = new TRPCServer(reviewExecutor, github, classificationLlmClient)
     await trpcServer.start()
 
-    if (config.execution.mode === 'question-answering') {
-      logger.info('Execution mode: Question Answering')
+    logger.info('Executing multi-task workflow...')
+    const executionResult = await taskOrchestrator.execute()
 
-      const answer = await orchestrator.executeQuestionAnswering()
+    logger.info(
+      `Execution complete: ${executionResult.totalTasks} task(s) executed`
+    )
 
-      const questionContext = config.execution.questionContext
-      if (questionContext) {
-        logger.info('Posting answer as comment reply')
-        const formattedAnswer = `**@${questionContext.author}** asked: "${questionContext.question}"
+    let totalIssuesFound = 0
+    let totalBlockingIssues = 0
 
-${answer}
-
----
-*Answered by @review-my-code-bot using codebase analysis*`
-
-        await github.replyToIssueComment(
-          questionContext.commentId,
-          formattedAnswer
-        )
-        logger.info('Answer posted successfully')
-      }
-
-      core.setOutput('review_status', 'question_answered')
-      core.setOutput('issues_found', '0')
-      core.setOutput('blocking_issues', '0')
-    } else if (config.execution.mode === 'full-review') {
-      logger.info('Execution mode: Full Review')
-
-      const result = await orchestrator.executeReview()
-
-      core.setOutput('review_status', result.status)
-      core.setOutput('issues_found', String(result.issuesFound))
-      core.setOutput('blocking_issues', String(result.blockingIssues))
-
-      if (result.issuesFound > 0) {
-        const message =
-          result.blockingIssues > 0
-            ? `Review found ${result.issuesFound} issue(s), including ${result.blockingIssues} blocking issue(s). Please address the review comments before merging.`
-            : `Review found ${result.issuesFound} issue(s). Please address the review comments before merging.`
-        core.setFailed(message)
-        exitCode = 1
-      }
-    } else if (config.execution.mode === 'dispute-resolution') {
-      logger.info('Execution mode: Dispute Resolution Only')
-
-      await orchestrator.executeDisputeResolution(
-        config.execution.disputeContext
-      )
-
-      core.setOutput('review_status', 'disputes_evaluated')
-      core.setOutput('issues_found', '0')
-      core.setOutput('blocking_issues', '0')
+    for (const result of executionResult.results) {
+      totalIssuesFound += result.issuesFound
+      totalBlockingIssues += result.blockingIssues
     }
 
-    logger.info('OpenCode PR Reviewer completed')
+    if (executionResult.reviewCompleted) {
+      core.setOutput('review_status', 'completed')
+      core.setOutput('issues_found', String(totalIssuesFound))
+      core.setOutput('blocking_issues', String(totalBlockingIssues))
+
+      if (executionResult.hasBlockingIssues) {
+        // Only fail the action (set exit code 1) for AUTO reviews
+        // Manual reviews are informational only - they don't block merges
+        if (executionResult.hadAutoReview) {
+          const message = `Review found ${totalIssuesFound} issue(s), including ${totalBlockingIssues} blocking issue(s). Please address the review comments before merging.`
+          core.setFailed(message)
+          exitCode = 1
+        } else if (executionResult.hadManualReview) {
+          // Manual review with blocking issues - don't fail, just warn
+          const message = `Manual review found ${totalIssuesFound} issue(s), including ${totalBlockingIssues} blocking issue(s). (Not failing action - manual reviews are informational only)`
+          core.warning(message)
+        }
+      } else if (totalIssuesFound > 0) {
+        const message = `Review found ${totalIssuesFound} issue(s). Please review the comments.`
+        core.warning(message)
+      }
+    } else {
+      core.setOutput('review_status', 'tasks_executed')
+      core.setOutput('issues_found', String(totalIssuesFound))
+      core.setOutput('blocking_issues', String(totalBlockingIssues))
+    }
+
+    logger.info('Review My Code, OpenCode! completed')
   } catch (error) {
     if (error instanceof Error) {
       logger.error(error)
@@ -125,27 +133,27 @@ ${answer}
     }
     exitCode = 1
   } finally {
-    await cleanup(orchestrator, trpcServer, openCodeServer)
+    await cleanup(reviewExecutor, trpcServer, openCodeServer)
     process.exit(exitCode)
   }
 }
 
 async function cleanup(
-  orchestrator: ReviewOrchestrator | null,
+  executor: ReviewExecutor | null,
   trpcServer: TRPCServer | null,
   openCodeServer: OpenCodeServer | null
 ): Promise<void> {
   logger.debug('Cleanup: Starting cleanup sequence')
 
   try {
-    if (orchestrator) {
-      logger.debug('Cleanup: Cleaning up orchestrator...')
-      await orchestrator.cleanup()
-      logger.debug('Cleanup: Orchestrator cleanup complete')
+    if (executor) {
+      logger.debug('Cleanup: Cleaning up executor...')
+      await executor.cleanup()
+      logger.debug('Cleanup: Executor cleanup complete')
     }
   } catch (error) {
     logger.warning(
-      `Error during orchestrator cleanup: ${error instanceof Error ? error.message : String(error)}`
+      `Error during executor cleanup: ${error instanceof Error ? error.message : String(error)}`
     )
   }
 

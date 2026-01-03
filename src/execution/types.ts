@@ -36,6 +36,9 @@ export type ReviewConfig = {
     enableHumanEscalation: boolean
     humanReviewers: string[]
   }
+  taskInfo: {
+    requireTaskInfoInPrDesc: boolean
+  }
   execution: {
     mode: ExecutionMode
     questionContext?: QuestionContext

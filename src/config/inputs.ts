@@ -91,6 +91,11 @@ export async function parseInputs(): Promise<ReviewConfig> {
     { required: false }
   )
 
+  const requireTaskInfoInPrDesc = core.getBooleanInput(
+    'require_task_info_in_pr_desc',
+    { required: false }
+  )
+
   const context = github.context
 
   const tempLlmClient = new LLMClientImpl({
@@ -147,6 +152,9 @@ export async function parseInputs(): Promise<ReviewConfig> {
     security: {
       injectionDetectionEnabled,
       injectionVerificationModel
+    },
+    taskInfo: {
+      requireTaskInfoInPrDesc
     },
     execution: {
       mode,

@@ -7,6 +7,7 @@ import type { ReviewConfig } from '../execution/types.js'
 import type { StateManager } from '../state/manager.js'
 import { logger } from '../utils/logger.js'
 import { TaskDetector } from './detector.js'
+import { extractTaskInfo, type TaskInfo } from './task-info.js'
 import type {
   DisputeTask,
   ExecutionPlan,
@@ -19,15 +20,17 @@ import type {
 
 export class TaskOrchestrator {
   private taskDetector: TaskDetector
+  private workspaceRoot: string
 
   constructor(
     private config: ReviewConfig,
     private githubApi: GitHubAPI,
     private reviewExecutor: ReviewExecutor,
     private stateManager: StateManager,
-    llmClient: LLMClient
+    private llmClient: LLMClient
   ) {
     this.taskDetector = new TaskDetector(llmClient, stateManager)
+    this.workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd()
   }
 
   async execute(): Promise<ExecutionResult> {
@@ -229,6 +232,9 @@ ${JSON.stringify(rmcocBlock, null, 2)}
       `Executing Full Review (${task.isManual ? 'manual' : 'auto'})`,
       async () => {
         try {
+          // Load and validate task info from PR description
+          const taskInfo = await this.loadAndValidateTaskInfo()
+
           if (task.isManual && task.triggerCommentId) {
             await this.stateManager.trackManualReviewRequest(
               task.triggerCommentId,
@@ -259,7 +265,7 @@ ${JSON.stringify(rmcocBlock, null, 2)}
             )
           }
 
-          const reviewOutput = await this.reviewExecutor.executeReview()
+          const reviewOutput = await this.reviewExecutor.executeReview(taskInfo)
 
           if (task.isManual && task.triggerCommentId) {
             await this.stateManager.markManualReviewCompleted(
@@ -325,6 +331,58 @@ ${JSON.stringify(rmcocBlock, null, 2)}
       `📝 **Review complete.** Found ${reviewOutput.issuesFound} issue(s). ` +
       `Please review the comments above.`
     )
+  }
+
+  private async loadAndValidateTaskInfo(): Promise<TaskInfo | undefined> {
+    const prDescription = await this.githubApi.getPRDescription()
+    const requireTaskInfo = this.config.taskInfo.requireTaskInfoInPrDesc
+
+    if (!requireTaskInfo && !prDescription.trim()) {
+      logger.debug('PR description is empty, but task info not required')
+      return undefined
+    }
+
+    const taskInfo = await extractTaskInfo(
+      prDescription,
+      this.workspaceRoot,
+      this.llmClient,
+      requireTaskInfo
+    )
+
+    if (requireTaskInfo && !taskInfo.isSufficient) {
+      const reason =
+        taskInfo.insufficiencyReason || 'PR description is insufficient'
+      const errorMessage = `Task info validation failed: ${reason}. Please update the PR description with sufficient information about the task being implemented.`
+
+      logger.error(errorMessage)
+
+      await this.githubApi.postIssueComment(
+        `❌ **Review blocked: Insufficient task information**
+
+${reason}
+
+Please update your PR description to include:
+- **What** is being changed or added
+- **Why** the change is needed (motivation/problem being solved)
+
+You can also link to task specification files in the repository (e.g., \`[Task spec](./docs/task.md)\`).
+
+Once the description is updated, trigger a new review.`
+      )
+
+      throw new Error(errorMessage)
+    }
+
+    if (taskInfo.description.trim()) {
+      logger.info('Task info loaded from PR description')
+      if (taskInfo.linkedFiles.length > 0) {
+        logger.info(
+          `Included content from ${taskInfo.linkedFiles.length} linked file(s): ${taskInfo.linkedFiles.map((f) => f.path).join(', ')}`
+        )
+      }
+    }
+
+    return taskInfo
   }
 
   private summarizeTasks(plan: ExecutionPlan): string {

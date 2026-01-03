@@ -288,8 +288,8 @@ The bot enforces rules from your `AGENTS.md` file:
 ### PR Description Context
 
 The bot uses the PR description to understand the intent of changes. This helps
-it review code in context and avoid false positives when the code is
-intentionally structured a certain way.
+it review code in context and **verify that the implementation matches what was
+promised**.
 
 **Linking to task files:**
 
@@ -305,7 +305,28 @@ Implements the user authentication feature as described in
 See also: `requirements/user-stories.md`
 ```
 
-The bot will automatically load linked `.md`, `.txt`, `.rst`, and `.adoc` files.
+The bot will automatically load linked `.md`, `.txt`, `.rst`, and `.adoc` files
+and verify that the code changes cover all requirements specified in those
+files.
+
+**Task coverage verification:**
+
+The bot performs task coverage verification across all three review passes:
+
+- **Pass 1**: Checks that code changes align with stated task requirements
+- **Pass 2**: Verifies all requirements from the task description are
+  implemented
+- **Pass 3**: Final check that nothing from the PR description is missing
+
+If the PR description says "implement feature X" but the code doesn't fully
+implement it, the bot will flag this as a significant issue (score 7-8).
+
+**Examples of task coverage issues the bot catches:**
+
+- PR says "add input validation" but no validation code was added
+- PR says "fix bug X" but the fix is incomplete
+- PR references a spec file listing 5 requirements, but only 3 are implemented
+- Code changes are unrelated to the stated task
 
 **Requiring task information:**
 
@@ -319,6 +340,7 @@ This is useful for teams that want to ensure:
 - Every PR explains what it does and why
 - Reviewers (human and bot) have sufficient context
 - PRs can be understood months later when reading history
+- **The implementation matches what was promised in the description**
 
 ## Current Status
 

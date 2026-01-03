@@ -169,9 +169,27 @@ export class ReviewExecutor {
 
     const taskInfoContext =
       this.currentTaskInfo?.description.trim() || undefined
-    await this.executePass(1, REVIEW_PROMPTS.PASS_1(files, taskInfoContext))
-    await this.executePass(2, REVIEW_PROMPTS.PASS_2())
-    await this.executePass(3, REVIEW_PROMPTS.PASS_3(securitySensitivity))
+    const linkedFilePaths = this.currentTaskInfo?.linkedFiles.map((f) => f.path)
+
+    if (taskInfoContext) {
+      logger.info('Task context from PR description will be included in review')
+      if (linkedFilePaths && linkedFilePaths.length > 0) {
+        logger.info(`Referenced task files: ${linkedFilePaths.join(', ')}`)
+      }
+    }
+
+    await this.executePass(
+      1,
+      REVIEW_PROMPTS.PASS_1(files, taskInfoContext, linkedFilePaths)
+    )
+    await this.executePass(
+      2,
+      REVIEW_PROMPTS.PASS_2(taskInfoContext, linkedFilePaths)
+    )
+    await this.executePass(
+      3,
+      REVIEW_PROMPTS.PASS_3(securitySensitivity, taskInfoContext)
+    )
 
     logger.info('All 3 passes completed in single session')
 

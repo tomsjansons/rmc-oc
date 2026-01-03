@@ -198,19 +198,20 @@ jobs:
 
 ### Inputs
 
-| Input                      | Description                                 | Default                              |
-| -------------------------- | ------------------------------------------- | ------------------------------------ |
-| `openrouter_api_key`       | OpenRouter API key (required)               | -                                    |
-| `github_token`             | GitHub token for API access (required)      | `${{ github.token }}`                |
-| `model`                    | LLM model via OpenRouter                    | `anthropic/claude-sonnet-4-20250514` |
-| `problem_score_threshold`  | Minimum score (1-10) for reporting issues   | `5`                                  |
-| `blocking_score_threshold` | Minimum score to fail the check             | Same as problem_score_threshold      |
-| `review_timeout_minutes`   | Timeout in minutes (5-120)                  | `40`                                 |
-| `max_review_retries`       | Retry attempts on timeout (0-3)             | `1`                                  |
-| `enable_web`               | Enable web search for documentation         | `false`                              |
-| `enable_human_escalation`  | Enable escalation to human reviewers        | `false`                              |
-| `human_reviewers`          | GitHub usernames for escalation (comma-sep) | `''`                                 |
-| `debug_logging`            | Verbose LLM activity logging                | `false`                              |
+| Input                          | Description                                    | Default                              |
+| ------------------------------ | ---------------------------------------------- | ------------------------------------ |
+| `openrouter_api_key`           | OpenRouter API key (required)                  | -                                    |
+| `github_token`                 | GitHub token for API access (required)         | `${{ github.token }}`                |
+| `model`                        | LLM model via OpenRouter                       | `anthropic/claude-sonnet-4-20250514` |
+| `problem_score_threshold`      | Minimum score (1-10) for reporting issues      | `5`                                  |
+| `blocking_score_threshold`     | Minimum score to fail the check                | Same as problem_score_threshold      |
+| `review_timeout_minutes`       | Timeout in minutes (5-120)                     | `40`                                 |
+| `max_review_retries`           | Retry attempts on timeout (0-3)                | `1`                                  |
+| `enable_web`                   | Enable web search for documentation            | `false`                              |
+| `enable_human_escalation`      | Enable escalation to human reviewers           | `false`                              |
+| `human_reviewers`              | GitHub usernames for escalation (comma-sep)    | `''`                                 |
+| `debug_logging`                | Verbose LLM activity logging                   | `false`                              |
+| `require_task_info_in_pr_desc` | Require sufficient task info in PR description | `false`                              |
 
 ### Outputs
 
@@ -284,10 +285,44 @@ The bot enforces rules from your `AGENTS.md` file:
 - **Pass 2**: Architectural rules, module boundaries
 - **Pass 3**: Security requirements, testing policies
 
+### PR Description Context
+
+The bot uses the PR description to understand the intent of changes. This helps
+it review code in context and avoid false positives when the code is
+intentionally structured a certain way.
+
+**Linking to task files:**
+
+If your PR description references files in the repository, the bot will read
+them for additional context:
+
+```markdown
+## Task
+
+Implements the user authentication feature as described in
+[docs/auth-spec.md](./docs/auth-spec.md).
+
+See also: `requirements/user-stories.md`
+```
+
+The bot will automatically load linked `.md`, `.txt`, `.rst`, and `.adoc` files.
+
+**Requiring task information:**
+
+Set `require_task_info_in_pr_desc: true` to enforce that every PR has a
+meaningful description. If the description is empty or insufficient (e.g., just
+"fix bug"), the review will fail with a helpful message explaining what's
+needed.
+
+This is useful for teams that want to ensure:
+
+- Every PR explains what it does and why
+- Reviewers (human and bot) have sufficient context
+- PRs can be understood months later when reading history
+
 ## Current Status
 
 This is a work in progress. Known limitations:
 
-- PR description not yet considered in review context
 - Human escalation partially implemented
 - Some edge cases in dispute resolution

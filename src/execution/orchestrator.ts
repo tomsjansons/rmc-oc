@@ -21,6 +21,7 @@ import type {
   DisputeContext,
   QuestionContext
 } from '../task/types.js'
+import type { TaskInfo } from '../task/task-info.js'
 import type { PassResult, ReviewConfig, ReviewOutput } from './types.js'
 
 type PassNumber = 1 | 2 | 3
@@ -38,6 +39,7 @@ export class ReviewExecutor {
   private currentSessionId: string | null = null
   private currentPhase: ReviewPhase = 'idle'
   private passCompletionResolvers: Map<number, () => void> = new Map()
+  private currentTaskInfo: TaskInfo | undefined = undefined
 
   constructor(
     private opencode: OpenCodeClient,
@@ -53,8 +55,12 @@ export class ReviewExecutor {
     )
   }
 
-  async executeReview(): Promise<ReviewOutput> {
+  async executeReview(taskInfo?: TaskInfo): Promise<ReviewOutput> {
     return await logger.group('Executing Multi-Pass Review', async () => {
+      this.currentTaskInfo = taskInfo
+      if (taskInfo?.description.trim()) {
+        logger.info('Task info provided from PR description')
+      }
       logger.info(
         `Review configuration: timeout=${this.config.review.timeoutMs / 1000}s, maxRetries=${this.config.review.maxRetries}`
       )
@@ -161,7 +167,9 @@ export class ReviewExecutor {
       'Starting 3-pass review in single OpenCode session (context preserved across all passes)'
     )
 
-    await this.executePass(1, REVIEW_PROMPTS.PASS_1(files))
+    const taskInfoContext =
+      this.currentTaskInfo?.description.trim() || undefined
+    await this.executePass(1, REVIEW_PROMPTS.PASS_1(files, taskInfoContext))
     await this.executePass(2, REVIEW_PROMPTS.PASS_2())
     await this.executePass(3, REVIEW_PROMPTS.PASS_3(securitySensitivity))
 

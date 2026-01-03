@@ -83,6 +83,7 @@ export class GitHubAPI {
     head: { ref: string; sha: string }
     title: string
     number: number
+    description: string
   }> {
     try {
       const pr = await this.octokit.pulls.get({
@@ -101,11 +102,33 @@ export class GitHubAPI {
           sha: pr.data.head.sha
         },
         title: pr.data.title,
-        number: pr.data.number
+        number: pr.data.number,
+        description: pr.data.body || ''
       }
     } catch (error) {
       throw new GitHubAPIError(
         `Failed to fetch PR info: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  async getPRDescription(): Promise<string> {
+    try {
+      logger.debug('Fetching PR description')
+
+      const pr = await this.octokit.pulls.get({
+        owner: this.owner,
+        repo: this.repo,
+        pull_number: this.prNumber
+      })
+
+      const description = pr.data.body || ''
+      logger.debug(`PR description length: ${description.length} characters`)
+
+      return description
+    } catch (error) {
+      throw new GitHubAPIError(
+        `Failed to fetch PR description: ${error instanceof Error ? error.message : String(error)}`
       )
     }
   }

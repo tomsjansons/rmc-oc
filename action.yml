@@ -90,6 +90,14 @@ inputs:
       mention)'
     required: false
     default: 'true'
+  require_task_info_in_pr_desc:
+    description:
+      'Require the PR description to contain sufficient task information. If
+      enabled and the description is empty or insufficient, the review will
+      fail. The description can contain the task directly or link to files in
+      the repo (e.g., markdown files) containing the task specification.'
+    required: false
+    default: 'false'
 
 # Define your outputs here.
 outputs:

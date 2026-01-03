@@ -350,8 +350,11 @@ export const REVIEW_PROMPTS = {
 
   QUESTION_ANSWERING_SYSTEM,
 
-  PASS_1: (files: string[]) => `## Pass 1 of 3: Atomic Diff Review
-
+  PASS_1: (
+    files: string[],
+    taskInfo?: string
+  ) => `## Pass 1 of 3: Atomic Diff Review
+${taskInfo ? `\n**Task Context from PR Description:**\n${taskInfo}\n\nUse this context to understand what the PR is trying to achieve. Ensure the code changes align with the stated goals.\n` : ''}
 **Goal:** Review each changed line in isolation. Focus on:
 - Syntax errors and typos
 - Obvious logic errors

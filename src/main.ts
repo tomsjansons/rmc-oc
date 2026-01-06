@@ -1,7 +1,11 @@
 import * as core from '@actions/core'
 
 import { OPENCODE_SERVER_URL } from './config/constants.js'
-import { parseInputs, validateConfig } from './config/inputs.js'
+import {
+  parseInputs,
+  validateConfig,
+  extractApiKeyForModel
+} from './config/inputs.js'
 import { GitHubAPI } from './github/api.js'
 import { OpenCodeClientImpl } from './opencode/client.js'
 import { LLMClientImpl } from './opencode/llm-client.js'
@@ -47,8 +51,17 @@ export async function run(): Promise<void> {
     // LLM client for classification and sentiment analysis tasks
     // Uses injection_verification_model which is faster and doesn't have
     // reasoning token issues that can cause empty responses with reasoning models
+    const verificationApiKey = extractApiKeyForModel(
+      config.opencode.authJson,
+      config.security.injectionVerificationModel
+    )
+    if (!verificationApiKey) {
+      throw new Error(
+        `Could not extract API key for injection verification model "${config.security.injectionVerificationModel}" from auth JSON`
+      )
+    }
     const classificationLlmClient = new LLMClientImpl({
-      apiKey: config.opencode.apiKey,
+      apiKey: verificationApiKey,
       model: config.security.injectionVerificationModel
     })
 

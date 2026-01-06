@@ -31450,13 +31450,67 @@ Response:`;
     }
 }
 
+function validateAuthJson(authJson) {
+    let parsed;
+    try {
+        parsed = JSON.parse(authJson);
+    }
+    catch (error) {
+        throw new Error(`Invalid opencode_auth_json: must be valid JSON. Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!parsed || typeof parsed !== 'object') {
+        throw new Error('Invalid opencode_auth_json: must be a JSON object containing provider credentials');
+    }
+    const authObj = parsed;
+    const providers = Object.keys(authObj);
+    if (providers.length === 0) {
+        throw new Error('Invalid opencode_auth_json: must contain at least one provider configuration');
+    }
+    for (const provider of providers) {
+        const providerConfig = authObj[provider];
+        if (!providerConfig || typeof providerConfig !== 'object') {
+            throw new Error(`Invalid opencode_auth_json: provider "${provider}" must be an object`);
+        }
+        const config = providerConfig;
+        if (config.type !== 'api') {
+            throw new Error(`Invalid opencode_auth_json: provider "${provider}" must have type "api"`);
+        }
+        if (typeof config.key !== 'string' || !config.key.trim()) {
+            throw new Error(`Invalid opencode_auth_json: provider "${provider}" must have a non-empty "key" string`);
+        }
+    }
+}
+function extractApiKeyForModel(authJson, model) {
+    try {
+        const auth = JSON.parse(authJson);
+        const modelParts = model.split('/');
+        const provider = modelParts[0];
+        if (!provider) {
+            return null;
+        }
+        if (provider === 'openrouter' && modelParts.length > 1) {
+            return auth.openrouter?.key || null;
+        }
+        if (auth[provider]?.key) {
+            return auth[provider].key;
+        }
+        if (auth.openrouter?.key) {
+            return auth.openrouter.key;
+        }
+        return null;
+    }
+    catch {
+        return null;
+    }
+}
 async function parseInputs() {
-    const apiKey = coreExports.getInput('openrouter_api_key', { required: true });
+    const authJson = coreExports.getInput('opencode_auth_json', { required: true });
     const model = coreExports.getInput('model', { required: true });
     const enableWeb = coreExports.getBooleanInput('enable_web', { required: false });
     const debugLogging = coreExports.getBooleanInput('debug_logging', {
         required: false
     });
+    validateAuthJson(authJson);
     const problemThreshold = parseNumericInput('problem_score_threshold', 5, 1, 10, 'Problem score threshold must be between 1 and 10');
     const blockingThresholdInput = coreExports.getInput('blocking_score_threshold', {
         required: false
@@ -31483,23 +31537,27 @@ async function parseInputs() {
     const enableEndComment = coreExports.getBooleanInput('review_manual_trigger_enable_end_comment', { required: false });
     const requireTaskInfoInPrDesc = coreExports.getBooleanInput('require_task_info_in_pr_desc', { required: false });
     const context = githubExports.context;
+    const verificationApiKey = extractApiKeyForModel(authJson, injectionVerificationModel);
+    if (!verificationApiKey) {
+        throw new Error(`Could not extract API key for injection verification model "${injectionVerificationModel}" from auth JSON`);
+    }
     const tempLlmClient = new LLMClientImpl({
-        apiKey,
+        apiKey: verificationApiKey,
         model: injectionVerificationModel
     });
     const intentClassifier = new IntentClassifier(tempLlmClient);
     const { mode, prNumber, questionContext, disputeContext, isManuallyTriggered, triggerCommentId } = await detectExecutionMode(context, intentClassifier);
     const owner = context.repo.owner;
     const repo = context.repo.repo;
-    if (!apiKey || apiKey.trim() === '') {
-        throw new Error('OpenCode API key cannot be empty');
+    if (!authJson || authJson.trim() === '') {
+        throw new Error('OpenCode auth JSON cannot be empty');
     }
     if (!githubToken || githubToken.trim() === '') {
         throw new Error('GitHub token cannot be empty');
     }
     return {
         opencode: {
-            apiKey,
+            authJson,
             model,
             enableWeb,
             debugLogging
@@ -31674,9 +31732,10 @@ function parseNumericInput(name, defaultValue, min, max, errorMessage) {
     return value;
 }
 function validateConfig(config) {
-    if (!config.opencode.apiKey) {
-        throw new Error('OpenCode API key is required');
+    if (!config.opencode.authJson) {
+        throw new Error('OpenCode auth JSON is required');
     }
+    validateAuthJson(config.opencode.authJson);
     if (!config.opencode.model) {
         throw new Error('Model name is required');
     }
@@ -37988,7 +38047,6 @@ class OpenCodeServer {
         const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd();
         const env = {
             OPENCODE_CONFIG: this.configFilePath || '',
-            OPENROUTER_API_KEY: this.config.opencode.apiKey,
             PATH: process.env.PATH || '',
             HOME: process.env.HOME || '',
             TMPDIR: process.env.TMPDIR || process.env.TEMP || '/tmp',
@@ -37999,10 +38057,8 @@ class OpenCodeServer {
             env.OPENCODE_DEBUG = 'true';
         }
         logger.info(`OpenCode environment: OPENCODE_CONFIG=${env.OPENCODE_CONFIG}`);
-        logger.debug('OPENROUTER_API_KEY passed via environment variable');
-        logger.debug(`Minimal environment: ${Object.keys(env)
-            .filter((k) => k !== 'OPENROUTER_API_KEY')
-            .join(', ')}`);
+        logger.debug('Auth credentials passed via auth.json file');
+        logger.debug(`Minimal environment: ${Object.keys(env).join(', ')}`);
         this.serverProcess = spawn(command, serveArgs, {
             stdio: ['ignore', 'pipe', 'pipe'],
             cwd: workspaceDir,
@@ -38021,12 +38077,46 @@ class OpenCodeServer {
         }
         const configPath = join(secureConfigDir, 'opencode.json');
         const model = this.config.opencode.model;
-        const openrouterModel = `openrouter/${model}`;
+        let auth;
+        try {
+            auth = JSON.parse(this.config.opencode.authJson);
+        }
+        catch (error) {
+            throw new OpenCodeError(`Failed to parse auth JSON: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        const availableProviders = Object.keys(auth);
+        const modelParts = model.split('/');
+        const modelProvider = modelParts[0];
+        let enabledProviders;
+        let disabledProviders;
+        let finalModel;
+        if (modelProvider === 'openrouter') {
+            enabledProviders = ['openrouter'];
+            disabledProviders = ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'];
+            finalModel = model;
+        }
+        else if (modelProvider && availableProviders.includes(modelProvider)) {
+            enabledProviders = [modelProvider];
+            disabledProviders = [
+                'gemini',
+                'anthropic',
+                'openai',
+                'azure',
+                'bedrock',
+                'openrouter'
+            ].filter((p) => p !== modelProvider);
+            finalModel = model;
+        }
+        else {
+            enabledProviders = availableProviders;
+            disabledProviders = [];
+            finalModel = model;
+        }
         const config = {
             $schema: 'https://opencode.ai/config.json',
-            model: openrouterModel,
-            enabled_providers: ['openrouter'],
-            disabled_providers: ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'],
+            model: finalModel,
+            enabled_providers: enabledProviders,
+            disabled_providers: disabledProviders,
             provider: {
                 openrouter: {
                     models: {}
@@ -38040,9 +38130,7 @@ class OpenCodeServer {
             permission: {
                 edit: 'deny',
                 bash: {
-                    // Deny all commands by default
                     '*': 'deny',
-                    // Allow read-only git commands for code analysis
                     'git status': 'allow',
                     'git diff *': 'allow',
                     'git log *': 'allow',
@@ -38064,7 +38152,8 @@ class OpenCodeServer {
                 mode: 0o600
             });
             logger.info(`Created OpenCode config file: ${configPath}`);
-            logger.info(`Config model: ${openrouterModel}`);
+            logger.info(`Config model: ${finalModel}`);
+            logger.info(`Enabled providers: ${enabledProviders.join(', ')}`);
             logger.info(`Config contents: ${JSON.stringify(config, null, 2)}`);
         }
         catch (error) {
@@ -38076,9 +38165,13 @@ class OpenCodeServer {
     createAuthFile(secureConfigDir) {
         const authPath = join(secureConfigDir, 'auth.json');
         this.authFilePath = authPath;
-        const auth = {
-            openrouter: { type: 'api', key: this.config.opencode.apiKey }
-        };
+        let auth;
+        try {
+            auth = JSON.parse(this.config.opencode.authJson);
+        }
+        catch (error) {
+            throw new OpenCodeError(`Failed to parse auth JSON: ${error instanceof Error ? error.message : String(error)}`);
+        }
         try {
             writeFileSync(authPath, JSON.stringify(auth, null, 2), {
                 encoding: 'utf8',
@@ -38086,7 +38179,7 @@ class OpenCodeServer {
             });
             chmodSync(authPath, 0o600);
             logger.debug(`Created OpenCode auth file: ${authPath}`);
-            logger.debug('Note: Auth is also passed via OPENROUTER_API_KEY env var as backup');
+            logger.debug(`Configured providers: ${Object.keys(auth).join(', ')}`);
         }
         catch (error) {
             throw new OpenCodeError(`Failed to write auth file: ${error instanceof Error ? error.message : String(error)}`);
@@ -40859,7 +40952,34 @@ class ReviewExecutor {
         this.github = github;
         this.config = config;
         this.workspaceRoot = workspaceRoot;
-        this.injectionDetector = createPromptInjectionDetector(config.opencode.apiKey, config.security.injectionVerificationModel, config.security.injectionDetectionEnabled);
+        const apiKey = this.extractApiKeyForModel(config.opencode.authJson, config.security.injectionVerificationModel);
+        if (!apiKey) {
+            throw new OrchestratorError(`Could not extract API key for injection verification model "${config.security.injectionVerificationModel}" from auth JSON`);
+        }
+        this.injectionDetector = createPromptInjectionDetector(apiKey, config.security.injectionVerificationModel, config.security.injectionDetectionEnabled);
+    }
+    extractApiKeyForModel(authJson, model) {
+        try {
+            const auth = JSON.parse(authJson);
+            const modelParts = model.split('/');
+            const provider = modelParts[0];
+            if (!provider) {
+                return null;
+            }
+            if (provider === 'openrouter' && modelParts.length > 1) {
+                return auth.openrouter?.key || null;
+            }
+            if (auth[provider]?.key) {
+                return auth[provider].key;
+            }
+            if (auth.openrouter?.key) {
+                return auth.openrouter.key;
+            }
+            return null;
+        }
+        catch {
+            return null;
+        }
     }
     async executeReview(taskInfo) {
         return await logger.group('Executing Multi-Pass Review', async () => {
@@ -51363,8 +51483,12 @@ async function run() {
         // LLM client for classification and sentiment analysis tasks
         // Uses injection_verification_model which is faster and doesn't have
         // reasoning token issues that can cause empty responses with reasoning models
+        const verificationApiKey = extractApiKeyForModel(config.opencode.authJson, config.security.injectionVerificationModel);
+        if (!verificationApiKey) {
+            throw new Error(`Could not extract API key for injection verification model "${config.security.injectionVerificationModel}" from auth JSON`);
+        }
         const classificationLlmClient = new LLMClientImpl({
-            apiKey: config.opencode.apiKey,
+            apiKey: verificationApiKey,
             model: config.security.injectionVerificationModel
         });
         const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();

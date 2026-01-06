@@ -59,7 +59,10 @@ function validateAuthJson(authJson: string): void {
   }
 }
 
-function extractApiKeyForModel(authJson: string, model: string): string | null {
+export function extractApiKeyForModel(
+  authJson: string,
+  model: string
+): string | null {
   try {
     const auth = JSON.parse(authJson) as Record<
       string,

@@ -37737,7 +37737,14 @@ class OpenCodeClientImpl {
     async sendPrompt(sessionId, prompt) {
         try {
             logger.debug(`Sending prompt to session ${sessionId} (${prompt.length} chars)`);
-            const completionPromise = this.waitForPromptCompletion(sessionId);
+            // Create a signal that will be set when the prompt is actually sent
+            // This prevents the completion logic from triggering on stale events
+            // from previous operations (like system prompt injection)
+            let markPromptSent = () => { };
+            const promptSentPromise = new Promise((resolve) => {
+                markPromptSent = resolve;
+            });
+            const completionPromise = this.waitForPromptCompletion(sessionId, promptSentPromise);
             await this.client.session.promptAsync({
                 path: { id: sessionId },
                 body: {
@@ -37749,6 +37756,8 @@ class OpenCodeClientImpl {
                     ]
                 }
             });
+            // Signal that the prompt has been sent - now we can start tracking busy/idle
+            markPromptSent();
             logger.debug(`Prompt queued, waiting for LLM to complete via events...`);
             await completionPromise;
             logger.debug(`Prompt completed successfully for session ${sessionId}`);
@@ -37757,10 +37766,18 @@ class OpenCodeClientImpl {
             throw new OpenCodeError(`Failed to send prompt: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
-    async waitForPromptCompletion(sessionId) {
+    async waitForPromptCompletion(sessionId, promptSentPromise) {
         const startTime = Date.now();
         const abortController = new AbortController();
         let sawBusy = false;
+        let promptSent = false;
+        // Wait for the prompt to be sent before we start tracking busy/idle
+        // This prevents stale events from previous operations (like system prompt
+        // injection) from triggering the completion logic prematurely
+        promptSentPromise.then(() => {
+            promptSent = true;
+            logger.debug(`Prompt sent signal received for session ${sessionId}, now tracking busy/idle`);
+        });
         // Grace period to wait after idle before considering session complete
         // This handles reasoning models that may pause briefly during thinking
         const IDLE_GRACE_PERIOD_MS = 10000;
@@ -37804,7 +37821,9 @@ class OpenCodeClientImpl {
                         if (props.sessionID !== sessionId) {
                             continue;
                         }
-                        if (event.type === 'message.part.updated' &&
+                        // Only track tool calls for loop detection after prompt is sent
+                        if (promptSent &&
+                            event.type === 'message.part.updated' &&
                             props.part?.type === 'tool') {
                             const part = props.part;
                             const toolName = part.tool || 'unknown';
@@ -37820,16 +37839,21 @@ class OpenCodeClientImpl {
                             }
                         }
                         // Any non-idle status means the model is active
+                        // Only track busy state AFTER the prompt has been sent to avoid
+                        // picking up stale events from previous operations
                         if (event.type === 'session.status' &&
                             props.status &&
-                            props.status.type !== 'idle') {
+                            props.status.type !== 'idle' &&
+                            promptSent) {
                             sawBusy = true;
                             // Cancel any pending idle grace timer since model is active again
                             cancelIdleGrace();
                         }
                         // Message updates also indicate activity
-                        if (event.type === 'message.updated' ||
-                            event.type === 'message.part.updated') {
+                        // Only cancel idle grace if prompt has been sent
+                        if (promptSent &&
+                            (event.type === 'message.updated' ||
+                                event.type === 'message.part.updated')) {
                             cancelIdleGrace();
                         }
                         const isIdle = event.type === 'session.idle' ||

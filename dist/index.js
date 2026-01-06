@@ -37824,13 +37824,15 @@ class OpenCodeClientImpl {
                         }
                         this.logEvent(event, sessionId);
                         const props = event.properties;
+                        // Extract sessionID from either top-level or nested in info
+                        const eventSessionId = props.sessionID || props.info?.sessionID || null;
                         // Log ALL events (even for other sessions) to see what's happening
-                        logger.info(`[DEBUG] Event #${eventCount}: type=${event.type}, sessionID=${props.sessionID || 'N/A'}, targetSession=${sessionId}, match=${props.sessionID === sessionId}`);
+                        logger.info(`[DEBUG] Event #${eventCount}: type=${event.type}, eventSessionID=${eventSessionId || 'N/A'}, targetSession=${sessionId}, match=${eventSessionId === sessionId}, rawProps=${JSON.stringify(event.properties).substring(0, 500)}`);
                         // Theory 2: Check if status has unexpected structure
                         if (event.type === 'session.status') {
                             logger.info(`[DEBUG] session.status event - full props: ${JSON.stringify(event.properties)}`);
                         }
-                        if (props.sessionID !== sessionId) {
+                        if (eventSessionId !== sessionId) {
                             continue;
                         }
                         // Log every event for our session with full details
@@ -38104,7 +38106,10 @@ class OpenCodeServer {
             '--port',
             String(OPENCODE_SERVER_PORT),
             '--hostname',
-            OPENCODE_SERVER_HOST
+            OPENCODE_SERVER_HOST,
+            '--log-level',
+            'DEBUG',
+            '--print-logs'
         ];
         logger.debug(`Starting OpenCode server on port ${OPENCODE_SERVER_PORT} with model ${this.config.opencode.model}`);
         logger.debug(`Running: ${command} ${serveArgs.join(' ')}`);
@@ -38515,6 +38520,8 @@ class OpenCodeServer {
                 if (isHealthy) {
                     this.status = 'running';
                     logger.info(`Server became healthy after ${Date.now() - startTime}ms`);
+                    // Log server configuration for debugging
+                    await this.logServerState();
                     return;
                 }
             }
@@ -38538,6 +38545,37 @@ class OpenCodeServer {
         }
         catch {
             return false;
+        }
+    }
+    async logServerState() {
+        try {
+            // Log config
+            const configResponse = await fetch(`${this.healthCheckUrl}/config`);
+            if (configResponse.ok) {
+                const config = await configResponse.json();
+                logger.info(`[DEBUG] Server config: ${JSON.stringify(config)}`);
+            }
+            // Log providers
+            const providersResponse = await fetch(`${this.healthCheckUrl}/config/providers`);
+            if (providersResponse.ok) {
+                const providers = await providersResponse.json();
+                logger.info(`[DEBUG] Server providers: ${JSON.stringify(providers)}`);
+            }
+            // Log health
+            const healthResponse = await fetch(`${this.healthCheckUrl}/global/health`);
+            if (healthResponse.ok) {
+                const health = await healthResponse.json();
+                logger.info(`[DEBUG] Server health: ${JSON.stringify(health)}`);
+            }
+            // Log session status
+            const sessionStatusResponse = await fetch(`${this.healthCheckUrl}/session/status`);
+            if (sessionStatusResponse.ok) {
+                const sessionStatus = await sessionStatusResponse.json();
+                logger.info(`[DEBUG] Session status: ${JSON.stringify(sessionStatus)}`);
+            }
+        }
+        catch (error) {
+            logger.warning(`[DEBUG] Failed to log server state: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
     async killServerProcess() {

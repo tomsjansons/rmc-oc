@@ -180,7 +180,10 @@ export class OpenCodeServer {
       '--port',
       String(OPENCODE_SERVER_PORT),
       '--hostname',
-      OPENCODE_SERVER_HOST
+      OPENCODE_SERVER_HOST,
+      '--log-level',
+      'DEBUG',
+      '--print-logs'
     ]
 
     logger.debug(
@@ -635,6 +638,10 @@ export class OpenCodeServer {
         if (isHealthy) {
           this.status = 'running'
           logger.info(`Server became healthy after ${Date.now() - startTime}ms`)
+
+          // Log server configuration for debugging
+          await this.logServerState()
+
           return
         }
       } catch (error) {
@@ -666,6 +673,46 @@ export class OpenCodeServer {
       return response.ok
     } catch {
       return false
+    }
+  }
+
+  private async logServerState(): Promise<void> {
+    try {
+      // Log config
+      const configResponse = await fetch(`${this.healthCheckUrl}/config`)
+      if (configResponse.ok) {
+        const config = await configResponse.json()
+        logger.info(`[DEBUG] Server config: ${JSON.stringify(config)}`)
+      }
+
+      // Log providers
+      const providersResponse = await fetch(
+        `${this.healthCheckUrl}/config/providers`
+      )
+      if (providersResponse.ok) {
+        const providers = await providersResponse.json()
+        logger.info(`[DEBUG] Server providers: ${JSON.stringify(providers)}`)
+      }
+
+      // Log health
+      const healthResponse = await fetch(`${this.healthCheckUrl}/global/health`)
+      if (healthResponse.ok) {
+        const health = await healthResponse.json()
+        logger.info(`[DEBUG] Server health: ${JSON.stringify(health)}`)
+      }
+
+      // Log session status
+      const sessionStatusResponse = await fetch(
+        `${this.healthCheckUrl}/session/status`
+      )
+      if (sessionStatusResponse.ok) {
+        const sessionStatus = await sessionStatusResponse.json()
+        logger.info(`[DEBUG] Session status: ${JSON.stringify(sessionStatus)}`)
+      }
+    } catch (error) {
+      logger.warning(
+        `[DEBUG] Failed to log server state: ${error instanceof Error ? error.message : String(error)}`
+      )
     }
   }
 

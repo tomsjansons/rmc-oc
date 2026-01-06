@@ -307,13 +307,18 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
             const props = event.properties as {
               sessionID?: string
+              info?: { sessionID?: string }
               status?: { type: string; attempt?: number; message?: string }
               part?: { type: string; tool?: string; state?: { status: string } }
             }
 
+            // Extract sessionID from either top-level or nested in info
+            const eventSessionId =
+              props.sessionID || props.info?.sessionID || null
+
             // Log ALL events (even for other sessions) to see what's happening
             logger.info(
-              `[DEBUG] Event #${eventCount}: type=${event.type}, sessionID=${props.sessionID || 'N/A'}, targetSession=${sessionId}, match=${props.sessionID === sessionId}`
+              `[DEBUG] Event #${eventCount}: type=${event.type}, eventSessionID=${eventSessionId || 'N/A'}, targetSession=${sessionId}, match=${eventSessionId === sessionId}, rawProps=${JSON.stringify(event.properties).substring(0, 500)}`
             )
 
             // Theory 2: Check if status has unexpected structure
@@ -323,7 +328,7 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               )
             }
 
-            if (props.sessionID !== sessionId) {
+            if (eventSessionId !== sessionId) {
               continue
             }
 

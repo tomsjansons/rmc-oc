@@ -45,9 +45,9 @@ function validateAuthJson(authJson: string): void {
     }
 
     const config = providerConfig as Record<string, unknown>
-    if (config.type !== 'api') {
+    if (config.type !== 'api' && config.type !== 'oauth') {
       throw new Error(
-        `Invalid opencode_auth_json: provider "${provider}" must have type "api"`
+        `Invalid opencode_auth_json: provider "${provider}" must have type "api" or "oauth"`
       )
     }
 

@@ -52,7 +52,7 @@ type OpenCodeConfig = {
 type OpenCodeAuth = Record<
   string,
   {
-    type: 'api'
+    type: 'api' | 'oauth'
     key: string
   }
 >

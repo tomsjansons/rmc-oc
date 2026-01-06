@@ -31472,8 +31472,8 @@ function validateAuthJson(authJson) {
             throw new Error(`Invalid opencode_auth_json: provider "${provider}" must be an object`);
         }
         const config = providerConfig;
-        if (config.type !== 'api') {
-            throw new Error(`Invalid opencode_auth_json: provider "${provider}" must have type "api"`);
+        if (config.type !== 'api' && config.type !== 'oauth') {
+            throw new Error(`Invalid opencode_auth_json: provider "${provider}" must have type "api" or "oauth"`);
         }
         if (typeof config.key !== 'string' || !config.key.trim()) {
             throw new Error(`Invalid opencode_auth_json: provider "${provider}" must have a non-empty "key" string`);

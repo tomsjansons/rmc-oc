@@ -12,9 +12,10 @@ inputs:
   opencode_auth_json:
     description:
       'OpenCode authentication JSON for LLM provider access. Must be a valid
-      JSON string containing provider credentials (e.g., {"openrouter": {"type":
-      "api", "key": "sk-..."}} or {"anthropic": {"type": "api", "key":
-      "sk-..."}})'
+      JSON string containing provider credentials. Type can be "api" or "oauth".
+      Examples: {"openrouter": {"type": "api", "key": "sk-..."}}, {"anthropic":
+      {"type": "oauth", "key": "sk-..."}}, {"openai": {"type": "api", "key":
+      "sk-..."}}'
     required: true
   model:
     description:

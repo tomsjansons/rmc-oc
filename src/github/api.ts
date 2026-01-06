@@ -395,18 +395,21 @@ ${reviewerTags} - Please review this dispute and make a final decision.
     }
   }
 
-  async postIssueComment(body: string): Promise<void> {
+  async postIssueComment(body: string): Promise<string> {
     try {
       logger.debug('Posting issue comment')
 
-      await this.octokit.issues.createComment({
+      const response = await this.octokit.issues.createComment({
         owner: this.owner,
         repo: this.repo,
         issue_number: this.prNumber,
         body
       })
 
-      logger.info('Posted issue comment')
+      const commentId = String(response.data.id)
+      logger.info(`Posted issue comment: ID ${commentId}`)
+
+      return commentId
     } catch (error) {
       throw new GitHubAPIError(
         `Failed to post issue comment: ${error instanceof Error ? error.message : String(error)}`

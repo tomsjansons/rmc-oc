@@ -67,10 +67,13 @@ export class TaskOrchestrator {
           hasBlockingIssues = true
         }
 
-        if (task.type === 'full-review' && result.success) {
-          reviewCompleted = true
+        if (task.type === 'full-review') {
+          if (result.success) {
+            reviewCompleted = true
+          }
           // Use affectsMergeGate to determine if this was an auto review
           // This handles both fresh auto reviews and resumed cancelled ones
+          // Set this flag even if the review failed, so we know to block merges
           if (task.affectsMergeGate) {
             hadAutoReview = true
           } else {
@@ -116,11 +119,39 @@ export class TaskOrchestrator {
       }
     } catch (error) {
       core.error(`Task execution failed: ${error}`)
+
+      let state = this.reviewExecutor.getState()
+
+      if (!state) {
+        try {
+          state = await this.stateManager.getOrCreateState()
+        } catch (stateError) {
+          logger.warning(
+            `Failed to load state after task error: ${stateError instanceof Error ? stateError.message : String(stateError)}`
+          )
+        }
+      }
+
+      const blockingThreshold = this.config.scoring.blockingThreshold
+
+      let issuesFound = 0
+      let blockingIssues = 0
+
+      if (state) {
+        const activeThreads = state.threads.filter(
+          (t) => t.status !== 'RESOLVED'
+        )
+        issuesFound = activeThreads.length
+        blockingIssues = activeThreads.filter(
+          (t) => t.score >= blockingThreshold
+        ).length
+      }
+
       return {
         type: task.type,
         success: false,
-        issuesFound: 0,
-        blockingIssues: 0,
+        issuesFound,
+        blockingIssues,
         error: error instanceof Error ? error.message : String(error)
       }
     }
@@ -342,35 +373,25 @@ ${JSON.stringify(rmcocBlock, null, 2)}
       return undefined
     }
 
+    const prFiles = await this.githubApi.getPRFiles()
+
     const taskInfo = await extractTaskInfo(
       prDescription,
       this.workspaceRoot,
       this.llmClient,
-      requireTaskInfo
+      requireTaskInfo,
+      prFiles
     )
 
     if (requireTaskInfo && !taskInfo.isSufficient) {
       const reason =
         taskInfo.insufficiencyReason || 'PR description is insufficient'
-      const errorMessage = `Task info validation failed: ${reason}. Please update the PR description with sufficient information about the task being implemented.`
 
-      logger.error(errorMessage)
+      logger.error(`Task info validation failed: ${reason}`)
 
-      await this.githubApi.postIssueComment(
-        `❌ **Review blocked: Insufficient task information**
+      await this.postPRDescriptionValidationFailure(reason)
 
-${reason}
-
-Please update your PR description to include:
-- **What** is being changed or added
-- **Why** the change is needed (motivation/problem being solved)
-
-You can also link to task specification files in the repository (e.g., \`[Task spec](./docs/task.md)\`).
-
-Once the description is updated, trigger a new review.`
-      )
-
-      throw new Error(errorMessage)
+      throw new Error(`Task info validation failed: ${reason}`)
     }
 
     if (taskInfo.description.trim()) {
@@ -383,6 +404,68 @@ Once the description is updated, trigger a new review.`
     }
 
     return taskInfo
+  }
+
+  private async postPRDescriptionValidationFailure(
+    reason: string
+  ): Promise<void> {
+    const file = 'PR_DESCRIPTION'
+    const line = 0
+    const finding = 'PR description is insufficient'
+
+    await this.stateManager.getOrCreateState()
+
+    const existingThread = this.reviewExecutor.findDuplicateThread(
+      file,
+      line,
+      finding
+    )
+
+    if (existingThread) {
+      logger.info(
+        `PR description validation failure already reported in thread ${existingThread.id}, skipping duplicate`
+      )
+      return
+    }
+
+    const commentBody = `❌ **Review blocked: Insufficient task information**
+
+${reason}
+
+Please update your PR description to include:
+- **What** is being changed or added
+- **Why** the change is needed (motivation/problem being solved)
+
+You can also link to task specification files in the repository (e.g., \`[Task spec](./docs/task.md)\`).
+
+Once the description is updated, trigger a new review.`
+
+    const assessment = {
+      finding,
+      assessment: reason,
+      score: 10
+    }
+
+    const rmcocBlock = `\`\`\`rmcoc\n${JSON.stringify(assessment, null, 2)}\n\`\`\``
+    const fullComment = `${commentBody}\n\n---\n\n${rmcocBlock}`
+
+    const commentId = await this.githubApi.postIssueComment(fullComment)
+
+    await this.reviewExecutor.addThread({
+      id: commentId,
+      file,
+      line,
+      status: 'PENDING',
+      score: 10,
+      assessment,
+      original_comment: {
+        author: 'opencode-reviewer[bot]',
+        body: commentBody,
+        timestamp: new Date().toISOString()
+      }
+    })
+
+    logger.info('Posted PR description validation failure as blocking issue')
   }
 
   private summarizeTasks(plan: ExecutionPlan): string {

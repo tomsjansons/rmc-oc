@@ -16,13 +16,16 @@ We will work on tasks within the broader poject.
 
 # Task
 
-please implement a new feature where info from the PR description is loaded. the
-pr desc may contain information directly or may link to existing files in the
-repo containing the task description.
+## Completed Tasks
 
-add a new config option for the action: require-task-info-in-pr-desc - if the
-description is empty or insufficient for understanding the task, it must be
-conisdered as a review failure
+I got the review failure for an empty PR description. but this is not handled
+the same as other tasks:
 
-afterwards update the neccessary documents (README and action ) with this new
-feature
+- thereis no rmcoc code block for the review to reference later
+- the workflow did not exit with non-zero code to block merges
+
+the PR description check needs to be treated the same as any other issue
+comment.
+
+the contents of the PR also need to be fed troough an llm to determine if it is
+sufficient or not

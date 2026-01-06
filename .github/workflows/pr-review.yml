@@ -60,10 +60,10 @@ jobs:
       - name: Run OpenCode PR Reviewer
         uses: ./
         with:
-          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          opencode_auth_json: ${{ secrets.OPENCODE_AUTH_JSON }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          model: 'minimax/minimax-m2.1'
-          injection_verification_model: 'moonshotai/kimi-k2-0905'
+          model: 'anthropic/claude-sonnet-4-5'
+          injection_verification_model: 'openrouter/moonshotai/kimi-k2-0905'
           problem_score_threshold: 5
           review_timeout_minutes: 30
           max_review_retries: 1

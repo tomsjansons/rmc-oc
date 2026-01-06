@@ -9,7 +9,7 @@ import type { QuestionContext, DisputeContext } from '../task/types.js'
 
 export type ReviewConfig = {
   opencode: {
-    apiKey: string
+    authJson: string
     model: string
     enableWeb: boolean
     debugLogging: boolean

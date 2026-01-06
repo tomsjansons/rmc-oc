@@ -32,7 +32,7 @@ describe('main.ts', () => {
 
   it('fails when required inputs are missing', async () => {
     core.getInput.mockImplementation((name: string) => {
-      if (name === 'openrouter_api_key') {
+      if (name === 'opencode_auth_json') {
         return ''
       }
       if (name === 'github_token') {
@@ -50,8 +50,8 @@ describe('main.ts', () => {
 
   it('fails when model is missing', async () => {
     core.getInput.mockImplementation((name: string) => {
-      if (name === 'openrouter_api_key') {
-        return 'test-api-key'
+      if (name === 'opencode_auth_json') {
+        return '{"openrouter":{"type":"api","key":"test-api-key"}}'
       }
       if (name === 'github_token') {
         return 'test-token'

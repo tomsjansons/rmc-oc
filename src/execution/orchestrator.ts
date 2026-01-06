@@ -48,11 +48,55 @@ export class ReviewExecutor {
     private config: ReviewConfig,
     private workspaceRoot: string
   ) {
+    const apiKey = this.extractApiKeyForModel(
+      config.opencode.authJson,
+      config.security.injectionVerificationModel
+    )
+    if (!apiKey) {
+      throw new OrchestratorError(
+        `Could not extract API key for injection verification model "${config.security.injectionVerificationModel}" from auth JSON`
+      )
+    }
     this.injectionDetector = createPromptInjectionDetector(
-      config.opencode.apiKey,
+      apiKey,
       config.security.injectionVerificationModel,
       config.security.injectionDetectionEnabled
     )
+  }
+
+  private extractApiKeyForModel(
+    authJson: string,
+    model: string
+  ): string | null {
+    try {
+      const auth = JSON.parse(authJson) as Record<
+        string,
+        { type: string; key: string }
+      >
+
+      const modelParts = model.split('/')
+      const provider = modelParts[0]
+
+      if (!provider) {
+        return null
+      }
+
+      if (provider === 'openrouter' && modelParts.length > 1) {
+        return auth.openrouter?.key || null
+      }
+
+      if (auth[provider]?.key) {
+        return auth[provider].key
+      }
+
+      if (auth.openrouter?.key) {
+        return auth.openrouter.key
+      }
+
+      return null
+    } catch {
+      return null
+    }
   }
 
   async executeReview(taskInfo?: TaskInfo): Promise<ReviewOutput> {

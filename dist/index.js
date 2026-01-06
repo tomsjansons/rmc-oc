@@ -31450,13 +31450,88 @@ Response:`;
     }
 }
 
+function validateAuthJson(authJson) {
+    let parsed;
+    try {
+        parsed = JSON.parse(authJson);
+    }
+    catch (error) {
+        throw new Error(`Invalid opencode_auth_json: must be valid JSON. Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!parsed || typeof parsed !== 'object') {
+        throw new Error('Invalid opencode_auth_json: must be a JSON object containing provider credentials');
+    }
+    const authObj = parsed;
+    const providers = Object.keys(authObj);
+    if (providers.length === 0) {
+        throw new Error('Invalid opencode_auth_json: must contain at least one provider configuration');
+    }
+    for (const provider of providers) {
+        const providerConfig = authObj[provider];
+        if (!providerConfig || typeof providerConfig !== 'object') {
+            throw new Error(`Invalid opencode_auth_json: provider "${provider}" must be an object`);
+        }
+        const config = providerConfig;
+        if (config.type !== 'api' && config.type !== 'oauth') {
+            throw new Error(`Invalid opencode_auth_json: provider "${provider}" must have type "api" or "oauth"`);
+        }
+        // Validate based on auth type
+        if (config.type === 'api') {
+            if (typeof config.key !== 'string' || !config.key.trim()) {
+                throw new Error(`Invalid opencode_auth_json: provider "${provider}" with type "api" must have a non-empty "key" string`);
+            }
+        }
+        else if (config.type === 'oauth') {
+            // OAuth can have various fields depending on the provider
+            // Just validate that it's an object with the type field
+            // The actual OAuth fields will be validated by OpenCode itself
+            if (!config || typeof config !== 'object') {
+                throw new Error(`Invalid opencode_auth_json: provider "${provider}" with type "oauth" must be a valid object`);
+            }
+        }
+    }
+}
+function extractApiKeyForModel(authJson, model) {
+    try {
+        const auth = JSON.parse(authJson);
+        const modelParts = model.split('/');
+        const provider = modelParts[0];
+        if (!provider) {
+            return null;
+        }
+        // For openrouter prefix, always use openrouter credentials
+        if (provider === 'openrouter' && modelParts.length > 1) {
+            const openrouterAuth = auth.openrouter;
+            if (openrouterAuth?.type === 'api' && openrouterAuth.key) {
+                return openrouterAuth.key;
+            }
+            return null;
+        }
+        // Try to get key from the specific provider
+        const providerAuth = auth[provider];
+        if (providerAuth?.type === 'api' && providerAuth.key) {
+            return providerAuth.key;
+        }
+        // OAuth providers don't have a simple key field
+        // Fall back to openrouter if available
+        const openrouterAuth = auth.openrouter;
+        if (openrouterAuth?.type === 'api' && openrouterAuth.key) {
+            return openrouterAuth.key;
+        }
+        return null;
+    }
+    catch {
+        return null;
+    }
+}
 async function parseInputs() {
-    const apiKey = coreExports.getInput('openrouter_api_key', { required: true });
+    const authJson = coreExports.getInput('opencode_auth_json', { required: true });
     const model = coreExports.getInput('model', { required: true });
     const enableWeb = coreExports.getBooleanInput('enable_web', { required: false });
     const debugLogging = coreExports.getBooleanInput('debug_logging', {
         required: false
     });
+    validateAuthJson(authJson);
     const problemThreshold = parseNumericInput('problem_score_threshold', 5, 1, 10, 'Problem score threshold must be between 1 and 10');
     const blockingThresholdInput = coreExports.getInput('blocking_score_threshold', {
         required: false
@@ -31483,23 +31558,27 @@ async function parseInputs() {
     const enableEndComment = coreExports.getBooleanInput('review_manual_trigger_enable_end_comment', { required: false });
     const requireTaskInfoInPrDesc = coreExports.getBooleanInput('require_task_info_in_pr_desc', { required: false });
     const context = githubExports.context;
+    const verificationApiKey = extractApiKeyForModel(authJson, injectionVerificationModel);
+    if (!verificationApiKey) {
+        throw new Error(`Could not extract API key for injection verification model "${injectionVerificationModel}" from auth JSON`);
+    }
     const tempLlmClient = new LLMClientImpl({
-        apiKey,
+        apiKey: verificationApiKey,
         model: injectionVerificationModel
     });
     const intentClassifier = new IntentClassifier(tempLlmClient);
     const { mode, prNumber, questionContext, disputeContext, isManuallyTriggered, triggerCommentId } = await detectExecutionMode(context, intentClassifier);
     const owner = context.repo.owner;
     const repo = context.repo.repo;
-    if (!apiKey || apiKey.trim() === '') {
-        throw new Error('OpenCode API key cannot be empty');
+    if (!authJson || authJson.trim() === '') {
+        throw new Error('OpenCode auth JSON cannot be empty');
     }
     if (!githubToken || githubToken.trim() === '') {
         throw new Error('GitHub token cannot be empty');
     }
     return {
         opencode: {
-            apiKey,
+            authJson,
             model,
             enableWeb,
             debugLogging
@@ -31674,9 +31753,10 @@ function parseNumericInput(name, defaultValue, min, max, errorMessage) {
     return value;
 }
 function validateConfig(config) {
-    if (!config.opencode.apiKey) {
-        throw new Error('OpenCode API key is required');
+    if (!config.opencode.authJson) {
+        throw new Error('OpenCode auth JSON is required');
     }
+    validateAuthJson(config.opencode.authJson);
     if (!config.opencode.model) {
         throw new Error('Model name is required');
     }
@@ -35780,13 +35860,15 @@ ${reviewerTags} - Please review this dispute and make a final decision.
     async postIssueComment(body) {
         try {
             logger.debug('Posting issue comment');
-            await this.octokit.issues.createComment({
+            const response = await this.octokit.issues.createComment({
                 owner: this.owner,
                 repo: this.repo,
                 issue_number: this.prNumber,
                 body
             });
-            logger.info('Posted issue comment');
+            const commentId = String(response.data.id);
+            logger.info(`Posted issue comment: ID ${commentId}`);
+            return commentId;
         }
         catch (error) {
             throw new GitHubAPIError(`Failed to post issue comment: ${error instanceof Error ? error.message : String(error)}`);
@@ -37988,7 +38070,6 @@ class OpenCodeServer {
         const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd();
         const env = {
             OPENCODE_CONFIG: this.configFilePath || '',
-            OPENROUTER_API_KEY: this.config.opencode.apiKey,
             PATH: process.env.PATH || '',
             HOME: process.env.HOME || '',
             TMPDIR: process.env.TMPDIR || process.env.TEMP || '/tmp',
@@ -37999,10 +38080,8 @@ class OpenCodeServer {
             env.OPENCODE_DEBUG = 'true';
         }
         logger.info(`OpenCode environment: OPENCODE_CONFIG=${env.OPENCODE_CONFIG}`);
-        logger.debug('OPENROUTER_API_KEY passed via environment variable');
-        logger.debug(`Minimal environment: ${Object.keys(env)
-            .filter((k) => k !== 'OPENROUTER_API_KEY')
-            .join(', ')}`);
+        logger.debug('Auth credentials passed via auth.json file');
+        logger.debug(`Minimal environment: ${Object.keys(env).join(', ')}`);
         this.serverProcess = spawn(command, serveArgs, {
             stdio: ['ignore', 'pipe', 'pipe'],
             cwd: workspaceDir,
@@ -38021,12 +38100,46 @@ class OpenCodeServer {
         }
         const configPath = join(secureConfigDir, 'opencode.json');
         const model = this.config.opencode.model;
-        const openrouterModel = `openrouter/${model}`;
+        let auth;
+        try {
+            auth = JSON.parse(this.config.opencode.authJson);
+        }
+        catch (error) {
+            throw new OpenCodeError(`Failed to parse auth JSON: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        const availableProviders = Object.keys(auth);
+        const modelParts = model.split('/');
+        const modelProvider = modelParts[0];
+        let enabledProviders;
+        let disabledProviders;
+        let finalModel;
+        if (modelProvider === 'openrouter') {
+            enabledProviders = ['openrouter'];
+            disabledProviders = ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'];
+            finalModel = model;
+        }
+        else if (modelProvider && availableProviders.includes(modelProvider)) {
+            enabledProviders = [modelProvider];
+            disabledProviders = [
+                'gemini',
+                'anthropic',
+                'openai',
+                'azure',
+                'bedrock',
+                'openrouter'
+            ].filter((p) => p !== modelProvider);
+            finalModel = model;
+        }
+        else {
+            enabledProviders = availableProviders;
+            disabledProviders = [];
+            finalModel = model;
+        }
         const config = {
             $schema: 'https://opencode.ai/config.json',
-            model: openrouterModel,
-            enabled_providers: ['openrouter'],
-            disabled_providers: ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'],
+            model: finalModel,
+            enabled_providers: enabledProviders,
+            disabled_providers: disabledProviders,
             provider: {
                 openrouter: {
                     models: {}
@@ -38040,9 +38153,7 @@ class OpenCodeServer {
             permission: {
                 edit: 'deny',
                 bash: {
-                    // Deny all commands by default
                     '*': 'deny',
-                    // Allow read-only git commands for code analysis
                     'git status': 'allow',
                     'git diff *': 'allow',
                     'git log *': 'allow',
@@ -38064,7 +38175,8 @@ class OpenCodeServer {
                 mode: 0o600
             });
             logger.info(`Created OpenCode config file: ${configPath}`);
-            logger.info(`Config model: ${openrouterModel}`);
+            logger.info(`Config model: ${finalModel}`);
+            logger.info(`Enabled providers: ${enabledProviders.join(', ')}`);
             logger.info(`Config contents: ${JSON.stringify(config, null, 2)}`);
         }
         catch (error) {
@@ -38076,9 +38188,13 @@ class OpenCodeServer {
     createAuthFile(secureConfigDir) {
         const authPath = join(secureConfigDir, 'auth.json');
         this.authFilePath = authPath;
-        const auth = {
-            openrouter: { type: 'api', key: this.config.opencode.apiKey }
-        };
+        let auth;
+        try {
+            auth = JSON.parse(this.config.opencode.authJson);
+        }
+        catch (error) {
+            throw new OpenCodeError(`Failed to parse auth JSON: ${error instanceof Error ? error.message : String(error)}`);
+        }
         try {
             writeFileSync(authPath, JSON.stringify(auth, null, 2), {
                 encoding: 'utf8',
@@ -38086,7 +38202,7 @@ class OpenCodeServer {
             });
             chmodSync(authPath, 0o600);
             logger.debug(`Created OpenCode auth file: ${authPath}`);
-            logger.debug('Note: Auth is also passed via OPENROUTER_API_KEY env var as backup');
+            logger.debug(`Configured providers: ${Object.keys(auth).join(', ')}`);
         }
         catch (error) {
             throw new OpenCodeError(`Failed to write auth file: ${error instanceof Error ? error.message : String(error)}`);
@@ -40859,7 +40975,34 @@ class ReviewExecutor {
         this.github = github;
         this.config = config;
         this.workspaceRoot = workspaceRoot;
-        this.injectionDetector = createPromptInjectionDetector(config.opencode.apiKey, config.security.injectionVerificationModel, config.security.injectionDetectionEnabled);
+        const apiKey = this.extractApiKeyForModel(config.opencode.authJson, config.security.injectionVerificationModel);
+        if (!apiKey) {
+            throw new OrchestratorError(`Could not extract API key for injection verification model "${config.security.injectionVerificationModel}" from auth JSON`);
+        }
+        this.injectionDetector = createPromptInjectionDetector(apiKey, config.security.injectionVerificationModel, config.security.injectionDetectionEnabled);
+    }
+    extractApiKeyForModel(authJson, model) {
+        try {
+            const auth = JSON.parse(authJson);
+            const modelParts = model.split('/');
+            const provider = modelParts[0];
+            if (!provider) {
+                return null;
+            }
+            if (provider === 'openrouter' && modelParts.length > 1) {
+                return auth.openrouter?.key || null;
+            }
+            if (auth[provider]?.key) {
+                return auth[provider].key;
+            }
+            if (auth.openrouter?.key) {
+                return auth.openrouter.key;
+            }
+            return null;
+        }
+        catch {
+            return null;
+        }
     }
     async executeReview(taskInfo) {
         return await logger.group('Executing Multi-Pass Review', async () => {
@@ -42765,7 +42908,7 @@ const FILE_LINK_PATTERNS = [
     /(?:task|issue|spec|requirement)s?\s+(?:in|at|file)?\s*[`"]?([a-zA-Z0-9_\-./]+\.(?:md|txt|rst|adoc))[`"]?/gi,
     /^([a-zA-Z0-9_\-./]+\.(?:md|txt|rst|adoc))$/gim
 ];
-async function extractTaskInfo(prDescription, workspaceRoot, llmClient, requireTaskInfo) {
+async function extractTaskInfo(prDescription, workspaceRoot, llmClient, requireTaskInfo, prFiles) {
     logger.info('Extracting task info from PR description');
     const linkedFiles = await extractLinkedFileContents(prDescription, workspaceRoot);
     if (linkedFiles.length > 0) {
@@ -42779,7 +42922,7 @@ async function extractTaskInfo(prDescription, workspaceRoot, llmClient, requireT
             isSufficient: true
         };
     }
-    const sufficiencyResult = await evaluateDescriptionSufficiency(combinedDescription, llmClient);
+    const sufficiencyResult = await evaluateDescriptionSufficiency(combinedDescription, llmClient, prFiles);
     return {
         description: combinedDescription,
         linkedFiles,
@@ -42839,7 +42982,7 @@ function buildCombinedDescription(prDescription, linkedFiles) {
     }
     return parts.join('');
 }
-async function evaluateDescriptionSufficiency(description, llmClient) {
+async function evaluateDescriptionSufficiency(description, llmClient, prFiles) {
     if (!description || description.trim().length === 0) {
         return {
             isSufficient: false,
@@ -42852,23 +42995,31 @@ async function evaluateDescriptionSufficiency(description, llmClient) {
             reason: 'PR description is too short to understand the task'
         };
     }
+    const filesContext = prFiles && prFiles.length > 0
+        ? `\n\nFiles changed in this PR (${prFiles.length} files):\n${prFiles
+            .slice(0, 50)
+            .map((f) => `- ${f}`)
+            .join('\n')}${prFiles.length > 50 ? `\n... and ${prFiles.length - 50} more files` : ''}`
+        : '';
     const prompt = `You are evaluating whether a Pull Request description provides sufficient context to understand what task or change is being implemented.
 
 A sufficient PR description should:
 1. Explain WHAT is being changed or added
 2. Explain WHY the change is needed (motivation/problem being solved)
 3. Be specific enough for a reviewer to understand the scope
+4. Be proportional to the scope of changes (larger changes need more detailed descriptions)
 
 A description is INSUFFICIENT if:
 - It's just a title with no explanation
 - It only contains generic phrases like "bug fix" or "update" without specifics
 - It's completely unrelated to code changes (e.g., just emojis or jokes)
 - It lacks any explanation of purpose or motivation
+- It's too vague given the scope of changes
 
 Analyze this PR description:
 """
 ${description.substring(0, 4000)}
-"""
+"""${filesContext}
 
 Respond in this exact format (nothing else):
 SUFFICIENT: yes/no
@@ -42952,10 +43103,13 @@ class TaskOrchestrator {
                 if (result.blockingIssues > 0) {
                     hasBlockingIssues = true;
                 }
-                if (task.type === 'full-review' && result.success) {
-                    reviewCompleted = true;
+                if (task.type === 'full-review') {
+                    if (result.success) {
+                        reviewCompleted = true;
+                    }
                     // Use affectsMergeGate to determine if this was an auto review
                     // This handles both fresh auto reviews and resumed cancelled ones
+                    // Set this flag even if the review failed, so we know to block merges
                     if (task.affectsMergeGate) {
                         hadAutoReview = true;
                     }
@@ -42995,11 +43149,28 @@ class TaskOrchestrator {
         }
         catch (error) {
             coreExports.error(`Task execution failed: ${error}`);
+            let state = this.reviewExecutor.getState();
+            if (!state) {
+                try {
+                    state = await this.stateManager.getOrCreateState();
+                }
+                catch (stateError) {
+                    logger.warning(`Failed to load state after task error: ${stateError instanceof Error ? stateError.message : String(stateError)}`);
+                }
+            }
+            const blockingThreshold = this.config.scoring.blockingThreshold;
+            let issuesFound = 0;
+            let blockingIssues = 0;
+            if (state) {
+                const activeThreads = state.threads.filter((t) => t.status !== 'RESOLVED');
+                issuesFound = activeThreads.length;
+                blockingIssues = activeThreads.filter((t) => t.score >= blockingThreshold).length;
+            }
             return {
                 type: task.type,
                 success: false,
-                issuesFound: 0,
-                blockingIssues: 0,
+                issuesFound,
+                blockingIssues,
                 error: error instanceof Error ? error.message : String(error)
             };
         }
@@ -43128,12 +43299,33 @@ ${JSON.stringify(rmcocBlock, null, 2)}
             logger.debug('PR description is empty, but task info not required');
             return undefined;
         }
-        const taskInfo = await extractTaskInfo(prDescription, this.workspaceRoot, this.llmClient, requireTaskInfo);
+        const prFiles = await this.githubApi.getPRFiles();
+        const taskInfo = await extractTaskInfo(prDescription, this.workspaceRoot, this.llmClient, requireTaskInfo, prFiles);
         if (requireTaskInfo && !taskInfo.isSufficient) {
             const reason = taskInfo.insufficiencyReason || 'PR description is insufficient';
-            const errorMessage = `Task info validation failed: ${reason}. Please update the PR description with sufficient information about the task being implemented.`;
-            logger.error(errorMessage);
-            await this.githubApi.postIssueComment(`❌ **Review blocked: Insufficient task information**
+            logger.error(`Task info validation failed: ${reason}`);
+            await this.postPRDescriptionValidationFailure(reason);
+            throw new Error(`Task info validation failed: ${reason}`);
+        }
+        if (taskInfo.description.trim()) {
+            logger.info('Task info loaded from PR description');
+            if (taskInfo.linkedFiles.length > 0) {
+                logger.info(`Included content from ${taskInfo.linkedFiles.length} linked file(s): ${taskInfo.linkedFiles.map((f) => f.path).join(', ')}`);
+            }
+        }
+        return taskInfo;
+    }
+    async postPRDescriptionValidationFailure(reason) {
+        const file = 'PR_DESCRIPTION';
+        const line = 0;
+        const finding = 'PR description is insufficient';
+        await this.stateManager.getOrCreateState();
+        const existingThread = this.reviewExecutor.findDuplicateThread(file, line, finding);
+        if (existingThread) {
+            logger.info(`PR description validation failure already reported in thread ${existingThread.id}, skipping duplicate`);
+            return;
+        }
+        const commentBody = `❌ **Review blocked: Insufficient task information**
 
 ${reason}
 
@@ -43143,16 +43335,29 @@ Please update your PR description to include:
 
 You can also link to task specification files in the repository (e.g., \`[Task spec](./docs/task.md)\`).
 
-Once the description is updated, trigger a new review.`);
-            throw new Error(errorMessage);
-        }
-        if (taskInfo.description.trim()) {
-            logger.info('Task info loaded from PR description');
-            if (taskInfo.linkedFiles.length > 0) {
-                logger.info(`Included content from ${taskInfo.linkedFiles.length} linked file(s): ${taskInfo.linkedFiles.map((f) => f.path).join(', ')}`);
+Once the description is updated, trigger a new review.`;
+        const assessment = {
+            finding,
+            assessment: reason,
+            score: 10
+        };
+        const rmcocBlock = `\`\`\`rmcoc\n${JSON.stringify(assessment, null, 2)}\n\`\`\``;
+        const fullComment = `${commentBody}\n\n---\n\n${rmcocBlock}`;
+        const commentId = await this.githubApi.postIssueComment(fullComment);
+        await this.reviewExecutor.addThread({
+            id: commentId,
+            file,
+            line,
+            status: 'PENDING',
+            score: 10,
+            assessment,
+            original_comment: {
+                author: 'opencode-reviewer[bot]',
+                body: commentBody,
+                timestamp: new Date().toISOString()
             }
-        }
-        return taskInfo;
+        });
+        logger.info('Posted PR description validation failure as blocking issue');
     }
     summarizeTasks(plan) {
         const counts = {
@@ -51363,8 +51568,12 @@ async function run() {
         // LLM client for classification and sentiment analysis tasks
         // Uses injection_verification_model which is faster and doesn't have
         // reasoning token issues that can cause empty responses with reasoning models
+        const verificationApiKey = extractApiKeyForModel(config.opencode.authJson, config.security.injectionVerificationModel);
+        if (!verificationApiKey) {
+            throw new Error(`Could not extract API key for injection verification model "${config.security.injectionVerificationModel}" from auth JSON`);
+        }
         const classificationLlmClient = new LLMClientImpl({
-            apiKey: config.opencode.apiKey,
+            apiKey: verificationApiKey,
             model: config.security.injectionVerificationModel
         });
         const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
@@ -51409,6 +51618,15 @@ async function run() {
             coreExports.setOutput('review_status', 'tasks_executed');
             coreExports.setOutput('issues_found', String(totalIssuesFound));
             coreExports.setOutput('blocking_issues', String(totalBlockingIssues));
+            if (executionResult.hasBlockingIssues && totalBlockingIssues > 0) {
+                // Review didn't complete but we have blocking issues (e.g., PR description validation failed)
+                // Fail for AUTO reviews only
+                if (executionResult.hadAutoReview) {
+                    const message = `Review blocked: ${totalBlockingIssues} blocking issue(s) found. Please address the issues before merging.`;
+                    coreExports.setFailed(message);
+                    exitCode = 1;
+                }
+            }
         }
         logger.info('Review My Code, OpenCode! completed');
     }

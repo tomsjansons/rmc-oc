@@ -14,7 +14,7 @@ import require$$7 from 'buffer';
 import require$$8 from 'querystring';
 import require$$14 from 'stream/web';
 import require$$0$7 from 'node:stream';
-import require$$1$2, { promisify } from 'node:util';
+import require$$1$2 from 'node:util';
 import require$$0$6 from 'node:events';
 import require$$0$8 from 'worker_threads';
 import require$$2$2 from 'perf_hooks';
@@ -27,7 +27,7 @@ import require$$6 from 'string_decoder';
 import require$$0$9 from 'diagnostics_channel';
 import require$$2$3 from 'child_process';
 import require$$6$1 from 'timers';
-import { exec as exec$1, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync, chmodSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { readFile, mkdir, readdir, copyFile } from 'node:fs/promises';
@@ -38055,7 +38055,6 @@ class OpenCodeClientImpl {
     }
 }
 
-const execAsync = promisify(exec$1);
 function getOpenCodeCLICommand() {
     // Use npx to run opencode-ai CLI - this works in GitHub Actions
     // without needing node_modules to be present
@@ -38610,24 +38609,6 @@ class OpenCodeServer {
             if (sessionStatusResponse.ok) {
                 const sessionStatus = await sessionStatusResponse.json();
                 logger.info(`[DEBUG] Session status: ${JSON.stringify(sessionStatus)}`);
-            }
-            // Log available models (filtered for claude)
-            try {
-                const { stdout, stderr } = await execAsync('npx opencode-ai models 2>/dev/null | grep -i claude || echo "No claude models found"', {
-                    env: {
-                        ...process.env,
-                        OPENCODE_CONFIG: this.configFilePath || ''
-                    }
-                });
-                if (stdout.trim()) {
-                    logger.info(`[DEBUG] Available Claude models:\n${stdout.trim()}`);
-                }
-                if (stderr.trim()) {
-                    logger.warning(`[DEBUG] Models command stderr: ${stderr.trim()}`);
-                }
-            }
-            catch (modelsError) {
-                logger.warning(`[DEBUG] Failed to list models: ${modelsError instanceof Error ? modelsError.message : String(modelsError)}`);
             }
         }
         catch (error) {

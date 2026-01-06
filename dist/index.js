@@ -37715,7 +37715,7 @@ class OpenCodeClientImpl {
     }
     async sendSystemPrompt(sessionId, systemPrompt) {
         try {
-            logger.debug(`Sending system prompt to session ${sessionId} (${systemPrompt.length} chars)`);
+            logger.info(`[DEBUG] sendSystemPrompt called for session ${sessionId} (${systemPrompt.length} chars)`);
             await this.client.session.prompt({
                 path: { id: sessionId },
                 body: {
@@ -37728,7 +37728,7 @@ class OpenCodeClientImpl {
                     ]
                 }
             });
-            logger.info(`System prompt injected into session ${sessionId}`);
+            logger.info(`[DEBUG] System prompt injected into session ${sessionId}`);
         }
         catch (error) {
             throw new OpenCodeError(`Failed to send system prompt: ${error instanceof Error ? error.message : String(error)}`);
@@ -37736,16 +37736,16 @@ class OpenCodeClientImpl {
     }
     async sendPrompt(sessionId, prompt) {
         try {
-            logger.debug(`Sending prompt to session ${sessionId} (${prompt.length} chars)`);
-            // Create a signal that will be set when the prompt is actually sent
-            // This prevents the completion logic from triggering on stale events
-            // from previous operations (like system prompt injection)
-            let markPromptSent = () => { };
-            const promptSentPromise = new Promise((resolve) => {
-                markPromptSent = resolve;
-            });
-            const completionPromise = this.waitForPromptCompletion(sessionId, promptSentPromise);
-            await this.client.session.promptAsync({
+            logger.info(`[DEBUG] sendPrompt called for session ${sessionId} (${prompt.length} chars)`);
+            // Theory 1: Race condition - event subscription might not be ready before promptAsync
+            // We need to ensure subscription is established BEFORE sending the prompt
+            logger.info(`[DEBUG] Creating event subscription BEFORE promptAsync...`);
+            const { completionPromise, subscriptionReady } = this.waitForPromptCompletion(sessionId);
+            // Wait for subscription to be established before sending prompt
+            logger.info(`[DEBUG] Waiting for event subscription to be ready...`);
+            await subscriptionReady;
+            logger.info(`[DEBUG] Event subscription is ready, now calling promptAsync`);
+            const promptAsyncResult = await this.client.session.promptAsync({
                 path: { id: sessionId },
                 body: {
                     parts: [
@@ -37756,37 +37756,36 @@ class OpenCodeClientImpl {
                     ]
                 }
             });
-            // Signal that the prompt has been sent - now we can start tracking busy/idle
-            markPromptSent();
-            logger.debug(`Prompt queued, waiting for LLM to complete via events...`);
+            logger.info(`[DEBUG] promptAsync returned for session ${sessionId}: ${JSON.stringify(promptAsyncResult)}`);
+            logger.info(`[DEBUG] Prompt queued, waiting for LLM to complete via events...`);
             await completionPromise;
-            logger.debug(`Prompt completed successfully for session ${sessionId}`);
+            logger.info(`[DEBUG] Prompt completed successfully for session ${sessionId}`);
         }
         catch (error) {
+            logger.error(`[DEBUG] sendPrompt error: ${error instanceof Error ? error.message : String(error)}`);
             throw new OpenCodeError(`Failed to send prompt: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
-    async waitForPromptCompletion(sessionId, promptSentPromise) {
+    waitForPromptCompletion(sessionId) {
         const startTime = Date.now();
         const abortController = new AbortController();
         let sawBusy = false;
-        let promptSent = false;
-        // Wait for the prompt to be sent before we start tracking busy/idle
-        // This prevents stale events from previous operations (like system prompt
-        // injection) from triggering the completion logic prematurely
-        promptSentPromise.then(() => {
-            promptSent = true;
-            logger.debug(`Prompt sent signal received for session ${sessionId}, now tracking busy/idle`);
-        });
         // Grace period to wait after idle before considering session complete
         // This handles reasoning models that may pause briefly during thinking
         const IDLE_GRACE_PERIOD_MS = 10000;
         this.resetLoopDetection();
-        return new Promise((resolve, reject) => {
+        logger.info(`[DEBUG] waitForPromptCompletion started for session ${sessionId}`);
+        // Signal when subscription is ready - this fixes the race condition
+        let markSubscriptionReady = () => { };
+        const subscriptionReady = new Promise((resolve) => {
+            markSubscriptionReady = resolve;
+        });
+        const completionPromise = new Promise((resolve, reject) => {
             let resolved = false;
             let idleGraceTimerId = null;
             const timeoutId = setTimeout(() => {
                 if (!resolved) {
+                    logger.info(`[DEBUG] Session ${sessionId} timed out after ${this.timeoutMs}ms`);
                     resolved = true;
                     abortController.abort();
                     reject(new OpenCodeError(`Timeout waiting for session ${sessionId} to complete after ${this.timeoutMs}ms`));
@@ -37802,28 +37801,41 @@ class OpenCodeClientImpl {
             };
             const cancelIdleGrace = () => {
                 if (idleGraceTimerId) {
-                    logger.debug(`Session ${sessionId} became active again, cancelling idle grace period`);
+                    logger.info(`[DEBUG] Session ${sessionId} became active again, cancelling idle grace period`);
                     clearTimeout(idleGraceTimerId);
                     idleGraceTimerId = null;
                 }
             };
             const processEvents = async () => {
                 try {
+                    logger.info(`[DEBUG] Subscribing to events for session ${sessionId}`);
                     const eventResult = await this.client.event.subscribe({
                         signal: abortController.signal
                     });
+                    logger.info(`[DEBUG] Event subscription established for session ${sessionId}`);
+                    // Signal that subscription is ready BEFORE processing events
+                    markSubscriptionReady();
+                    let eventCount = 0;
                     for await (const event of eventResult.stream) {
+                        eventCount++;
                         if (resolved || abortController.signal.aborted) {
+                            logger.info(`[DEBUG] Breaking event loop: resolved=${resolved}, aborted=${abortController.signal.aborted}`);
                             break;
                         }
                         this.logEvent(event, sessionId);
                         const props = event.properties;
+                        // Log ALL events (even for other sessions) to see what's happening
+                        logger.info(`[DEBUG] Event #${eventCount}: type=${event.type}, sessionID=${props.sessionID || 'N/A'}, targetSession=${sessionId}, match=${props.sessionID === sessionId}`);
+                        // Theory 2: Check if status has unexpected structure
+                        if (event.type === 'session.status') {
+                            logger.info(`[DEBUG] session.status event - full props: ${JSON.stringify(event.properties)}`);
+                        }
                         if (props.sessionID !== sessionId) {
                             continue;
                         }
-                        // Only track tool calls for loop detection after prompt is sent
-                        if (promptSent &&
-                            event.type === 'message.part.updated' &&
+                        // Log every event for our session with full details
+                        logger.info(`[DEBUG] Processing event for our session: type=${event.type}, sawBusy=${sawBusy}, idleGraceActive=${idleGraceTimerId !== null}`);
+                        if (event.type === 'message.part.updated' &&
                             props.part?.type === 'tool') {
                             const part = props.part;
                             const toolName = part.tool || 'unknown';
@@ -37831,6 +37843,7 @@ class OpenCodeClientImpl {
                                 ? JSON.stringify(part.input).substring(0, 200)
                                 : '';
                             const toolSignature = `${toolName}:${toolInput}`;
+                            logger.info(`[DEBUG] Tool call detected: ${toolName}`);
                             if (this.detectLoop(toolSignature)) {
                                 resolved = true;
                                 cleanup();
@@ -37839,57 +37852,61 @@ class OpenCodeClientImpl {
                             }
                         }
                         // Any non-idle status means the model is active
-                        // Only track busy state AFTER the prompt has been sent to avoid
-                        // picking up stale events from previous operations
                         if (event.type === 'session.status' &&
                             props.status &&
-                            props.status.type !== 'idle' &&
-                            promptSent) {
+                            props.status.type !== 'idle') {
+                            logger.info(`[DEBUG] Session ${sessionId} became busy (status.type="${props.status.type}"), setting sawBusy=true (was ${sawBusy})`);
                             sawBusy = true;
-                            // Cancel any pending idle grace timer since model is active again
                             cancelIdleGrace();
                         }
                         // Message updates also indicate activity
-                        // Only cancel idle grace if prompt has been sent
-                        if (promptSent &&
-                            (event.type === 'message.updated' ||
-                                event.type === 'message.part.updated')) {
+                        if (event.type === 'message.updated' ||
+                            event.type === 'message.part.updated') {
+                            logger.info(`[DEBUG] Message activity detected (${event.type}), cancelling idle grace if active`);
                             cancelIdleGrace();
                         }
                         const isIdle = event.type === 'session.idle' ||
                             (event.type === 'session.status' && props.status?.type === 'idle');
+                        logger.info(`[DEBUG] Idle check: isIdle=${isIdle}, sawBusy=${sawBusy}, willStartGrace=${isIdle && sawBusy && !idleGraceTimerId}`);
                         if (isIdle && sawBusy) {
-                            // Don't immediately complete - wait for grace period
-                            // This allows reasoning models time to resume after brief pauses
                             if (!idleGraceTimerId) {
-                                logger.debug(`Session ${sessionId} went idle, waiting ${IDLE_GRACE_PERIOD_MS}ms grace period...`);
+                                logger.info(`[DEBUG] Session ${sessionId} went idle (sawBusy=${sawBusy}), starting ${IDLE_GRACE_PERIOD_MS}ms grace period...`);
                                 idleGraceTimerId = setTimeout(() => {
                                     if (!resolved) {
                                         const duration = Date.now() - startTime;
-                                        logger.info(`Session ${sessionId} completed after ${duration}ms (idle for ${IDLE_GRACE_PERIOD_MS}ms)`);
+                                        logger.info(`[DEBUG] Grace period expired, completing session ${sessionId} after ${duration}ms`);
                                         resolved = true;
                                         cleanup();
                                         resolve();
                                     }
                                 }, IDLE_GRACE_PERIOD_MS);
                             }
+                            else {
+                                logger.info(`[DEBUG] Session ${sessionId} idle but grace timer already running`);
+                            }
+                        }
+                        else if (isIdle && !sawBusy) {
+                            logger.info(`[DEBUG] Session ${sessionId} is idle but sawBusy=${sawBusy}, NOT starting grace period (waiting for busy first)`);
                         }
                         if (event.type === 'session.status' &&
                             props.status?.type === 'retry') {
                             logger.warning(`Session ${sessionId} is retrying (attempt ${props.status.attempt}): ${props.status.message}`);
                         }
                         if (event.type === 'session.error') {
+                            logger.error(`[DEBUG] Session error event: ${JSON.stringify(event.properties)}`);
                             resolved = true;
                             cleanup();
                             reject(new OpenCodeError(`Session error: ${JSON.stringify(event.properties)}`));
                             return;
                         }
                     }
+                    logger.info(`[DEBUG] Event stream ended for session ${sessionId}, processed ${eventCount} events, resolved=${resolved}`);
                     if (!resolved) {
                         reject(new OpenCodeError('Event stream ended unexpectedly'));
                     }
                 }
                 catch (error) {
+                    logger.error(`[DEBUG] Error in processEvents: ${error instanceof Error ? error.message : String(error)}`);
                     if (!resolved && !abortController.signal.aborted) {
                         cleanup();
                         reject(new OpenCodeError(`Error processing events: ${error instanceof Error ? error.message : String(error)}`));
@@ -37898,6 +37915,7 @@ class OpenCodeClientImpl {
             };
             processEvents();
         });
+        return { completionPromise, subscriptionReady };
     }
     logEvent(event, targetSessionId) {
         if (!this.debugLogging) {

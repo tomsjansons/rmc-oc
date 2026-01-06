@@ -226,6 +226,51 @@ describe('extractTaskInfo', () => {
 
       expect(result.isSufficient).toBe(true)
     })
+
+    it('should include PR files in LLM prompt when provided', async () => {
+      const prFiles = ['src/auth.ts', 'src/login.ts', 'tests/auth.test.ts']
+      let capturedPrompt = ''
+
+      const mockLLM: LLMClient = {
+        complete: async (prompt: string) => {
+          capturedPrompt = prompt
+          return 'SUFFICIENT: yes\nREASON: N/A'
+        }
+      }
+
+      await extractTaskInfo(
+        'This PR implements OAuth2 authentication',
+        testDir,
+        mockLLM,
+        true,
+        prFiles
+      )
+
+      expect(capturedPrompt).toContain('Files changed in this PR (3 files)')
+      expect(capturedPrompt).toContain('- src/auth.ts')
+      expect(capturedPrompt).toContain('- src/login.ts')
+      expect(capturedPrompt).toContain('- tests/auth.test.ts')
+    })
+
+    it('should not include files section when no PR files provided', async () => {
+      let capturedPrompt = ''
+
+      const mockLLM: LLMClient = {
+        complete: async (prompt: string) => {
+          capturedPrompt = prompt
+          return 'SUFFICIENT: yes\nREASON: N/A'
+        }
+      }
+
+      await extractTaskInfo(
+        'This PR implements OAuth2 authentication',
+        testDir,
+        mockLLM,
+        true
+      )
+
+      expect(capturedPrompt).not.toContain('Files changed in this PR')
+    })
   })
 
   describe('file path patterns', () => {

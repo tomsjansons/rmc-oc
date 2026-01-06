@@ -18,11 +18,14 @@ We will work on tasks within the broader poject.
 
 ## Completed Tasks
 
-1. ✅ Implemented auth JSON support - Changed from single OpenRouter API key to
-   full auth JSON, allowing all LLM providers to be used
-2. ✅ Implemented PR description task info loading - PR descriptions can contain
-   task info directly or link to files in the repo
-3. ✅ Added require_task_info_in_pr_desc config option - Reviews fail if
-   description is empty or insufficient (default: true)
-4. ✅ Updated model parameter handling - Models are now passed as raw strings
-   without automatic prefixing, giving users full control
+I got the review failure for an empty PR description. but this is not handled
+the same as other tasks:
+
+- thereis no rmcoc code block for the review to reference later
+- the workflow did not exit with non-zero code to block merges
+
+the PR description check needs to be treated the same as any other issue
+comment.
+
+the contents of the PR also need to be fed troough an llm to determine if it is
+sufficient or not

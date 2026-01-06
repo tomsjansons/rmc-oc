@@ -116,11 +116,28 @@ export class TaskOrchestrator {
       }
     } catch (error) {
       core.error(`Task execution failed: ${error}`)
+
+      const state = this.reviewExecutor.getState()
+      const blockingThreshold = this.config.scoring.blockingThreshold
+
+      let issuesFound = 0
+      let blockingIssues = 0
+
+      if (state) {
+        const activeThreads = state.threads.filter(
+          (t) => t.status !== 'RESOLVED'
+        )
+        issuesFound = activeThreads.length
+        blockingIssues = activeThreads.filter(
+          (t) => t.score >= blockingThreshold
+        ).length
+      }
+
       return {
         type: task.type,
         success: false,
-        issuesFound: 0,
-        blockingIssues: 0,
+        issuesFound,
+        blockingIssues,
         error: error instanceof Error ? error.message : String(error)
       }
     }
@@ -342,35 +359,25 @@ ${JSON.stringify(rmcocBlock, null, 2)}
       return undefined
     }
 
+    const prFiles = await this.githubApi.getPRFiles()
+
     const taskInfo = await extractTaskInfo(
       prDescription,
       this.workspaceRoot,
       this.llmClient,
-      requireTaskInfo
+      requireTaskInfo,
+      prFiles
     )
 
     if (requireTaskInfo && !taskInfo.isSufficient) {
       const reason =
         taskInfo.insufficiencyReason || 'PR description is insufficient'
-      const errorMessage = `Task info validation failed: ${reason}. Please update the PR description with sufficient information about the task being implemented.`
 
-      logger.error(errorMessage)
+      logger.error(`Task info validation failed: ${reason}`)
 
-      await this.githubApi.postIssueComment(
-        `❌ **Review blocked: Insufficient task information**
+      await this.postPRDescriptionValidationFailure(reason)
 
-${reason}
-
-Please update your PR description to include:
-- **What** is being changed or added
-- **Why** the change is needed (motivation/problem being solved)
-
-You can also link to task specification files in the repository (e.g., \`[Task spec](./docs/task.md)\`).
-
-Once the description is updated, trigger a new review.`
-      )
-
-      throw new Error(errorMessage)
+      throw new Error(`Task info validation failed: ${reason}`)
     }
 
     if (taskInfo.description.trim()) {
@@ -383,6 +390,49 @@ Once the description is updated, trigger a new review.`
     }
 
     return taskInfo
+  }
+
+  private async postPRDescriptionValidationFailure(
+    reason: string
+  ): Promise<void> {
+    const commentBody = `❌ **Review blocked: Insufficient task information**
+
+${reason}
+
+Please update your PR description to include:
+- **What** is being changed or added
+- **Why** the change is needed (motivation/problem being solved)
+
+You can also link to task specification files in the repository (e.g., \`[Task spec](./docs/task.md)\`).
+
+Once the description is updated, trigger a new review.`
+
+    const assessment = {
+      finding: 'PR description is insufficient',
+      assessment: reason,
+      score: 10
+    }
+
+    const rmcocBlock = `\`\`\`rmcoc\n${JSON.stringify(assessment, null, 2)}\n\`\`\``
+    const fullComment = `${commentBody}\n\n---\n\n${rmcocBlock}`
+
+    const commentId = await this.githubApi.postIssueComment(fullComment)
+
+    await this.reviewExecutor.addThread({
+      id: commentId,
+      file: 'PR_DESCRIPTION',
+      line: 0,
+      status: 'PENDING',
+      score: 10,
+      assessment,
+      original_comment: {
+        author: 'opencode-reviewer[bot]',
+        body: commentBody,
+        timestamp: new Date().toISOString()
+      }
+    })
+
+    logger.info('Posted PR description validation failure as blocking issue')
   }
 
   private summarizeTasks(plan: ExecutionPlan): string {

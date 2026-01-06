@@ -27,7 +27,8 @@ export async function extractTaskInfo(
   prDescription: string,
   workspaceRoot: string,
   llmClient: LLMClient,
-  requireTaskInfo: boolean
+  requireTaskInfo: boolean,
+  prFiles?: string[]
 ): Promise<TaskInfo> {
   logger.info('Extracting task info from PR description')
 
@@ -55,7 +56,8 @@ export async function extractTaskInfo(
 
   const sufficiencyResult = await evaluateDescriptionSufficiency(
     combinedDescription,
-    llmClient
+    llmClient,
+    prFiles
   )
 
   return {
@@ -147,7 +149,8 @@ type SufficiencyResult = {
 
 async function evaluateDescriptionSufficiency(
   description: string,
-  llmClient: LLMClient
+  llmClient: LLMClient,
+  prFiles?: string[]
 ): Promise<SufficiencyResult> {
   if (!description || description.trim().length === 0) {
     return {
@@ -163,23 +166,35 @@ async function evaluateDescriptionSufficiency(
     }
   }
 
+  const filesContext =
+    prFiles && prFiles.length > 0
+      ? `\n\nFiles changed in this PR (${prFiles.length} files):\n${prFiles
+          .slice(0, 50)
+          .map((f) => `- ${f}`)
+          .join(
+            '\n'
+          )}${prFiles.length > 50 ? `\n... and ${prFiles.length - 50} more files` : ''}`
+      : ''
+
   const prompt = `You are evaluating whether a Pull Request description provides sufficient context to understand what task or change is being implemented.
 
 A sufficient PR description should:
 1. Explain WHAT is being changed or added
 2. Explain WHY the change is needed (motivation/problem being solved)
 3. Be specific enough for a reviewer to understand the scope
+4. Be proportional to the scope of changes (larger changes need more detailed descriptions)
 
 A description is INSUFFICIENT if:
 - It's just a title with no explanation
 - It only contains generic phrases like "bug fix" or "update" without specifics
 - It's completely unrelated to code changes (e.g., just emojis or jokes)
 - It lacks any explanation of purpose or motivation
+- It's too vague given the scope of changes
 
 Analyze this PR description:
 """
 ${description.substring(0, 4000)}
-"""
+"""${filesContext}
 
 Respond in this exact format (nothing else):
 SUFFICIENT: yes/no

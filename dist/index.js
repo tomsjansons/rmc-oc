@@ -35860,13 +35860,15 @@ ${reviewerTags} - Please review this dispute and make a final decision.
     async postIssueComment(body) {
         try {
             logger.debug('Posting issue comment');
-            await this.octokit.issues.createComment({
+            const response = await this.octokit.issues.createComment({
                 owner: this.owner,
                 repo: this.repo,
                 issue_number: this.prNumber,
                 body
             });
-            logger.info('Posted issue comment');
+            const commentId = String(response.data.id);
+            logger.info(`Posted issue comment: ID ${commentId}`);
+            return commentId;
         }
         catch (error) {
             throw new GitHubAPIError(`Failed to post issue comment: ${error instanceof Error ? error.message : String(error)}`);
@@ -42906,7 +42908,7 @@ const FILE_LINK_PATTERNS = [
     /(?:task|issue|spec|requirement)s?\s+(?:in|at|file)?\s*[`"]?([a-zA-Z0-9_\-./]+\.(?:md|txt|rst|adoc))[`"]?/gi,
     /^([a-zA-Z0-9_\-./]+\.(?:md|txt|rst|adoc))$/gim
 ];
-async function extractTaskInfo(prDescription, workspaceRoot, llmClient, requireTaskInfo) {
+async function extractTaskInfo(prDescription, workspaceRoot, llmClient, requireTaskInfo, prFiles) {
     logger.info('Extracting task info from PR description');
     const linkedFiles = await extractLinkedFileContents(prDescription, workspaceRoot);
     if (linkedFiles.length > 0) {
@@ -42920,7 +42922,7 @@ async function extractTaskInfo(prDescription, workspaceRoot, llmClient, requireT
             isSufficient: true
         };
     }
-    const sufficiencyResult = await evaluateDescriptionSufficiency(combinedDescription, llmClient);
+    const sufficiencyResult = await evaluateDescriptionSufficiency(combinedDescription, llmClient, prFiles);
     return {
         description: combinedDescription,
         linkedFiles,
@@ -42980,7 +42982,7 @@ function buildCombinedDescription(prDescription, linkedFiles) {
     }
     return parts.join('');
 }
-async function evaluateDescriptionSufficiency(description, llmClient) {
+async function evaluateDescriptionSufficiency(description, llmClient, prFiles) {
     if (!description || description.trim().length === 0) {
         return {
             isSufficient: false,
@@ -42993,23 +42995,31 @@ async function evaluateDescriptionSufficiency(description, llmClient) {
             reason: 'PR description is too short to understand the task'
         };
     }
+    const filesContext = prFiles && prFiles.length > 0
+        ? `\n\nFiles changed in this PR (${prFiles.length} files):\n${prFiles
+            .slice(0, 50)
+            .map((f) => `- ${f}`)
+            .join('\n')}${prFiles.length > 50 ? `\n... and ${prFiles.length - 50} more files` : ''}`
+        : '';
     const prompt = `You are evaluating whether a Pull Request description provides sufficient context to understand what task or change is being implemented.
 
 A sufficient PR description should:
 1. Explain WHAT is being changed or added
 2. Explain WHY the change is needed (motivation/problem being solved)
 3. Be specific enough for a reviewer to understand the scope
+4. Be proportional to the scope of changes (larger changes need more detailed descriptions)
 
 A description is INSUFFICIENT if:
 - It's just a title with no explanation
 - It only contains generic phrases like "bug fix" or "update" without specifics
 - It's completely unrelated to code changes (e.g., just emojis or jokes)
 - It lacks any explanation of purpose or motivation
+- It's too vague given the scope of changes
 
 Analyze this PR description:
 """
 ${description.substring(0, 4000)}
-"""
+"""${filesContext}
 
 Respond in this exact format (nothing else):
 SUFFICIENT: yes/no
@@ -43136,11 +43146,20 @@ class TaskOrchestrator {
         }
         catch (error) {
             coreExports.error(`Task execution failed: ${error}`);
+            const state = this.reviewExecutor.getState();
+            const blockingThreshold = this.config.scoring.blockingThreshold;
+            let issuesFound = 0;
+            let blockingIssues = 0;
+            if (state) {
+                const activeThreads = state.threads.filter((t) => t.status !== 'RESOLVED');
+                issuesFound = activeThreads.length;
+                blockingIssues = activeThreads.filter((t) => t.score >= blockingThreshold).length;
+            }
             return {
                 type: task.type,
                 success: false,
-                issuesFound: 0,
-                blockingIssues: 0,
+                issuesFound,
+                blockingIssues,
                 error: error instanceof Error ? error.message : String(error)
             };
         }
@@ -43269,12 +43288,24 @@ ${JSON.stringify(rmcocBlock, null, 2)}
             logger.debug('PR description is empty, but task info not required');
             return undefined;
         }
-        const taskInfo = await extractTaskInfo(prDescription, this.workspaceRoot, this.llmClient, requireTaskInfo);
+        const prFiles = await this.githubApi.getPRFiles();
+        const taskInfo = await extractTaskInfo(prDescription, this.workspaceRoot, this.llmClient, requireTaskInfo, prFiles);
         if (requireTaskInfo && !taskInfo.isSufficient) {
             const reason = taskInfo.insufficiencyReason || 'PR description is insufficient';
-            const errorMessage = `Task info validation failed: ${reason}. Please update the PR description with sufficient information about the task being implemented.`;
-            logger.error(errorMessage);
-            await this.githubApi.postIssueComment(`❌ **Review blocked: Insufficient task information**
+            logger.error(`Task info validation failed: ${reason}`);
+            await this.postPRDescriptionValidationFailure(reason);
+            throw new Error(`Task info validation failed: ${reason}`);
+        }
+        if (taskInfo.description.trim()) {
+            logger.info('Task info loaded from PR description');
+            if (taskInfo.linkedFiles.length > 0) {
+                logger.info(`Included content from ${taskInfo.linkedFiles.length} linked file(s): ${taskInfo.linkedFiles.map((f) => f.path).join(', ')}`);
+            }
+        }
+        return taskInfo;
+    }
+    async postPRDescriptionValidationFailure(reason) {
+        const commentBody = `❌ **Review blocked: Insufficient task information**
 
 ${reason}
 
@@ -43284,16 +43315,29 @@ Please update your PR description to include:
 
 You can also link to task specification files in the repository (e.g., \`[Task spec](./docs/task.md)\`).
 
-Once the description is updated, trigger a new review.`);
-            throw new Error(errorMessage);
-        }
-        if (taskInfo.description.trim()) {
-            logger.info('Task info loaded from PR description');
-            if (taskInfo.linkedFiles.length > 0) {
-                logger.info(`Included content from ${taskInfo.linkedFiles.length} linked file(s): ${taskInfo.linkedFiles.map((f) => f.path).join(', ')}`);
+Once the description is updated, trigger a new review.`;
+        const assessment = {
+            finding: 'PR description is insufficient',
+            assessment: reason,
+            score: 10
+        };
+        const rmcocBlock = `\`\`\`rmcoc\n${JSON.stringify(assessment, null, 2)}\n\`\`\``;
+        const fullComment = `${commentBody}\n\n---\n\n${rmcocBlock}`;
+        const commentId = await this.githubApi.postIssueComment(fullComment);
+        await this.reviewExecutor.addThread({
+            id: commentId,
+            file: 'PR_DESCRIPTION',
+            line: 0,
+            status: 'PENDING',
+            score: 10,
+            assessment,
+            original_comment: {
+                author: 'opencode-reviewer[bot]',
+                body: commentBody,
+                timestamp: new Date().toISOString()
             }
-        }
-        return taskInfo;
+        });
+        logger.info('Posted PR description validation failure as blocking issue');
     }
     summarizeTasks(plan) {
         const counts = {

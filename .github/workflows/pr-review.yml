@@ -62,7 +62,7 @@ jobs:
         with:
           opencode_auth_json: ${{ secrets.OPENCODE_AUTH_JSON }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          model: 'anthropic/claude-sonnet-4-5'
+          model: 'anthropic/claude-sonnet-4.5'
           injection_verification_model: 'moonshotai/kimi-k2-0905'
           problem_score_threshold: 5
           review_timeout_minutes: 30

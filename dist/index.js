@@ -31475,8 +31475,19 @@ function validateAuthJson(authJson) {
         if (config.type !== 'api' && config.type !== 'oauth') {
             throw new Error(`Invalid opencode_auth_json: provider "${provider}" must have type "api" or "oauth"`);
         }
-        if (typeof config.key !== 'string' || !config.key.trim()) {
-            throw new Error(`Invalid opencode_auth_json: provider "${provider}" must have a non-empty "key" string`);
+        // Validate based on auth type
+        if (config.type === 'api') {
+            if (typeof config.key !== 'string' || !config.key.trim()) {
+                throw new Error(`Invalid opencode_auth_json: provider "${provider}" with type "api" must have a non-empty "key" string`);
+            }
+        }
+        else if (config.type === 'oauth') {
+            // OAuth can have various fields depending on the provider
+            // Just validate that it's an object with the type field
+            // The actual OAuth fields will be validated by OpenCode itself
+            if (!config || typeof config !== 'object') {
+                throw new Error(`Invalid opencode_auth_json: provider "${provider}" with type "oauth" must be a valid object`);
+            }
         }
     }
 }
@@ -31488,14 +31499,24 @@ function extractApiKeyForModel(authJson, model) {
         if (!provider) {
             return null;
         }
+        // For openrouter prefix, always use openrouter credentials
         if (provider === 'openrouter' && modelParts.length > 1) {
-            return auth.openrouter?.key || null;
+            const openrouterAuth = auth.openrouter;
+            if (openrouterAuth?.type === 'api' && openrouterAuth.key) {
+                return openrouterAuth.key;
+            }
+            return null;
         }
-        if (auth[provider]?.key) {
-            return auth[provider].key;
+        // Try to get key from the specific provider
+        const providerAuth = auth[provider];
+        if (providerAuth?.type === 'api' && providerAuth.key) {
+            return providerAuth.key;
         }
-        if (auth.openrouter?.key) {
-            return auth.openrouter.key;
+        // OAuth providers don't have a simple key field
+        // Fall back to openrouter if available
+        const openrouterAuth = auth.openrouter;
+        if (openrouterAuth?.type === 'api' && openrouterAuth.key) {
+            return openrouterAuth.key;
         }
         return null;
     }

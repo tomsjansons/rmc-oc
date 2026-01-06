@@ -51,10 +51,14 @@ type OpenCodeConfig = {
 
 type OpenCodeAuth = Record<
   string,
-  {
-    type: 'api' | 'oauth'
-    key: string
-  }
+  | {
+      type: 'api'
+      key: string
+    }
+  | {
+      type: 'oauth'
+      [key: string]: unknown
+    }
 >
 
 export class OpenCodeServer {

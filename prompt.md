@@ -16,13 +16,4 @@ We will work on tasks within the broader poject.
 
 # Task
 
-please implement a new feature where info from the PR description is loaded. the
-pr desc may contain information directly or may link to existing files in the
-repo containing the task description.
-
-add a new config option for the action: require-task-info-in-pr-desc - if the
-description is empty or insufficient for understanding the task, it must be
-conisdered as a review failure
-
-afterwards update the neccessary documents (README and action ) with this new
-feature
+please implement a change where the whole auth json for opencode needs to be passed from an env variable, not just the api key for open router. this will allow all possible providers to be used

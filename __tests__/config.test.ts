@@ -4,7 +4,7 @@
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals'
 import { validateConfig } from '../src/config/inputs.js'
-import type { ReviewConfig } from '../src/review/types.js'
+import type { ReviewConfig } from '../src/execution/types.js'
 
 describe('Configuration Parser', () => {
   beforeEach(() => {
@@ -16,7 +16,7 @@ describe('Configuration Parser', () => {
     it('should pass validation for valid config', () => {
       const validConfig: ReviewConfig = {
         opencode: {
-          apiKey: 'test-key',
+          authJson: '{"openrouter":{"type":"api","key":"test-key"}}',
           model: 'test-model',
           enableWeb: false,
           debugLogging: false
@@ -43,6 +43,9 @@ describe('Configuration Parser', () => {
           injectionDetectionEnabled: true,
           injectionVerificationModel: 'openai/gpt-4o-mini'
         },
+        taskInfo: {
+          requireTaskInfoInPrDesc: false
+        },
         execution: {
           mode: 'full-review',
           isManuallyTriggered: false,
@@ -56,10 +59,10 @@ describe('Configuration Parser', () => {
       expect(() => validateConfig(validConfig)).not.toThrow()
     })
 
-    it('should throw error for missing API key', () => {
+    it('should throw error for missing auth JSON', () => {
       const invalidConfig = {
         opencode: {
-          apiKey: '',
+          authJson: '',
           model: 'test-model',
           enableWeb: false,
           debugLogging: false
@@ -81,14 +84,14 @@ describe('Configuration Parser', () => {
       } as ReviewConfig
 
       expect(() => validateConfig(invalidConfig)).toThrow(
-        'OpenCode API key is required'
+        'OpenCode auth JSON is required'
       )
     })
 
     it('should throw error for invalid problem threshold - too high', () => {
       const invalidConfig = {
         opencode: {
-          apiKey: 'test-key',
+          authJson: '{"openrouter":{"type":"api","key":"test-key"}}',
           model: 'test-model',
           enableWeb: false,
           debugLogging: false
@@ -117,7 +120,7 @@ describe('Configuration Parser', () => {
     it('should throw error for invalid problem threshold - too low', () => {
       const invalidConfig = {
         opencode: {
-          apiKey: 'test-key',
+          authJson: '{"openrouter":{"type":"api","key":"test-key"}}',
           model: 'test-model',
           enableWeb: false,
           debugLogging: false
@@ -146,7 +149,7 @@ describe('Configuration Parser', () => {
     it('should throw error for invalid PR number', () => {
       const invalidConfig: ReviewConfig = {
         opencode: {
-          apiKey: 'test-key',
+          authJson: '{"openrouter":{"type":"api","key":"test-key"}}',
           model: 'test-model',
           enableWeb: false,
           debugLogging: false
@@ -173,6 +176,9 @@ describe('Configuration Parser', () => {
           injectionDetectionEnabled: true,
           injectionVerificationModel: 'openai/gpt-4o-mini'
         },
+        taskInfo: {
+          requireTaskInfoInPrDesc: false
+        },
         execution: {
           mode: 'full-review',
           isManuallyTriggered: false,
@@ -191,7 +197,7 @@ describe('Configuration Parser', () => {
     it('should throw error for missing GitHub token', () => {
       const invalidConfig: ReviewConfig = {
         opencode: {
-          apiKey: 'test-key',
+          authJson: '{"openrouter":{"type":"api","key":"test-key"}}',
           model: 'test-model',
           enableWeb: false,
           debugLogging: false
@@ -218,6 +224,9 @@ describe('Configuration Parser', () => {
           injectionDetectionEnabled: true,
           injectionVerificationModel: 'openai/gpt-4o-mini'
         },
+        taskInfo: {
+          requireTaskInfoInPrDesc: false
+        },
         execution: {
           mode: 'full-review',
           isManuallyTriggered: false,
@@ -236,7 +245,7 @@ describe('Configuration Parser', () => {
     it('should throw error for missing model', () => {
       const invalidConfig = {
         opencode: {
-          apiKey: 'test-key',
+          authJson: '{"openrouter":{"type":"api","key":"test-key"}}',
           model: '',
           enableWeb: false,
           debugLogging: false

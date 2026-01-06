@@ -11,13 +11,95 @@ import type {
 } from '../execution/types.js'
 import { IntentClassifier } from '../task/classifier.js'
 
+function validateAuthJson(authJson: string): void {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(authJson)
+  } catch (error) {
+    throw new Error(
+      `Invalid opencode_auth_json: must be valid JSON. Error: ${error instanceof Error ? error.message : String(error)}`
+    )
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error(
+      'Invalid opencode_auth_json: must be a JSON object containing provider credentials'
+    )
+  }
+
+  const authObj = parsed as Record<string, unknown>
+  const providers = Object.keys(authObj)
+
+  if (providers.length === 0) {
+    throw new Error(
+      'Invalid opencode_auth_json: must contain at least one provider configuration'
+    )
+  }
+
+  for (const provider of providers) {
+    const providerConfig = authObj[provider]
+    if (!providerConfig || typeof providerConfig !== 'object') {
+      throw new Error(
+        `Invalid opencode_auth_json: provider "${provider}" must be an object`
+      )
+    }
+
+    const config = providerConfig as Record<string, unknown>
+    if (config.type !== 'api') {
+      throw new Error(
+        `Invalid opencode_auth_json: provider "${provider}" must have type "api"`
+      )
+    }
+
+    if (typeof config.key !== 'string' || !config.key.trim()) {
+      throw new Error(
+        `Invalid opencode_auth_json: provider "${provider}" must have a non-empty "key" string`
+      )
+    }
+  }
+}
+
+function extractApiKeyForModel(authJson: string, model: string): string | null {
+  try {
+    const auth = JSON.parse(authJson) as Record<
+      string,
+      { type: string; key: string }
+    >
+
+    const modelParts = model.split('/')
+    const provider = modelParts[0]
+
+    if (!provider) {
+      return null
+    }
+
+    if (provider === 'openrouter' && modelParts.length > 1) {
+      return auth.openrouter?.key || null
+    }
+
+    if (auth[provider]?.key) {
+      return auth[provider].key
+    }
+
+    if (auth.openrouter?.key) {
+      return auth.openrouter.key
+    }
+
+    return null
+  } catch {
+    return null
+  }
+}
+
 export async function parseInputs(): Promise<ReviewConfig> {
-  const apiKey = core.getInput('openrouter_api_key', { required: true })
+  const authJson = core.getInput('opencode_auth_json', { required: true })
   const model = core.getInput('model', { required: true })
   const enableWeb = core.getBooleanInput('enable_web', { required: false })
   const debugLogging = core.getBooleanInput('debug_logging', {
     required: false
   })
+
+  validateAuthJson(authJson)
 
   const problemThreshold = parseNumericInput(
     'problem_score_threshold',
@@ -98,8 +180,18 @@ export async function parseInputs(): Promise<ReviewConfig> {
 
   const context = github.context
 
+  const verificationApiKey = extractApiKeyForModel(
+    authJson,
+    injectionVerificationModel
+  )
+  if (!verificationApiKey) {
+    throw new Error(
+      `Could not extract API key for injection verification model "${injectionVerificationModel}" from auth JSON`
+    )
+  }
+
   const tempLlmClient = new LLMClientImpl({
-    apiKey,
+    apiKey: verificationApiKey,
     model: injectionVerificationModel
   })
   const intentClassifier = new IntentClassifier(tempLlmClient)
@@ -116,8 +208,8 @@ export async function parseInputs(): Promise<ReviewConfig> {
   const owner = context.repo.owner
   const repo = context.repo.repo
 
-  if (!apiKey || apiKey.trim() === '') {
-    throw new Error('OpenCode API key cannot be empty')
+  if (!authJson || authJson.trim() === '') {
+    throw new Error('OpenCode auth JSON cannot be empty')
   }
 
   if (!githubToken || githubToken.trim() === '') {
@@ -126,7 +218,7 @@ export async function parseInputs(): Promise<ReviewConfig> {
 
   return {
     opencode: {
-      apiKey,
+      authJson,
       model,
       enableWeb,
       debugLogging
@@ -369,9 +461,11 @@ function parseNumericInput(
 }
 
 export function validateConfig(config: ReviewConfig): void {
-  if (!config.opencode.apiKey) {
-    throw new Error('OpenCode API key is required')
+  if (!config.opencode.authJson) {
+    throw new Error('OpenCode auth JSON is required')
   }
+
+  validateAuthJson(config.opencode.authJson)
 
   if (!config.opencode.model) {
     throw new Error('Model name is required')

@@ -9,14 +9,21 @@ branding:
   color: orange
 
 inputs:
-  openrouter_api_key:
-    description: 'OpenRouter API key for LLM access'
+  opencode_auth_json:
+    description:
+      'OpenCode authentication JSON for LLM provider access. Must be a valid
+      JSON string containing provider credentials (e.g., {"openrouter": {"type":
+      "api", "key": "sk-..."}} or {"anthropic": {"type": "api", "key":
+      "sk-..."}})'
     required: true
   model:
     description:
-      'LLM model to use via OpenRouter. IMPORTANT: Do not use reasoning models
-      (o1, o3, codex, gpt-5.1-codex) as they output thinking process which
-      breaks the agentic workflow. Recommended:
+      'LLM model to use. Format depends on provider: for OpenRouter use
+      "openrouter/provider/model" (e.g.,
+      "openrouter/anthropic/claude-sonnet-4-20250514"), for direct providers use
+      "provider/model" (e.g., "anthropic/claude-sonnet-4-20250514"). IMPORTANT:
+      Do not use reasoning models (o1, o3, codex, gpt-5.1-codex) as they output
+      thinking process which breaks the agentic workflow. Recommended:
       anthropic/claude-sonnet-4-20250514, openai/gpt-4o,
       google/gemini-2.0-flash-001'
     required: false
@@ -97,7 +104,7 @@ inputs:
       fail. The description can contain the task directly or link to files in
       the repo (e.g., markdown files) containing the task specification.'
     required: false
-    default: 'false'
+    default: 'true'
 
 # Define your outputs here.
 outputs:

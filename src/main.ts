@@ -101,10 +101,25 @@ export async function run(): Promise<void> {
 
     let totalIssuesFound = 0
     let totalBlockingIssues = 0
+    const failedTasks: Array<{ type: string; error: string }> = []
 
     for (const result of executionResult.results) {
       totalIssuesFound += result.issuesFound
       totalBlockingIssues += result.blockingIssues
+
+      if (!result.success && result.error) {
+        failedTasks.push({ type: result.type, error: result.error })
+      }
+    }
+
+    // If any tasks failed with errors, fail the workflow
+    if (failedTasks.length > 0) {
+      const errorMessages = failedTasks
+        .map((t) => `${t.type}: ${t.error}`)
+        .join('; ')
+      const message = `Task execution failed: ${errorMessages}`
+      core.setFailed(message)
+      exitCode = 1
     }
 
     if (executionResult.reviewCompleted) {

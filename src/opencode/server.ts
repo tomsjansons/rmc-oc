@@ -1,6 +1,9 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, exec, type ChildProcess } from 'node:child_process'
 import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
+
+const execAsync = promisify(exec)
 
 import {
   OPENCODE_SERVER_HOST,
@@ -709,6 +712,29 @@ export class OpenCodeServer {
       if (sessionStatusResponse.ok) {
         const sessionStatus = await sessionStatusResponse.json()
         logger.info(`[DEBUG] Session status: ${JSON.stringify(sessionStatus)}`)
+      }
+
+      // Log available models (filtered for claude)
+      try {
+        const { stdout, stderr } = await execAsync(
+          'npx opencode-ai models 2>/dev/null | grep -i claude || echo "No claude models found"',
+          {
+            env: {
+              ...process.env,
+              OPENCODE_CONFIG: this.configFilePath || ''
+            }
+          }
+        )
+        if (stdout.trim()) {
+          logger.info(`[DEBUG] Available Claude models:\n${stdout.trim()}`)
+        }
+        if (stderr.trim()) {
+          logger.warning(`[DEBUG] Models command stderr: ${stderr.trim()}`)
+        }
+      } catch (modelsError) {
+        logger.warning(
+          `[DEBUG] Failed to list models: ${modelsError instanceof Error ? modelsError.message : String(modelsError)}`
+        )
       }
     } catch (error) {
       logger.warning(

@@ -132,6 +132,16 @@ export async function run(): Promise<void> {
       core.setOutput('review_status', 'tasks_executed')
       core.setOutput('issues_found', String(totalIssuesFound))
       core.setOutput('blocking_issues', String(totalBlockingIssues))
+
+      if (executionResult.hasBlockingIssues && totalBlockingIssues > 0) {
+        // Review didn't complete but we have blocking issues (e.g., PR description validation failed)
+        // Fail for AUTO reviews only
+        if (executionResult.hadAutoReview) {
+          const message = `Review blocked: ${totalBlockingIssues} blocking issue(s) found. Please address the issues before merging.`
+          core.setFailed(message)
+          exitCode = 1
+        }
+      }
     }
 
     logger.info('Review My Code, OpenCode! completed')

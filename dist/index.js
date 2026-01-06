@@ -43103,10 +43103,13 @@ class TaskOrchestrator {
                 if (result.blockingIssues > 0) {
                     hasBlockingIssues = true;
                 }
-                if (task.type === 'full-review' && result.success) {
-                    reviewCompleted = true;
+                if (task.type === 'full-review') {
+                    if (result.success) {
+                        reviewCompleted = true;
+                    }
                     // Use affectsMergeGate to determine if this was an auto review
                     // This handles both fresh auto reviews and resumed cancelled ones
+                    // Set this flag even if the review failed, so we know to block merges
                     if (task.affectsMergeGate) {
                         hadAutoReview = true;
                     }
@@ -43146,7 +43149,15 @@ class TaskOrchestrator {
         }
         catch (error) {
             coreExports.error(`Task execution failed: ${error}`);
-            const state = this.reviewExecutor.getState();
+            let state = this.reviewExecutor.getState();
+            if (!state) {
+                try {
+                    state = await this.stateManager.getOrCreateState();
+                }
+                catch (stateError) {
+                    logger.warning(`Failed to load state after task error: ${stateError instanceof Error ? stateError.message : String(stateError)}`);
+                }
+            }
             const blockingThreshold = this.config.scoring.blockingThreshold;
             let issuesFound = 0;
             let blockingIssues = 0;
@@ -51598,6 +51609,15 @@ async function run() {
             coreExports.setOutput('review_status', 'tasks_executed');
             coreExports.setOutput('issues_found', String(totalIssuesFound));
             coreExports.setOutput('blocking_issues', String(totalBlockingIssues));
+            if (executionResult.hasBlockingIssues && totalBlockingIssues > 0) {
+                // Review didn't complete but we have blocking issues (e.g., PR description validation failed)
+                // Fail for AUTO reviews only
+                if (executionResult.hadAutoReview) {
+                    const message = `Review blocked: ${totalBlockingIssues} blocking issue(s) found. Please address the issues before merging.`;
+                    coreExports.setFailed(message);
+                    exitCode = 1;
+                }
+            }
         }
         logger.info('Review My Code, OpenCode! completed');
     }

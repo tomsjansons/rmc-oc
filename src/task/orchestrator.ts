@@ -67,10 +67,13 @@ export class TaskOrchestrator {
           hasBlockingIssues = true
         }
 
-        if (task.type === 'full-review' && result.success) {
-          reviewCompleted = true
+        if (task.type === 'full-review') {
+          if (result.success) {
+            reviewCompleted = true
+          }
           // Use affectsMergeGate to determine if this was an auto review
           // This handles both fresh auto reviews and resumed cancelled ones
+          // Set this flag even if the review failed, so we know to block merges
           if (task.affectsMergeGate) {
             hadAutoReview = true
           } else {
@@ -117,7 +120,18 @@ export class TaskOrchestrator {
     } catch (error) {
       core.error(`Task execution failed: ${error}`)
 
-      const state = this.reviewExecutor.getState()
+      let state = this.reviewExecutor.getState()
+
+      if (!state) {
+        try {
+          state = await this.stateManager.getOrCreateState()
+        } catch (stateError) {
+          logger.warning(
+            `Failed to load state after task error: ${stateError instanceof Error ? stateError.message : String(stateError)}`
+          )
+        }
+      }
+
       const blockingThreshold = this.config.scoring.blockingThreshold
 
       let issuesFound = 0

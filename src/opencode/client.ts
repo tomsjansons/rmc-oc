@@ -225,10 +225,17 @@ export class OpenCodeClientImpl implements OpenCodeClient {
     const startTime = Date.now()
     const abortController = new AbortController()
     let sawBusy = false
+    let busyTimestamp: number | null = null
+    let sawToolCall = false
+    let sawTextOutput = false
 
     // Grace period to wait after idle before considering session complete
     // This handles reasoning models that may pause briefly during thinking
     const IDLE_GRACE_PERIOD_MS = 10000
+
+    // Minimum time the session should be busy before going idle
+    // If it goes idle faster than this without any output, it likely errored
+    const MIN_BUSY_DURATION_MS = 1000
 
     this.resetLoopDetection()
 
@@ -376,7 +383,24 @@ export class OpenCodeClientImpl implements OpenCodeClient {
                 `[DEBUG] Session ${sessionId} became busy (status.type="${props.status.type}"), setting sawBusy=true (was ${sawBusy})`
               )
               sawBusy = true
+              busyTimestamp = Date.now()
               cancelIdleGrace()
+            }
+
+            // Track tool calls as meaningful activity
+            if (
+              event.type === 'message.part.updated' &&
+              props.part?.type === 'tool'
+            ) {
+              sawToolCall = true
+            }
+
+            // Track text output as meaningful activity
+            if (event.type === 'message.part.updated') {
+              const partProps = props.part as { type?: string; text?: string }
+              if (partProps?.type === 'text' && partProps?.text) {
+                sawTextOutput = true
+              }
             }
 
             // Message updates also indicate activity
@@ -395,13 +419,39 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               (event.type === 'session.status' && props.status?.type === 'idle')
 
             logger.info(
-              `[DEBUG] Idle check: isIdle=${isIdle}, sawBusy=${sawBusy}, willStartGrace=${isIdle && sawBusy && !idleGraceTimerId}`
+              `[DEBUG] Idle check: isIdle=${isIdle}, sawBusy=${sawBusy}, sawToolCall=${sawToolCall}, sawTextOutput=${sawTextOutput}, willStartGrace=${isIdle && sawBusy && !idleGraceTimerId}`
             )
 
             if (isIdle && sawBusy) {
+              // Check if the session went idle too quickly without any meaningful work
+              const busyDuration = busyTimestamp
+                ? Date.now() - busyTimestamp
+                : 0
+              const hadMeaningfulActivity = sawToolCall || sawTextOutput
+
+              if (
+                busyDuration < MIN_BUSY_DURATION_MS &&
+                !hadMeaningfulActivity
+              ) {
+                logger.error(
+                  `[ERROR] Session ${sessionId} went idle after only ${busyDuration}ms without any tool calls or text output. This likely indicates an error occurred (e.g., model not found, API error).`
+                )
+                logger.error(
+                  `[ERROR] Check the OpenCode server logs above for error details.`
+                )
+                resolved = true
+                cleanup()
+                reject(
+                  new OpenCodeError(
+                    `Session failed: went idle after ${busyDuration}ms without any activity. Check server logs for errors (e.g., ProviderModelNotFoundError).`
+                  )
+                )
+                return
+              }
+
               if (!idleGraceTimerId) {
                 logger.info(
-                  `[DEBUG] Session ${sessionId} went idle (sawBusy=${sawBusy}), starting ${IDLE_GRACE_PERIOD_MS}ms grace period...`
+                  `[DEBUG] Session ${sessionId} went idle (sawBusy=${sawBusy}, busyDuration=${busyDuration}ms), starting ${IDLE_GRACE_PERIOD_MS}ms grace period...`
                 )
                 idleGraceTimerId = setTimeout(() => {
                   if (!resolved) {
@@ -434,9 +484,30 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               )
             }
 
+            // Detect error status types (e.g., ProviderModelNotFoundError causes cancel)
+            if (
+              event.type === 'session.status' &&
+              props.status?.type === 'error'
+            ) {
+              const errorMessage =
+                props.status.message || 'Unknown session error'
+              logger.error(
+                `[ERROR] Session ${sessionId} encountered error: ${errorMessage}`
+              )
+              logger.error(
+                `[ERROR] Full error details: ${JSON.stringify(event.properties)}`
+              )
+              resolved = true
+              cleanup()
+              reject(
+                new OpenCodeError(`OpenCode session error: ${errorMessage}`)
+              )
+              return
+            }
+
             if (event.type === 'session.error') {
               logger.error(
-                `[DEBUG] Session error event: ${JSON.stringify(event.properties)}`
+                `[ERROR] Session error event: ${JSON.stringify(event.properties)}`
               )
               resolved = true
               cleanup()

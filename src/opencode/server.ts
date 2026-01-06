@@ -244,40 +244,18 @@ export class OpenCodeServer {
       )
     }
 
+    // Enable all providers from auth.json - no filtering needed
     const availableProviders = Object.keys(auth)
-    const modelParts = model.split('/')
-    const modelProvider = modelParts[0]
-
-    let enabledProviders: string[]
-    let disabledProviders: string[]
-    let finalModel: string
-
-    if (modelProvider === 'openrouter') {
-      enabledProviders = ['openrouter']
-      disabledProviders = ['gemini', 'anthropic', 'openai', 'azure', 'bedrock']
-      finalModel = model
-    } else if (modelProvider && availableProviders.includes(modelProvider)) {
-      enabledProviders = [modelProvider]
-      disabledProviders = [
-        'gemini',
-        'anthropic',
-        'openai',
-        'azure',
-        'bedrock',
-        'openrouter'
-      ].filter((p) => p !== modelProvider)
-      finalModel = model
-    } else {
-      enabledProviders = availableProviders
-      disabledProviders = []
-      finalModel = model
-    }
+    logger.info(
+      `[DEBUG] Available providers from auth.json: ${availableProviders.join(', ')}`
+    )
+    logger.info(`[DEBUG] Configured model: ${model}`)
 
     const config: OpenCodeConfig = {
       $schema: 'https://opencode.ai/config.json',
-      model: finalModel,
-      enabled_providers: enabledProviders,
-      disabled_providers: disabledProviders,
+      model: model,
+      enabled_providers: availableProviders,
+      disabled_providers: [],
       plugin: ['opencode-openai-codex-auth'],
       provider: {
         openrouter: {
@@ -514,8 +492,8 @@ export class OpenCodeServer {
         mode: 0o600
       })
       logger.info(`Created OpenCode config file: ${configPath}`)
-      logger.info(`Config model: ${finalModel}`)
-      logger.info(`Enabled providers: ${enabledProviders.join(', ')}`)
+      logger.info(`Config model: ${model}`)
+      logger.info(`Enabled providers: ${availableProviders.join(', ')}`)
       logger.info(`Config contents: ${JSON.stringify(config, null, 2)}`)
     } catch (error) {
       throw new OpenCodeError(
@@ -614,7 +592,30 @@ export class OpenCodeServer {
       this.serverProcess.stderr.on('data', (data) => {
         const output = data.toString().trim()
         if (output) {
-          logger.warning(`[OpenCode STDERR] ${output}`)
+          // Check for critical errors that should be surfaced prominently
+          if (output.includes('ERROR')) {
+            logger.error(`[OpenCode ERROR] ${output}`)
+
+            // Extract specific error types for clearer messaging
+            if (output.includes('ProviderModelNotFoundError')) {
+              logger.error(
+                '[OpenCode ERROR] Model not found! Check that the configured model exists and is available.'
+              )
+              logger.error(
+                '[OpenCode ERROR] Run "opencode models" to see available models.'
+              )
+            } else if (output.includes('ProviderInitError')) {
+              logger.error(
+                '[OpenCode ERROR] Provider initialization failed! Check your API keys and provider configuration.'
+              )
+            } else if (output.includes('AI_APICallError')) {
+              logger.error(
+                '[OpenCode ERROR] API call failed! This may be due to rate limiting, invalid credentials, or network issues.'
+              )
+            }
+          } else {
+            logger.warning(`[OpenCode STDERR] ${output}`)
+          }
         }
       })
     }

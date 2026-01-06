@@ -37770,9 +37770,15 @@ class OpenCodeClientImpl {
         const startTime = Date.now();
         const abortController = new AbortController();
         let sawBusy = false;
+        let busyTimestamp = null;
+        let sawToolCall = false;
+        let sawTextOutput = false;
         // Grace period to wait after idle before considering session complete
         // This handles reasoning models that may pause briefly during thinking
         const IDLE_GRACE_PERIOD_MS = 10000;
+        // Minimum time the session should be busy before going idle
+        // If it goes idle faster than this without any output, it likely errored
+        const MIN_BUSY_DURATION_MS = 1000;
         this.resetLoopDetection();
         logger.info(`[DEBUG] waitForPromptCompletion started for session ${sessionId}`);
         // Signal when subscription is ready - this fixes the race condition
@@ -37859,7 +37865,20 @@ class OpenCodeClientImpl {
                             props.status.type !== 'idle') {
                             logger.info(`[DEBUG] Session ${sessionId} became busy (status.type="${props.status.type}"), setting sawBusy=true (was ${sawBusy})`);
                             sawBusy = true;
+                            busyTimestamp = Date.now();
                             cancelIdleGrace();
+                        }
+                        // Track tool calls as meaningful activity
+                        if (event.type === 'message.part.updated' &&
+                            props.part?.type === 'tool') {
+                            sawToolCall = true;
+                        }
+                        // Track text output as meaningful activity
+                        if (event.type === 'message.part.updated') {
+                            const partProps = props.part;
+                            if (partProps?.type === 'text' && partProps?.text) {
+                                sawTextOutput = true;
+                            }
                         }
                         // Message updates also indicate activity
                         if (event.type === 'message.updated' ||
@@ -37869,10 +37888,24 @@ class OpenCodeClientImpl {
                         }
                         const isIdle = event.type === 'session.idle' ||
                             (event.type === 'session.status' && props.status?.type === 'idle');
-                        logger.info(`[DEBUG] Idle check: isIdle=${isIdle}, sawBusy=${sawBusy}, willStartGrace=${isIdle && sawBusy && !idleGraceTimerId}`);
+                        logger.info(`[DEBUG] Idle check: isIdle=${isIdle}, sawBusy=${sawBusy}, sawToolCall=${sawToolCall}, sawTextOutput=${sawTextOutput}, willStartGrace=${isIdle && sawBusy && !idleGraceTimerId}`);
                         if (isIdle && sawBusy) {
+                            // Check if the session went idle too quickly without any meaningful work
+                            const busyDuration = busyTimestamp
+                                ? Date.now() - busyTimestamp
+                                : 0;
+                            const hadMeaningfulActivity = sawToolCall || sawTextOutput;
+                            if (busyDuration < MIN_BUSY_DURATION_MS &&
+                                !hadMeaningfulActivity) {
+                                logger.error(`[ERROR] Session ${sessionId} went idle after only ${busyDuration}ms without any tool calls or text output. This likely indicates an error occurred (e.g., model not found, API error).`);
+                                logger.error(`[ERROR] Check the OpenCode server logs above for error details.`);
+                                resolved = true;
+                                cleanup();
+                                reject(new OpenCodeError(`Session failed: went idle after ${busyDuration}ms without any activity. Check server logs for errors (e.g., ProviderModelNotFoundError).`));
+                                return;
+                            }
                             if (!idleGraceTimerId) {
-                                logger.info(`[DEBUG] Session ${sessionId} went idle (sawBusy=${sawBusy}), starting ${IDLE_GRACE_PERIOD_MS}ms grace period...`);
+                                logger.info(`[DEBUG] Session ${sessionId} went idle (sawBusy=${sawBusy}, busyDuration=${busyDuration}ms), starting ${IDLE_GRACE_PERIOD_MS}ms grace period...`);
                                 idleGraceTimerId = setTimeout(() => {
                                     if (!resolved) {
                                         const duration = Date.now() - startTime;
@@ -37894,8 +37927,19 @@ class OpenCodeClientImpl {
                             props.status?.type === 'retry') {
                             logger.warning(`Session ${sessionId} is retrying (attempt ${props.status.attempt}): ${props.status.message}`);
                         }
+                        // Detect error status types (e.g., ProviderModelNotFoundError causes cancel)
+                        if (event.type === 'session.status' &&
+                            props.status?.type === 'error') {
+                            const errorMessage = props.status.message || 'Unknown session error';
+                            logger.error(`[ERROR] Session ${sessionId} encountered error: ${errorMessage}`);
+                            logger.error(`[ERROR] Full error details: ${JSON.stringify(event.properties)}`);
+                            resolved = true;
+                            cleanup();
+                            reject(new OpenCodeError(`OpenCode session error: ${errorMessage}`));
+                            return;
+                        }
                         if (event.type === 'session.error') {
-                            logger.error(`[DEBUG] Session error event: ${JSON.stringify(event.properties)}`);
+                            logger.error(`[ERROR] Session error event: ${JSON.stringify(event.properties)}`);
                             resolved = true;
                             cleanup();
                             reject(new OpenCodeError(`Session error: ${JSON.stringify(event.properties)}`));
@@ -38154,39 +38198,15 @@ class OpenCodeServer {
         catch (error) {
             throw new OpenCodeError(`Failed to parse auth JSON: ${error instanceof Error ? error.message : String(error)}`);
         }
+        // Enable all providers from auth.json - no filtering needed
         const availableProviders = Object.keys(auth);
-        const modelParts = model.split('/');
-        const modelProvider = modelParts[0];
-        let enabledProviders;
-        let disabledProviders;
-        let finalModel;
-        if (modelProvider === 'openrouter') {
-            enabledProviders = ['openrouter'];
-            disabledProviders = ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'];
-            finalModel = model;
-        }
-        else if (modelProvider && availableProviders.includes(modelProvider)) {
-            enabledProviders = [modelProvider];
-            disabledProviders = [
-                'gemini',
-                'anthropic',
-                'openai',
-                'azure',
-                'bedrock',
-                'openrouter'
-            ].filter((p) => p !== modelProvider);
-            finalModel = model;
-        }
-        else {
-            enabledProviders = availableProviders;
-            disabledProviders = [];
-            finalModel = model;
-        }
+        logger.info(`[DEBUG] Available providers from auth.json: ${availableProviders.join(', ')}`);
+        logger.info(`[DEBUG] Configured model: ${model}`);
         const config = {
             $schema: 'https://opencode.ai/config.json',
-            model: finalModel,
-            enabled_providers: enabledProviders,
-            disabled_providers: disabledProviders,
+            model: model,
+            enabled_providers: availableProviders,
+            disabled_providers: [],
             plugin: ['opencode-openai-codex-auth'],
             provider: {
                 openrouter: {
@@ -38422,8 +38442,8 @@ class OpenCodeServer {
                 mode: 0o600
             });
             logger.info(`Created OpenCode config file: ${configPath}`);
-            logger.info(`Config model: ${finalModel}`);
-            logger.info(`Enabled providers: ${enabledProviders.join(', ')}`);
+            logger.info(`Config model: ${model}`);
+            logger.info(`Enabled providers: ${availableProviders.join(', ')}`);
             logger.info(`Config contents: ${JSON.stringify(config, null, 2)}`);
         }
         catch (error) {
@@ -38503,7 +38523,24 @@ class OpenCodeServer {
             this.serverProcess.stderr.on('data', (data) => {
                 const output = data.toString().trim();
                 if (output) {
-                    logger.warning(`[OpenCode STDERR] ${output}`);
+                    // Check for critical errors that should be surfaced prominently
+                    if (output.includes('ERROR')) {
+                        logger.error(`[OpenCode ERROR] ${output}`);
+                        // Extract specific error types for clearer messaging
+                        if (output.includes('ProviderModelNotFoundError')) {
+                            logger.error('[OpenCode ERROR] Model not found! Check that the configured model exists and is available.');
+                            logger.error('[OpenCode ERROR] Run "opencode models" to see available models.');
+                        }
+                        else if (output.includes('ProviderInitError')) {
+                            logger.error('[OpenCode ERROR] Provider initialization failed! Check your API keys and provider configuration.');
+                        }
+                        else if (output.includes('AI_APICallError')) {
+                            logger.error('[OpenCode ERROR] API call failed! This may be due to rate limiting, invalid credentials, or network issues.');
+                        }
+                    }
+                    else {
+                        logger.warning(`[OpenCode STDERR] ${output}`);
+                    }
                 }
             });
         }

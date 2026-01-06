@@ -409,6 +409,25 @@ ${JSON.stringify(rmcocBlock, null, 2)}
   private async postPRDescriptionValidationFailure(
     reason: string
   ): Promise<void> {
+    const file = 'PR_DESCRIPTION'
+    const line = 0
+    const finding = 'PR description is insufficient'
+
+    await this.stateManager.getOrCreateState()
+
+    const existingThread = this.reviewExecutor.findDuplicateThread(
+      file,
+      line,
+      finding
+    )
+
+    if (existingThread) {
+      logger.info(
+        `PR description validation failure already reported in thread ${existingThread.id}, skipping duplicate`
+      )
+      return
+    }
+
     const commentBody = `❌ **Review blocked: Insufficient task information**
 
 ${reason}
@@ -422,7 +441,7 @@ You can also link to task specification files in the repository (e.g., \`[Task s
 Once the description is updated, trigger a new review.`
 
     const assessment = {
-      finding: 'PR description is insufficient',
+      finding,
       assessment: reason,
       score: 10
     }
@@ -434,8 +453,8 @@ Once the description is updated, trigger a new review.`
 
     await this.reviewExecutor.addThread({
       id: commentId,
-      file: 'PR_DESCRIPTION',
-      line: 0,
+      file,
+      line,
       status: 'PENDING',
       score: 10,
       assessment,

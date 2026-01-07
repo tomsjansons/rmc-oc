@@ -35,3 +35,15 @@ export class OrchestratorError extends Error {
     this.name = 'OrchestratorError'
   }
 }
+
+export function isTokenRefreshError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+  const message = error.message.toLowerCase()
+  return (
+    message.includes('token refresh failed') ||
+    message.includes('token refresh error') ||
+    (message.includes('refresh') && message.includes('400'))
+  )
+}

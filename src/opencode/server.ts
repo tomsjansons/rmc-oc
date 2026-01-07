@@ -159,6 +159,25 @@ export class OpenCodeServer {
     })
   }
 
+  async restart(): Promise<void> {
+    await logger.group('Restarting OpenCode Server', async () => {
+      logger.info('Restarting OpenCode server due to token refresh error...')
+
+      try {
+        await this.stop()
+      } catch (error) {
+        logger.warning(
+          `Error stopping server during restart: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
+
+      await this.delay(2000)
+
+      await this.start()
+      logger.info('OpenCode server restarted successfully')
+    })
+  }
+
   isRunning(): boolean {
     return this.status === 'running'
   }

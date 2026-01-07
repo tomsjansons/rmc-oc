@@ -35590,6 +35590,15 @@ class OrchestratorError extends Error {
         this.name = 'OrchestratorError';
     }
 }
+function isTokenRefreshError(error) {
+    if (!(error instanceof Error)) {
+        return false;
+    }
+    const message = error.message.toLowerCase();
+    return (message.includes('token refresh failed') ||
+        message.includes('token refresh error') ||
+        (message.includes('refresh') && message.includes('400')));
+}
 
 class GitHubAPI {
     octokit;
@@ -38133,6 +38142,20 @@ class OpenCodeServer {
                 this.status = 'stopped';
                 this.serverProcess = null;
             }
+        });
+    }
+    async restart() {
+        await logger.group('Restarting OpenCode Server', async () => {
+            logger.info('Restarting OpenCode server due to token refresh error...');
+            try {
+                await this.stop();
+            }
+            catch (error) {
+                logger.warning(`Error stopping server during restart: ${error instanceof Error ? error.message : String(error)}`);
+            }
+            await this.delay(2000);
+            await this.start();
+            logger.info('OpenCode server restarted successfully');
         });
     }
     isRunning() {
@@ -41332,6 +41355,7 @@ function buildSecuritySensitivity(packageJson, readme) {
     return `High sensitivity detected: ${indicators.join(', ')}`;
 }
 
+const MAX_TOKEN_REFRESH_RETRIES = 2;
 class ReviewExecutor {
     opencode;
     stateManager;
@@ -41345,6 +41369,7 @@ class ReviewExecutor {
     currentPhase = 'idle';
     passCompletionResolvers = new Map();
     currentTaskInfo = undefined;
+    server = null;
     constructor(opencode, stateManager, github, config, workspaceRoot) {
         this.opencode = opencode;
         this.stateManager = stateManager;
@@ -41609,9 +41634,30 @@ class ReviewExecutor {
         await this.ensureSession();
     }
     async sendPromptToOpenCode(prompt) {
-        const sessionId = await this.ensureSession();
-        logger.debug(`Sending prompt to session ${sessionId}`);
-        await this.opencode.sendPrompt(sessionId, prompt);
+        let tokenRefreshRetries = 0;
+        while (tokenRefreshRetries <= MAX_TOKEN_REFRESH_RETRIES) {
+            try {
+                const sessionId = await this.ensureSession();
+                logger.debug(`Sending prompt to session ${sessionId}`);
+                await this.opencode.sendPrompt(sessionId, prompt);
+                return;
+            }
+            catch (error) {
+                if (isTokenRefreshError(error) && this.server) {
+                    tokenRefreshRetries++;
+                    if (tokenRefreshRetries <= MAX_TOKEN_REFRESH_RETRIES) {
+                        logger.warning(`Token refresh error detected (attempt ${tokenRefreshRetries}/${MAX_TOKEN_REFRESH_RETRIES}), restarting OpenCode server...`);
+                        await this.server.restart();
+                        this.currentSessionId = null;
+                        continue;
+                    }
+                }
+                throw error;
+            }
+        }
+    }
+    setServer(server) {
+        this.server = server;
     }
     async cleanup() {
         if (this.currentSessionId) {
@@ -51955,6 +52001,7 @@ async function run() {
         const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
         const stateManager = new StateManager(config, classificationLlmClient, github.getOctokit());
         reviewExecutor = new ReviewExecutor(opencode, stateManager, github, config, workspaceRoot);
+        reviewExecutor.setServer(openCodeServer);
         const taskOrchestrator = new TaskOrchestrator(config, github, reviewExecutor, stateManager, classificationLlmClient);
         trpcServer = new TRPCServer(reviewExecutor, github, classificationLlmClient);
         await trpcServer.start();

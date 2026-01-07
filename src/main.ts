@@ -80,6 +80,7 @@ export async function run(): Promise<void> {
       config,
       workspaceRoot
     )
+    reviewExecutor.setServer(openCodeServer)
 
     const taskOrchestrator = new TaskOrchestrator(
       config,

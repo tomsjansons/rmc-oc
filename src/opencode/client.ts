@@ -139,8 +139,8 @@ export class OpenCodeClientImpl implements OpenCodeClient {
     systemPrompt: string
   ): Promise<void> {
     try {
-      logger.debug(
-        `Sending system prompt to session ${sessionId} (${systemPrompt.length} chars)`
+      logger.info(
+        `[DEBUG] sendSystemPrompt called for session ${sessionId} (${systemPrompt.length} chars)`
       )
 
       await this.client.session.prompt({
@@ -156,7 +156,7 @@ export class OpenCodeClientImpl implements OpenCodeClient {
         }
       })
 
-      logger.info(`System prompt injected into session ${sessionId}`)
+      logger.info(`[DEBUG] System prompt injected into session ${sessionId}`)
     } catch (error) {
       throw new OpenCodeError(
         `Failed to send system prompt: ${error instanceof Error ? error.message : String(error)}`
@@ -166,13 +166,25 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
   async sendPrompt(sessionId: string, prompt: string): Promise<void> {
     try {
-      logger.debug(
-        `Sending prompt to session ${sessionId} (${prompt.length} chars)`
+      logger.info(
+        `[DEBUG] sendPrompt called for session ${sessionId} (${prompt.length} chars)`
       )
 
-      const completionPromise = this.waitForPromptCompletion(sessionId)
+      // Theory 1: Race condition - event subscription might not be ready before promptAsync
+      // We need to ensure subscription is established BEFORE sending the prompt
+      logger.info(`[DEBUG] Creating event subscription BEFORE promptAsync...`)
 
-      await this.client.session.promptAsync({
+      const { completionPromise, subscriptionReady } =
+        this.waitForPromptCompletion(sessionId)
+
+      // Wait for subscription to be established before sending prompt
+      logger.info(`[DEBUG] Waiting for event subscription to be ready...`)
+      await subscriptionReady
+      logger.info(
+        `[DEBUG] Event subscription is ready, now calling promptAsync`
+      )
+
+      const promptAsyncResult = await this.client.session.promptAsync({
         path: { id: sessionId },
         body: {
           parts: [
@@ -183,36 +195,69 @@ export class OpenCodeClientImpl implements OpenCodeClient {
           ]
         }
       })
+      logger.info(
+        `[DEBUG] promptAsync returned for session ${sessionId}: ${JSON.stringify(promptAsyncResult)}`
+      )
 
-      logger.debug(`Prompt queued, waiting for LLM to complete via events...`)
+      logger.info(
+        `[DEBUG] Prompt queued, waiting for LLM to complete via events...`
+      )
 
       await completionPromise
 
-      logger.debug(`Prompt completed successfully for session ${sessionId}`)
+      logger.info(
+        `[DEBUG] Prompt completed successfully for session ${sessionId}`
+      )
     } catch (error) {
+      logger.error(
+        `[DEBUG] sendPrompt error: ${error instanceof Error ? error.message : String(error)}`
+      )
       throw new OpenCodeError(
         `Failed to send prompt: ${error instanceof Error ? error.message : String(error)}`
       )
     }
   }
 
-  private async waitForPromptCompletion(sessionId: string): Promise<void> {
+  private waitForPromptCompletion(sessionId: string): {
+    completionPromise: Promise<void>
+    subscriptionReady: Promise<void>
+  } {
     const startTime = Date.now()
     const abortController = new AbortController()
     let sawBusy = false
+    let busyTimestamp: number | null = null
+    let sawToolCall = false
+    let sawTextOutput = false
 
     // Grace period to wait after idle before considering session complete
     // This handles reasoning models that may pause briefly during thinking
     const IDLE_GRACE_PERIOD_MS = 10000
 
+    // Minimum time the session should be busy before going idle
+    // If it goes idle faster than this without any output, it likely errored
+    const MIN_BUSY_DURATION_MS = 1000
+
     this.resetLoopDetection()
 
-    return new Promise<void>((resolve, reject) => {
+    logger.info(
+      `[DEBUG] waitForPromptCompletion started for session ${sessionId}`
+    )
+
+    // Signal when subscription is ready - this fixes the race condition
+    let markSubscriptionReady: () => void = () => {}
+    const subscriptionReady = new Promise<void>((resolve) => {
+      markSubscriptionReady = resolve
+    })
+
+    const completionPromise = new Promise<void>((resolve, reject) => {
       let resolved = false
       let idleGraceTimerId: ReturnType<typeof setTimeout> | null = null
 
       const timeoutId = setTimeout(() => {
         if (!resolved) {
+          logger.info(
+            `[DEBUG] Session ${sessionId} timed out after ${this.timeoutMs}ms`
+          )
           resolved = true
           abortController.abort()
           reject(
@@ -234,8 +279,8 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
       const cancelIdleGrace = (): void => {
         if (idleGraceTimerId) {
-          logger.debug(
-            `Session ${sessionId} became active again, cancelling idle grace period`
+          logger.info(
+            `[DEBUG] Session ${sessionId} became active again, cancelling idle grace period`
           )
           clearTimeout(idleGraceTimerId)
           idleGraceTimerId = null
@@ -244,12 +289,24 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
       const processEvents = async (): Promise<void> => {
         try {
+          logger.info(`[DEBUG] Subscribing to events for session ${sessionId}`)
           const eventResult = await this.client.event.subscribe({
             signal: abortController.signal
           })
+          logger.info(
+            `[DEBUG] Event subscription established for session ${sessionId}`
+          )
 
+          // Signal that subscription is ready BEFORE processing events
+          markSubscriptionReady()
+
+          let eventCount = 0
           for await (const event of eventResult.stream) {
+            eventCount++
             if (resolved || abortController.signal.aborted) {
+              logger.info(
+                `[DEBUG] Breaking event loop: resolved=${resolved}, aborted=${abortController.signal.aborted}`
+              )
               break
             }
 
@@ -257,13 +314,35 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
             const props = event.properties as {
               sessionID?: string
+              info?: { sessionID?: string }
               status?: { type: string; attempt?: number; message?: string }
               part?: { type: string; tool?: string; state?: { status: string } }
             }
 
-            if (props.sessionID !== sessionId) {
+            // Extract sessionID from either top-level or nested in info
+            const eventSessionId =
+              props.sessionID || props.info?.sessionID || null
+
+            // Log ALL events (even for other sessions) to see what's happening
+            logger.info(
+              `[DEBUG] Event #${eventCount}: type=${event.type}, eventSessionID=${eventSessionId || 'N/A'}, targetSession=${sessionId}, match=${eventSessionId === sessionId}, rawProps=${JSON.stringify(event.properties).substring(0, 500)}`
+            )
+
+            // Theory 2: Check if status has unexpected structure
+            if (event.type === 'session.status') {
+              logger.info(
+                `[DEBUG] session.status event - full props: ${JSON.stringify(event.properties)}`
+              )
+            }
+
+            if (eventSessionId !== sessionId) {
               continue
             }
+
+            // Log every event for our session with full details
+            logger.info(
+              `[DEBUG] Processing event for our session: type=${event.type}, sawBusy=${sawBusy}, idleGraceActive=${idleGraceTimerId !== null}`
+            )
 
             if (
               event.type === 'message.part.updated' &&
@@ -279,6 +358,8 @@ export class OpenCodeClientImpl implements OpenCodeClient {
                 ? JSON.stringify(part.input).substring(0, 200)
                 : ''
               const toolSignature = `${toolName}:${toolInput}`
+
+              logger.info(`[DEBUG] Tool call detected: ${toolName}`)
 
               if (this.detectLoop(toolSignature)) {
                 resolved = true
@@ -298,9 +379,28 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               props.status &&
               props.status.type !== 'idle'
             ) {
+              logger.info(
+                `[DEBUG] Session ${sessionId} became busy (status.type="${props.status.type}"), setting sawBusy=true (was ${sawBusy})`
+              )
               sawBusy = true
-              // Cancel any pending idle grace timer since model is active again
+              busyTimestamp = Date.now()
               cancelIdleGrace()
+            }
+
+            // Track tool calls as meaningful activity
+            if (
+              event.type === 'message.part.updated' &&
+              props.part?.type === 'tool'
+            ) {
+              sawToolCall = true
+            }
+
+            // Track text output as meaningful activity
+            if (event.type === 'message.part.updated') {
+              const partProps = props.part as { type?: string; text?: string }
+              if (partProps?.type === 'text' && partProps?.text) {
+                sawTextOutput = true
+              }
             }
 
             // Message updates also indicate activity
@@ -308,6 +408,9 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               event.type === 'message.updated' ||
               event.type === 'message.part.updated'
             ) {
+              logger.info(
+                `[DEBUG] Message activity detected (${event.type}), cancelling idle grace if active`
+              )
               cancelIdleGrace()
             }
 
@@ -315,25 +418,61 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               event.type === 'session.idle' ||
               (event.type === 'session.status' && props.status?.type === 'idle')
 
+            logger.info(
+              `[DEBUG] Idle check: isIdle=${isIdle}, sawBusy=${sawBusy}, sawToolCall=${sawToolCall}, sawTextOutput=${sawTextOutput}, willStartGrace=${isIdle && sawBusy && !idleGraceTimerId}`
+            )
+
             if (isIdle && sawBusy) {
-              // Don't immediately complete - wait for grace period
-              // This allows reasoning models time to resume after brief pauses
+              // Check if the session went idle too quickly without any meaningful work
+              const busyDuration = busyTimestamp
+                ? Date.now() - busyTimestamp
+                : 0
+              const hadMeaningfulActivity = sawToolCall || sawTextOutput
+
+              if (
+                busyDuration < MIN_BUSY_DURATION_MS &&
+                !hadMeaningfulActivity
+              ) {
+                logger.error(
+                  `[ERROR] Session ${sessionId} went idle after only ${busyDuration}ms without any tool calls or text output. This likely indicates an error occurred (e.g., model not found, API error).`
+                )
+                logger.error(
+                  `[ERROR] Check the OpenCode server logs above for error details.`
+                )
+                resolved = true
+                cleanup()
+                reject(
+                  new OpenCodeError(
+                    `Session failed: went idle after ${busyDuration}ms without any activity. Check server logs for errors (e.g., ProviderModelNotFoundError).`
+                  )
+                )
+                return
+              }
+
               if (!idleGraceTimerId) {
-                logger.debug(
-                  `Session ${sessionId} went idle, waiting ${IDLE_GRACE_PERIOD_MS}ms grace period...`
+                logger.info(
+                  `[DEBUG] Session ${sessionId} went idle (sawBusy=${sawBusy}, busyDuration=${busyDuration}ms), starting ${IDLE_GRACE_PERIOD_MS}ms grace period...`
                 )
                 idleGraceTimerId = setTimeout(() => {
                   if (!resolved) {
                     const duration = Date.now() - startTime
                     logger.info(
-                      `Session ${sessionId} completed after ${duration}ms (idle for ${IDLE_GRACE_PERIOD_MS}ms)`
+                      `[DEBUG] Grace period expired, completing session ${sessionId} after ${duration}ms`
                     )
                     resolved = true
                     cleanup()
                     resolve()
                   }
                 }, IDLE_GRACE_PERIOD_MS)
+              } else {
+                logger.info(
+                  `[DEBUG] Session ${sessionId} idle but grace timer already running`
+                )
               }
+            } else if (isIdle && !sawBusy) {
+              logger.info(
+                `[DEBUG] Session ${sessionId} is idle but sawBusy=${sawBusy}, NOT starting grace period (waiting for busy first)`
+              )
             }
 
             if (
@@ -345,7 +484,31 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               )
             }
 
+            // Detect error status types (e.g., ProviderModelNotFoundError causes cancel)
+            if (
+              event.type === 'session.status' &&
+              props.status?.type === 'error'
+            ) {
+              const errorMessage =
+                props.status.message || 'Unknown session error'
+              logger.error(
+                `[ERROR] Session ${sessionId} encountered error: ${errorMessage}`
+              )
+              logger.error(
+                `[ERROR] Full error details: ${JSON.stringify(event.properties)}`
+              )
+              resolved = true
+              cleanup()
+              reject(
+                new OpenCodeError(`OpenCode session error: ${errorMessage}`)
+              )
+              return
+            }
+
             if (event.type === 'session.error') {
+              logger.error(
+                `[ERROR] Session error event: ${JSON.stringify(event.properties)}`
+              )
               resolved = true
               cleanup()
               reject(
@@ -357,10 +520,17 @@ export class OpenCodeClientImpl implements OpenCodeClient {
             }
           }
 
+          logger.info(
+            `[DEBUG] Event stream ended for session ${sessionId}, processed ${eventCount} events, resolved=${resolved}`
+          )
+
           if (!resolved) {
             reject(new OpenCodeError('Event stream ended unexpectedly'))
           }
         } catch (error) {
+          logger.error(
+            `[DEBUG] Error in processEvents: ${error instanceof Error ? error.message : String(error)}`
+          )
           if (!resolved && !abortController.signal.aborted) {
             cleanup()
             reject(
@@ -374,6 +544,8 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
       processEvents()
     })
+
+    return { completionPromise, subscriptionReady }
   }
 
   private logEvent(event: Event, targetSessionId: string): void {

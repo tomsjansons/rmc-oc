@@ -16,16 +16,16 @@ We will work on tasks within the broader poject.
 
 # Task
 
-## Completed Tasks
+we've recently added the whole auth.json file from
+~/.local/share/opencode/auth.json so it is easier to pass auth details to the
+agent. this means you can use oauth as well as api keys and combine them to
+enable multiple providers.
 
-I got the review failure for an empty PR description. but this is not handled
-the same as other tasks:
+it seems that the current approach is missing something as purely passing
+auth.json and enabling providers in ./opencode.json(c) does not actually enable
+them, somethign is missing.
 
-- thereis no rmcoc code block for the review to reference later
-- the workflow did not exit with non-zero code to block merges
-
-the PR description check needs to be treated the same as any other issue
-comment.
-
-the contents of the PR also need to be fed troough an llm to determine if it is
-sufficient or not
+please investigate opencode setup at ~/.config/opencode/ and
+~/.local/share/opencode and compare it to what we construct in the github action
+and find what is missing for enabling (in this test case) openrouter api key
+provider and anthropic oauth provider

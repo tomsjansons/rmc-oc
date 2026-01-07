@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, execSync, type ChildProcess } from 'node:child_process'
 import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -30,8 +30,6 @@ type BashPermission =
 type OpenCodeConfig = {
   $schema: string
   model: string
-  enabled_providers: string[]
-  disabled_providers: string[]
   plugin?: string[]
   provider: {
     openrouter: {
@@ -82,6 +80,7 @@ export class OpenCodeServer {
   private readonly shutdownTimeoutMs = 10000
   private configFilePath: string | null = null
   private authFilePath: string | null = null
+  private dataDir: string | null = null
 
   constructor(private config: ReviewConfig) {
     this.healthCheckUrl = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SERVER_PORT}`
@@ -160,6 +159,25 @@ export class OpenCodeServer {
     })
   }
 
+  async restart(): Promise<void> {
+    await logger.group('Restarting OpenCode Server', async () => {
+      logger.info('Restarting OpenCode server due to token refresh error...')
+
+      try {
+        await this.stop()
+      } catch (error) {
+        logger.warning(
+          `Error stopping server during restart: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
+
+      await this.delay(2000)
+
+      await this.start()
+      logger.info('OpenCode server restarted successfully')
+    })
+  }
+
   isRunning(): boolean {
     return this.status === 'running'
   }
@@ -180,7 +198,10 @@ export class OpenCodeServer {
       '--port',
       String(OPENCODE_SERVER_PORT),
       '--hostname',
-      OPENCODE_SERVER_HOST
+      OPENCODE_SERVER_HOST,
+      '--log-level',
+      'DEBUG',
+      '--print-logs'
     ]
 
     logger.debug(
@@ -193,6 +214,7 @@ export class OpenCodeServer {
 
     const env: Record<string, string> = {
       OPENCODE_CONFIG: this.configFilePath || '',
+      XDG_DATA_HOME: this.dataDir || '',
       PATH: process.env.PATH || '',
       HOME: process.env.HOME || '',
       TMPDIR: process.env.TMPDIR || process.env.TEMP || '/tmp',
@@ -205,7 +227,10 @@ export class OpenCodeServer {
     }
 
     logger.info(`OpenCode environment: OPENCODE_CONFIG=${env.OPENCODE_CONFIG}`)
-    logger.debug('Auth credentials passed via auth.json file')
+    logger.info(`OpenCode environment: XDG_DATA_HOME=${env.XDG_DATA_HOME}`)
+    logger.debug(
+      'Auth credentials passed via auth.json file at $XDG_DATA_HOME/opencode/auth.json'
+    )
     logger.debug(`Minimal environment: ${Object.keys(env).join(', ')}`)
 
     this.serverProcess = spawn(command, serveArgs, {
@@ -241,40 +266,17 @@ export class OpenCodeServer {
       )
     }
 
+    // Let OpenCode auto-discover providers from auth.json
+    // Do NOT set enabled_providers as it interferes with provider loading
     const availableProviders = Object.keys(auth)
-    const modelParts = model.split('/')
-    const modelProvider = modelParts[0]
-
-    let enabledProviders: string[]
-    let disabledProviders: string[]
-    let finalModel: string
-
-    if (modelProvider === 'openrouter') {
-      enabledProviders = ['openrouter']
-      disabledProviders = ['gemini', 'anthropic', 'openai', 'azure', 'bedrock']
-      finalModel = model
-    } else if (modelProvider && availableProviders.includes(modelProvider)) {
-      enabledProviders = [modelProvider]
-      disabledProviders = [
-        'gemini',
-        'anthropic',
-        'openai',
-        'azure',
-        'bedrock',
-        'openrouter'
-      ].filter((p) => p !== modelProvider)
-      finalModel = model
-    } else {
-      enabledProviders = availableProviders
-      disabledProviders = []
-      finalModel = model
-    }
+    logger.info(
+      `[DEBUG] Available providers from auth.json: ${availableProviders.join(', ')}`
+    )
+    logger.info(`[DEBUG] Configured model: ${model}`)
 
     const config: OpenCodeConfig = {
       $schema: 'https://opencode.ai/config.json',
-      model: finalModel,
-      enabled_providers: enabledProviders,
-      disabled_providers: disabledProviders,
+      model: model,
       plugin: ['opencode-openai-codex-auth'],
       provider: {
         openrouter: {
@@ -511,8 +513,8 @@ export class OpenCodeServer {
         mode: 0o600
       })
       logger.info(`Created OpenCode config file: ${configPath}`)
-      logger.info(`Config model: ${finalModel}`)
-      logger.info(`Enabled providers: ${enabledProviders.join(', ')}`)
+      logger.info(`Config model: ${model}`)
+      logger.info(`Enabled providers: ${availableProviders.join(', ')}`)
       logger.info(`Config contents: ${JSON.stringify(config, null, 2)}`)
     } catch (error) {
       throw new OpenCodeError(
@@ -526,7 +528,20 @@ export class OpenCodeServer {
   }
 
   private createAuthFile(secureConfigDir: string): void {
-    const authPath = join(secureConfigDir, 'auth.json')
+    // OpenCode expects auth.json at $XDG_DATA_HOME/opencode/auth.json
+    // We set XDG_DATA_HOME to our secure config dir, so auth.json goes in opencode/ subdir
+    this.dataDir = secureConfigDir
+    const opencodeDataDir = join(secureConfigDir, 'opencode')
+
+    try {
+      mkdirSync(opencodeDataDir, { recursive: true, mode: 0o700 })
+    } catch (error) {
+      throw new OpenCodeError(
+        `Failed to create opencode data directory: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+
+    const authPath = join(opencodeDataDir, 'auth.json')
     this.authFilePath = authPath
 
     let auth: OpenCodeAuth
@@ -544,8 +559,8 @@ export class OpenCodeServer {
         mode: 0o600
       })
       chmodSync(authPath, 0o600)
-      logger.debug(`Created OpenCode auth file: ${authPath}`)
-      logger.debug(`Configured providers: ${Object.keys(auth).join(', ')}`)
+      logger.info(`Created OpenCode auth file: ${authPath}`)
+      logger.info(`Configured providers: ${Object.keys(auth).join(', ')}`)
     } catch (error) {
       throw new OpenCodeError(
         `Failed to write auth file: ${error instanceof Error ? error.message : String(error)}`
@@ -577,6 +592,8 @@ export class OpenCodeServer {
       }
       this.authFilePath = null
     }
+
+    this.dataDir = null
   }
 
   private attachProcessHandlers(): void {
@@ -611,7 +628,30 @@ export class OpenCodeServer {
       this.serverProcess.stderr.on('data', (data) => {
         const output = data.toString().trim()
         if (output) {
-          logger.warning(`[OpenCode STDERR] ${output}`)
+          // Check for critical errors that should be surfaced prominently
+          if (output.includes('ERROR')) {
+            logger.error(`[OpenCode ERROR] ${output}`)
+
+            // Extract specific error types for clearer messaging
+            if (output.includes('ProviderModelNotFoundError')) {
+              logger.error(
+                '[OpenCode ERROR] Model not found! Check that the configured model exists and is available.'
+              )
+              logger.error(
+                '[OpenCode ERROR] Run "opencode models" to see available models.'
+              )
+            } else if (output.includes('ProviderInitError')) {
+              logger.error(
+                '[OpenCode ERROR] Provider initialization failed! Check your API keys and provider configuration.'
+              )
+            } else if (output.includes('AI_APICallError')) {
+              logger.error(
+                '[OpenCode ERROR] API call failed! This may be due to rate limiting, invalid credentials, or network issues.'
+              )
+            }
+          } else {
+            logger.warning(`[OpenCode STDERR] ${output}`)
+          }
         }
       })
     }
@@ -635,6 +675,10 @@ export class OpenCodeServer {
         if (isHealthy) {
           this.status = 'running'
           logger.info(`Server became healthy after ${Date.now() - startTime}ms`)
+
+          // Log server configuration for debugging
+          await this.logServerState()
+
           return
         }
       } catch (error) {
@@ -666,6 +710,98 @@ export class OpenCodeServer {
       return response.ok
     } catch {
       return false
+    }
+  }
+
+  private async logServerState(): Promise<void> {
+    try {
+      // Log config
+      const configResponse = await fetch(`${this.healthCheckUrl}/config`)
+      if (configResponse.ok) {
+        const config = await configResponse.json()
+        logger.info(`[DEBUG] Server config: ${JSON.stringify(config)}`)
+      }
+
+      // Log providers
+      const providersResponse = await fetch(
+        `${this.healthCheckUrl}/config/providers`
+      )
+      if (providersResponse.ok) {
+        const providers = await providersResponse.json()
+        logger.info(`[DEBUG] Server providers: ${JSON.stringify(providers)}`)
+      }
+
+      // Log health
+      const healthResponse = await fetch(`${this.healthCheckUrl}/global/health`)
+      if (healthResponse.ok) {
+        const health = await healthResponse.json()
+        logger.info(`[DEBUG] Server health: ${JSON.stringify(health)}`)
+      }
+
+      // Log session status
+      const sessionStatusResponse = await fetch(
+        `${this.healthCheckUrl}/session/status`
+      )
+      if (sessionStatusResponse.ok) {
+        const sessionStatus = await sessionStatusResponse.json()
+        logger.info(`[DEBUG] Session status: ${JSON.stringify(sessionStatus)}`)
+      }
+      // Run opencode models CLI to see available models
+      await this.logAvailableModels()
+    } catch (error) {
+      logger.warning(
+        `[DEBUG] Failed to log server state: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  private async logAvailableModels(): Promise<void> {
+    try {
+      const { command, args } = getOpenCodeCLICommand()
+      const modelsArgs = [...args, 'models']
+
+      logger.info(`[DEBUG] Running: ${command} ${modelsArgs.join(' ')}`)
+
+      const env: Record<string, string> = {
+        OPENCODE_CONFIG: this.configFilePath || '',
+        XDG_DATA_HOME: this.dataDir || '',
+        PATH: process.env.PATH || '',
+        HOME: process.env.HOME || '',
+        TMPDIR: process.env.TMPDIR || process.env.TEMP || '/tmp',
+        NODE_ENV: process.env.NODE_ENV || 'production'
+      }
+
+      const output = execSync(`${command} ${modelsArgs.join(' ')}`, {
+        encoding: 'utf8',
+        timeout: 30000,
+        env: { ...process.env, ...env },
+        maxBuffer: 1024 * 1024
+      })
+
+      logger.info(`[DEBUG] Available models from 'opencode models':`)
+      const lines = output.split('\n')
+      for (const line of lines) {
+        if (line.trim()) {
+          logger.info(`[DEBUG]   ${line}`)
+        }
+      }
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error)
+      logger.warning(`[DEBUG] Failed to run 'opencode models': ${errorMessage}`)
+
+      if (error && typeof error === 'object' && 'stdout' in error) {
+        const stdout = (error as { stdout?: string }).stdout
+        if (stdout) {
+          logger.info(`[DEBUG] Partial stdout: ${stdout}`)
+        }
+      }
+      if (error && typeof error === 'object' && 'stderr' in error) {
+        const stderr = (error as { stderr?: string }).stderr
+        if (stderr) {
+          logger.warning(`[DEBUG] stderr: ${stderr}`)
+        }
+      }
     }
   }
 

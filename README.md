@@ -160,36 +160,54 @@ on:
     types: [opened, synchronize, ready_for_review]
   issue_comment:
     types: [created]
+  pull_request_review_comment:
+    types: [created]
 
 jobs:
   review:
     if: |
-      github.event_name == 'pull_request' || 
+      (github.event_name == 'pull_request' && !github.event.pull_request.draft) ||
       (github.event_name == 'issue_comment' && 
        github.event.issue.pull_request && 
        (contains(github.event.comment.body, '@review-my-code-bot') ||
-        contains(github.event.comment.body, '@rmc-bot')))
+        contains(github.event.comment.body, '@rmc-bot'))) ||
+      (github.event_name == 'pull_request_review_comment' &&
+       github.event.comment.in_reply_to_id != '')
 
     runs-on: ubuntu-latest
 
     permissions:
       pull-requests: write
       contents: read
+      issues: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || '' }}
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: |
+          git fetch origin main:refs/remotes/origin/main || \
+          git fetch origin master:refs/remotes/origin/master || \
+          echo "Warning: Could not fetch main or master branch"
 
       - name: Checkout PR head for comment events
-        if: github.event_name == 'issue_comment'
-        run: gh pr checkout ${{ github.event.issue.number }}
+        if:
+          github.event_name == 'issue_comment' || github.event_name ==
+          'pull_request_review_comment'
+        run:
+          gh pr checkout ${{ github.event.issue.number ||
+          github.event.pull_request.number }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Reivew My Code, OpenCode!
         uses: tomsjansons/rmc-oc@latest
         with:
-          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          opencode_auth_json: ${{ secrets.OPENCODE_AUTH_JSON }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 ```
 

@@ -27,7 +27,7 @@ import require$$6 from 'string_decoder';
 import require$$0$9 from 'diagnostics_channel';
 import require$$2$3 from 'child_process';
 import require$$6$1 from 'timers';
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, chmodSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { readFile, mkdir, readdir, copyFile } from 'node:fs/promises';
@@ -35590,6 +35590,15 @@ class OrchestratorError extends Error {
         this.name = 'OrchestratorError';
     }
 }
+function isTokenRefreshError(error) {
+    if (!(error instanceof Error)) {
+        return false;
+    }
+    const message = error.message.toLowerCase();
+    return (message.includes('token refresh failed') ||
+        message.includes('token refresh error') ||
+        (message.includes('refresh') && message.includes('400')));
+}
 
 class GitHubAPI {
     octokit;
@@ -37715,7 +37724,7 @@ class OpenCodeClientImpl {
     }
     async sendSystemPrompt(sessionId, systemPrompt) {
         try {
-            logger.debug(`Sending system prompt to session ${sessionId} (${systemPrompt.length} chars)`);
+            logger.info(`[DEBUG] sendSystemPrompt called for session ${sessionId} (${systemPrompt.length} chars)`);
             await this.client.session.prompt({
                 path: { id: sessionId },
                 body: {
@@ -37728,7 +37737,7 @@ class OpenCodeClientImpl {
                     ]
                 }
             });
-            logger.info(`System prompt injected into session ${sessionId}`);
+            logger.info(`[DEBUG] System prompt injected into session ${sessionId}`);
         }
         catch (error) {
             throw new OpenCodeError(`Failed to send system prompt: ${error instanceof Error ? error.message : String(error)}`);
@@ -37736,9 +37745,16 @@ class OpenCodeClientImpl {
     }
     async sendPrompt(sessionId, prompt) {
         try {
-            logger.debug(`Sending prompt to session ${sessionId} (${prompt.length} chars)`);
-            const completionPromise = this.waitForPromptCompletion(sessionId);
-            await this.client.session.promptAsync({
+            logger.info(`[DEBUG] sendPrompt called for session ${sessionId} (${prompt.length} chars)`);
+            // Theory 1: Race condition - event subscription might not be ready before promptAsync
+            // We need to ensure subscription is established BEFORE sending the prompt
+            logger.info(`[DEBUG] Creating event subscription BEFORE promptAsync...`);
+            const { completionPromise, subscriptionReady } = this.waitForPromptCompletion(sessionId);
+            // Wait for subscription to be established before sending prompt
+            logger.info(`[DEBUG] Waiting for event subscription to be ready...`);
+            await subscriptionReady;
+            logger.info(`[DEBUG] Event subscription is ready, now calling promptAsync`);
+            const promptAsyncResult = await this.client.session.promptAsync({
                 path: { id: sessionId },
                 body: {
                     parts: [
@@ -37749,27 +37765,42 @@ class OpenCodeClientImpl {
                     ]
                 }
             });
-            logger.debug(`Prompt queued, waiting for LLM to complete via events...`);
+            logger.info(`[DEBUG] promptAsync returned for session ${sessionId}: ${JSON.stringify(promptAsyncResult)}`);
+            logger.info(`[DEBUG] Prompt queued, waiting for LLM to complete via events...`);
             await completionPromise;
-            logger.debug(`Prompt completed successfully for session ${sessionId}`);
+            logger.info(`[DEBUG] Prompt completed successfully for session ${sessionId}`);
         }
         catch (error) {
+            logger.error(`[DEBUG] sendPrompt error: ${error instanceof Error ? error.message : String(error)}`);
             throw new OpenCodeError(`Failed to send prompt: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
-    async waitForPromptCompletion(sessionId) {
+    waitForPromptCompletion(sessionId) {
         const startTime = Date.now();
         const abortController = new AbortController();
         let sawBusy = false;
+        let busyTimestamp = null;
+        let sawToolCall = false;
+        let sawTextOutput = false;
         // Grace period to wait after idle before considering session complete
         // This handles reasoning models that may pause briefly during thinking
         const IDLE_GRACE_PERIOD_MS = 10000;
+        // Minimum time the session should be busy before going idle
+        // If it goes idle faster than this without any output, it likely errored
+        const MIN_BUSY_DURATION_MS = 1000;
         this.resetLoopDetection();
-        return new Promise((resolve, reject) => {
+        logger.info(`[DEBUG] waitForPromptCompletion started for session ${sessionId}`);
+        // Signal when subscription is ready - this fixes the race condition
+        let markSubscriptionReady = () => { };
+        const subscriptionReady = new Promise((resolve) => {
+            markSubscriptionReady = resolve;
+        });
+        const completionPromise = new Promise((resolve, reject) => {
             let resolved = false;
             let idleGraceTimerId = null;
             const timeoutId = setTimeout(() => {
                 if (!resolved) {
+                    logger.info(`[DEBUG] Session ${sessionId} timed out after ${this.timeoutMs}ms`);
                     resolved = true;
                     abortController.abort();
                     reject(new OpenCodeError(`Timeout waiting for session ${sessionId} to complete after ${this.timeoutMs}ms`));
@@ -37785,25 +37816,42 @@ class OpenCodeClientImpl {
             };
             const cancelIdleGrace = () => {
                 if (idleGraceTimerId) {
-                    logger.debug(`Session ${sessionId} became active again, cancelling idle grace period`);
+                    logger.info(`[DEBUG] Session ${sessionId} became active again, cancelling idle grace period`);
                     clearTimeout(idleGraceTimerId);
                     idleGraceTimerId = null;
                 }
             };
             const processEvents = async () => {
                 try {
+                    logger.info(`[DEBUG] Subscribing to events for session ${sessionId}`);
                     const eventResult = await this.client.event.subscribe({
                         signal: abortController.signal
                     });
+                    logger.info(`[DEBUG] Event subscription established for session ${sessionId}`);
+                    // Signal that subscription is ready BEFORE processing events
+                    markSubscriptionReady();
+                    let eventCount = 0;
                     for await (const event of eventResult.stream) {
+                        eventCount++;
                         if (resolved || abortController.signal.aborted) {
+                            logger.info(`[DEBUG] Breaking event loop: resolved=${resolved}, aborted=${abortController.signal.aborted}`);
                             break;
                         }
                         this.logEvent(event, sessionId);
                         const props = event.properties;
-                        if (props.sessionID !== sessionId) {
+                        // Extract sessionID from either top-level or nested in info
+                        const eventSessionId = props.sessionID || props.info?.sessionID || null;
+                        // Log ALL events (even for other sessions) to see what's happening
+                        logger.info(`[DEBUG] Event #${eventCount}: type=${event.type}, eventSessionID=${eventSessionId || 'N/A'}, targetSession=${sessionId}, match=${eventSessionId === sessionId}, rawProps=${JSON.stringify(event.properties).substring(0, 500)}`);
+                        // Theory 2: Check if status has unexpected structure
+                        if (event.type === 'session.status') {
+                            logger.info(`[DEBUG] session.status event - full props: ${JSON.stringify(event.properties)}`);
+                        }
+                        if (eventSessionId !== sessionId) {
                             continue;
                         }
+                        // Log every event for our session with full details
+                        logger.info(`[DEBUG] Processing event for our session: type=${event.type}, sawBusy=${sawBusy}, idleGraceActive=${idleGraceTimerId !== null}`);
                         if (event.type === 'message.part.updated' &&
                             props.part?.type === 'tool') {
                             const part = props.part;
@@ -37812,6 +37860,7 @@ class OpenCodeClientImpl {
                                 ? JSON.stringify(part.input).substring(0, 200)
                                 : '';
                             const toolSignature = `${toolName}:${toolInput}`;
+                            logger.info(`[DEBUG] Tool call detected: ${toolName}`);
                             if (this.detectLoop(toolSignature)) {
                                 resolved = true;
                                 cleanup();
@@ -37823,49 +37872,96 @@ class OpenCodeClientImpl {
                         if (event.type === 'session.status' &&
                             props.status &&
                             props.status.type !== 'idle') {
+                            logger.info(`[DEBUG] Session ${sessionId} became busy (status.type="${props.status.type}"), setting sawBusy=true (was ${sawBusy})`);
                             sawBusy = true;
-                            // Cancel any pending idle grace timer since model is active again
+                            busyTimestamp = Date.now();
                             cancelIdleGrace();
+                        }
+                        // Track tool calls as meaningful activity
+                        if (event.type === 'message.part.updated' &&
+                            props.part?.type === 'tool') {
+                            sawToolCall = true;
+                        }
+                        // Track text output as meaningful activity
+                        if (event.type === 'message.part.updated') {
+                            const partProps = props.part;
+                            if (partProps?.type === 'text' && partProps?.text) {
+                                sawTextOutput = true;
+                            }
                         }
                         // Message updates also indicate activity
                         if (event.type === 'message.updated' ||
                             event.type === 'message.part.updated') {
+                            logger.info(`[DEBUG] Message activity detected (${event.type}), cancelling idle grace if active`);
                             cancelIdleGrace();
                         }
                         const isIdle = event.type === 'session.idle' ||
                             (event.type === 'session.status' && props.status?.type === 'idle');
+                        logger.info(`[DEBUG] Idle check: isIdle=${isIdle}, sawBusy=${sawBusy}, sawToolCall=${sawToolCall}, sawTextOutput=${sawTextOutput}, willStartGrace=${isIdle && sawBusy && !idleGraceTimerId}`);
                         if (isIdle && sawBusy) {
-                            // Don't immediately complete - wait for grace period
-                            // This allows reasoning models time to resume after brief pauses
+                            // Check if the session went idle too quickly without any meaningful work
+                            const busyDuration = busyTimestamp
+                                ? Date.now() - busyTimestamp
+                                : 0;
+                            const hadMeaningfulActivity = sawToolCall || sawTextOutput;
+                            if (busyDuration < MIN_BUSY_DURATION_MS &&
+                                !hadMeaningfulActivity) {
+                                logger.error(`[ERROR] Session ${sessionId} went idle after only ${busyDuration}ms without any tool calls or text output. This likely indicates an error occurred (e.g., model not found, API error).`);
+                                logger.error(`[ERROR] Check the OpenCode server logs above for error details.`);
+                                resolved = true;
+                                cleanup();
+                                reject(new OpenCodeError(`Session failed: went idle after ${busyDuration}ms without any activity. Check server logs for errors (e.g., ProviderModelNotFoundError).`));
+                                return;
+                            }
                             if (!idleGraceTimerId) {
-                                logger.debug(`Session ${sessionId} went idle, waiting ${IDLE_GRACE_PERIOD_MS}ms grace period...`);
+                                logger.info(`[DEBUG] Session ${sessionId} went idle (sawBusy=${sawBusy}, busyDuration=${busyDuration}ms), starting ${IDLE_GRACE_PERIOD_MS}ms grace period...`);
                                 idleGraceTimerId = setTimeout(() => {
                                     if (!resolved) {
                                         const duration = Date.now() - startTime;
-                                        logger.info(`Session ${sessionId} completed after ${duration}ms (idle for ${IDLE_GRACE_PERIOD_MS}ms)`);
+                                        logger.info(`[DEBUG] Grace period expired, completing session ${sessionId} after ${duration}ms`);
                                         resolved = true;
                                         cleanup();
                                         resolve();
                                     }
                                 }, IDLE_GRACE_PERIOD_MS);
                             }
+                            else {
+                                logger.info(`[DEBUG] Session ${sessionId} idle but grace timer already running`);
+                            }
+                        }
+                        else if (isIdle && !sawBusy) {
+                            logger.info(`[DEBUG] Session ${sessionId} is idle but sawBusy=${sawBusy}, NOT starting grace period (waiting for busy first)`);
                         }
                         if (event.type === 'session.status' &&
                             props.status?.type === 'retry') {
                             logger.warning(`Session ${sessionId} is retrying (attempt ${props.status.attempt}): ${props.status.message}`);
                         }
+                        // Detect error status types (e.g., ProviderModelNotFoundError causes cancel)
+                        if (event.type === 'session.status' &&
+                            props.status?.type === 'error') {
+                            const errorMessage = props.status.message || 'Unknown session error';
+                            logger.error(`[ERROR] Session ${sessionId} encountered error: ${errorMessage}`);
+                            logger.error(`[ERROR] Full error details: ${JSON.stringify(event.properties)}`);
+                            resolved = true;
+                            cleanup();
+                            reject(new OpenCodeError(`OpenCode session error: ${errorMessage}`));
+                            return;
+                        }
                         if (event.type === 'session.error') {
+                            logger.error(`[ERROR] Session error event: ${JSON.stringify(event.properties)}`);
                             resolved = true;
                             cleanup();
                             reject(new OpenCodeError(`Session error: ${JSON.stringify(event.properties)}`));
                             return;
                         }
                     }
+                    logger.info(`[DEBUG] Event stream ended for session ${sessionId}, processed ${eventCount} events, resolved=${resolved}`);
                     if (!resolved) {
                         reject(new OpenCodeError('Event stream ended unexpectedly'));
                     }
                 }
                 catch (error) {
+                    logger.error(`[DEBUG] Error in processEvents: ${error instanceof Error ? error.message : String(error)}`);
                     if (!resolved && !abortController.signal.aborted) {
                         cleanup();
                         reject(new OpenCodeError(`Error processing events: ${error instanceof Error ? error.message : String(error)}`));
@@ -37874,6 +37970,7 @@ class OpenCodeClientImpl {
             };
             processEvents();
         });
+        return { completionPromise, subscriptionReady };
     }
     logEvent(event, targetSessionId) {
         if (!this.debugLogging) {
@@ -37986,6 +38083,7 @@ class OpenCodeServer {
     shutdownTimeoutMs = 10000;
     configFilePath = null;
     authFilePath = null;
+    dataDir = null;
     constructor(config) {
         this.config = config;
         this.healthCheckUrl = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SERVER_PORT}`;
@@ -38046,6 +38144,20 @@ class OpenCodeServer {
             }
         });
     }
+    async restart() {
+        await logger.group('Restarting OpenCode Server', async () => {
+            logger.info('Restarting OpenCode server due to token refresh error...');
+            try {
+                await this.stop();
+            }
+            catch (error) {
+                logger.warning(`Error stopping server during restart: ${error instanceof Error ? error.message : String(error)}`);
+            }
+            await this.delay(2000);
+            await this.start();
+            logger.info('OpenCode server restarted successfully');
+        });
+    }
     isRunning() {
         return this.status === 'running';
     }
@@ -38062,7 +38174,10 @@ class OpenCodeServer {
             '--port',
             String(OPENCODE_SERVER_PORT),
             '--hostname',
-            OPENCODE_SERVER_HOST
+            OPENCODE_SERVER_HOST,
+            '--log-level',
+            'DEBUG',
+            '--print-logs'
         ];
         logger.debug(`Starting OpenCode server on port ${OPENCODE_SERVER_PORT} with model ${this.config.opencode.model}`);
         logger.debug(`Running: ${command} ${serveArgs.join(' ')}`);
@@ -38070,6 +38185,7 @@ class OpenCodeServer {
         const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd();
         const env = {
             OPENCODE_CONFIG: this.configFilePath || '',
+            XDG_DATA_HOME: this.dataDir || '',
             PATH: process.env.PATH || '',
             HOME: process.env.HOME || '',
             TMPDIR: process.env.TMPDIR || process.env.TEMP || '/tmp',
@@ -38080,7 +38196,8 @@ class OpenCodeServer {
             env.OPENCODE_DEBUG = 'true';
         }
         logger.info(`OpenCode environment: OPENCODE_CONFIG=${env.OPENCODE_CONFIG}`);
-        logger.debug('Auth credentials passed via auth.json file');
+        logger.info(`OpenCode environment: XDG_DATA_HOME=${env.XDG_DATA_HOME}`);
+        logger.debug('Auth credentials passed via auth.json file at $XDG_DATA_HOME/opencode/auth.json');
         logger.debug(`Minimal environment: ${Object.keys(env).join(', ')}`);
         this.serverProcess = spawn(command, serveArgs, {
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -38107,42 +38224,217 @@ class OpenCodeServer {
         catch (error) {
             throw new OpenCodeError(`Failed to parse auth JSON: ${error instanceof Error ? error.message : String(error)}`);
         }
+        // Let OpenCode auto-discover providers from auth.json
+        // Do NOT set enabled_providers as it interferes with provider loading
         const availableProviders = Object.keys(auth);
-        const modelParts = model.split('/');
-        const modelProvider = modelParts[0];
-        let enabledProviders;
-        let disabledProviders;
-        let finalModel;
-        if (modelProvider === 'openrouter') {
-            enabledProviders = ['openrouter'];
-            disabledProviders = ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'];
-            finalModel = model;
-        }
-        else if (modelProvider && availableProviders.includes(modelProvider)) {
-            enabledProviders = [modelProvider];
-            disabledProviders = [
-                'gemini',
-                'anthropic',
-                'openai',
-                'azure',
-                'bedrock',
-                'openrouter'
-            ].filter((p) => p !== modelProvider);
-            finalModel = model;
-        }
-        else {
-            enabledProviders = availableProviders;
-            disabledProviders = [];
-            finalModel = model;
-        }
+        logger.info(`[DEBUG] Available providers from auth.json: ${availableProviders.join(', ')}`);
+        logger.info(`[DEBUG] Configured model: ${model}`);
         const config = {
             $schema: 'https://opencode.ai/config.json',
-            model: finalModel,
-            enabled_providers: enabledProviders,
-            disabled_providers: disabledProviders,
+            model: model,
+            plugin: ['opencode-openai-codex-auth'],
             provider: {
                 openrouter: {
                     models: {}
+                },
+                openai: {
+                    options: {
+                        reasoningEffort: 'medium',
+                        reasoningSummary: 'auto',
+                        textVerbosity: 'medium',
+                        include: ['reasoning.encrypted_content'],
+                        store: false
+                    },
+                    models: {
+                        'gpt-5.2': {
+                            name: 'GPT 5.2 (OAuth)',
+                            limit: {
+                                context: 272000,
+                                output: 128000
+                            },
+                            modalities: {
+                                input: ['text', 'image'],
+                                output: ['text']
+                            },
+                            variants: {
+                                none: {
+                                    reasoningEffort: 'none',
+                                    reasoningSummary: 'auto',
+                                    textVerbosity: 'medium'
+                                },
+                                low: {
+                                    reasoningEffort: 'low',
+                                    reasoningSummary: 'auto',
+                                    textVerbosity: 'medium'
+                                },
+                                medium: {
+                                    reasoningEffort: 'medium',
+                                    reasoningSummary: 'auto',
+                                    textVerbosity: 'medium'
+                                },
+                                high: {
+                                    reasoningEffort: 'high',
+                                    reasoningSummary: 'detailed',
+                                    textVerbosity: 'medium'
+                                },
+                                xhigh: {
+                                    reasoningEffort: 'xhigh',
+                                    reasoningSummary: 'detailed',
+                                    textVerbosity: 'medium'
+                                }
+                            }
+                        },
+                        'gpt-5.2-codex': {
+                            name: 'GPT 5.2 Codex (OAuth)',
+                            limit: {
+                                context: 272000,
+                                output: 128000
+                            },
+                            modalities: {
+                                input: ['text', 'image'],
+                                output: ['text']
+                            },
+                            variants: {
+                                low: {
+                                    reasoningEffort: 'low',
+                                    reasoningSummary: 'auto',
+                                    textVerbosity: 'medium'
+                                },
+                                medium: {
+                                    reasoningEffort: 'medium',
+                                    reasoningSummary: 'auto',
+                                    textVerbosity: 'medium'
+                                },
+                                high: {
+                                    reasoningEffort: 'high',
+                                    reasoningSummary: 'detailed',
+                                    textVerbosity: 'medium'
+                                },
+                                xhigh: {
+                                    reasoningEffort: 'xhigh',
+                                    reasoningSummary: 'detailed',
+                                    textVerbosity: 'medium'
+                                }
+                            }
+                        },
+                        'gpt-5.1-codex-max': {
+                            name: 'GPT 5.1 Codex Max (OAuth)',
+                            limit: {
+                                context: 272000,
+                                output: 128000
+                            },
+                            modalities: {
+                                input: ['text', 'image'],
+                                output: ['text']
+                            },
+                            variants: {
+                                low: {
+                                    reasoningEffort: 'low',
+                                    reasoningSummary: 'detailed',
+                                    textVerbosity: 'medium'
+                                },
+                                medium: {
+                                    reasoningEffort: 'medium',
+                                    reasoningSummary: 'detailed',
+                                    textVerbosity: 'medium'
+                                },
+                                high: {
+                                    reasoningEffort: 'high',
+                                    reasoningSummary: 'detailed',
+                                    textVerbosity: 'medium'
+                                },
+                                xhigh: {
+                                    reasoningEffort: 'xhigh',
+                                    reasoningSummary: 'detailed',
+                                    textVerbosity: 'medium'
+                                }
+                            }
+                        },
+                        'gpt-5.1-codex': {
+                            name: 'GPT 5.1 Codex (OAuth)',
+                            limit: {
+                                context: 272000,
+                                output: 128000
+                            },
+                            modalities: {
+                                input: ['text', 'image'],
+                                output: ['text']
+                            },
+                            variants: {
+                                low: {
+                                    reasoningEffort: 'low',
+                                    reasoningSummary: 'auto',
+                                    textVerbosity: 'medium'
+                                },
+                                medium: {
+                                    reasoningEffort: 'medium',
+                                    reasoningSummary: 'auto',
+                                    textVerbosity: 'medium'
+                                },
+                                high: {
+                                    reasoningEffort: 'high',
+                                    reasoningSummary: 'detailed',
+                                    textVerbosity: 'medium'
+                                }
+                            }
+                        },
+                        'gpt-5.1-codex-mini': {
+                            name: 'GPT 5.1 Codex Mini (OAuth)',
+                            limit: {
+                                context: 272000,
+                                output: 128000
+                            },
+                            modalities: {
+                                input: ['text', 'image'],
+                                output: ['text']
+                            },
+                            variants: {
+                                medium: {
+                                    reasoningEffort: 'medium',
+                                    reasoningSummary: 'auto',
+                                    textVerbosity: 'medium'
+                                },
+                                high: {
+                                    reasoningEffort: 'high',
+                                    reasoningSummary: 'detailed',
+                                    textVerbosity: 'medium'
+                                }
+                            }
+                        },
+                        'gpt-5.1': {
+                            name: 'GPT 5.1 (OAuth)',
+                            limit: {
+                                context: 272000,
+                                output: 128000
+                            },
+                            modalities: {
+                                input: ['text', 'image'],
+                                output: ['text']
+                            },
+                            variants: {
+                                none: {
+                                    reasoningEffort: 'none',
+                                    reasoningSummary: 'auto',
+                                    textVerbosity: 'medium'
+                                },
+                                low: {
+                                    reasoningEffort: 'low',
+                                    reasoningSummary: 'auto',
+                                    textVerbosity: 'low'
+                                },
+                                medium: {
+                                    reasoningEffort: 'medium',
+                                    reasoningSummary: 'auto',
+                                    textVerbosity: 'medium'
+                                },
+                                high: {
+                                    reasoningEffort: 'high',
+                                    reasoningSummary: 'detailed',
+                                    textVerbosity: 'high'
+                                }
+                            }
+                        }
+                    }
                 }
             },
             tools: {
@@ -38175,8 +38467,8 @@ class OpenCodeServer {
                 mode: 0o600
             });
             logger.info(`Created OpenCode config file: ${configPath}`);
-            logger.info(`Config model: ${finalModel}`);
-            logger.info(`Enabled providers: ${enabledProviders.join(', ')}`);
+            logger.info(`Config model: ${model}`);
+            logger.info(`Enabled providers: ${availableProviders.join(', ')}`);
             logger.info(`Config contents: ${JSON.stringify(config, null, 2)}`);
         }
         catch (error) {
@@ -38186,7 +38478,17 @@ class OpenCodeServer {
         return configPath;
     }
     createAuthFile(secureConfigDir) {
-        const authPath = join(secureConfigDir, 'auth.json');
+        // OpenCode expects auth.json at $XDG_DATA_HOME/opencode/auth.json
+        // We set XDG_DATA_HOME to our secure config dir, so auth.json goes in opencode/ subdir
+        this.dataDir = secureConfigDir;
+        const opencodeDataDir = join(secureConfigDir, 'opencode');
+        try {
+            mkdirSync(opencodeDataDir, { recursive: true, mode: 0o700 });
+        }
+        catch (error) {
+            throw new OpenCodeError(`Failed to create opencode data directory: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        const authPath = join(opencodeDataDir, 'auth.json');
         this.authFilePath = authPath;
         let auth;
         try {
@@ -38201,8 +38503,8 @@ class OpenCodeServer {
                 mode: 0o600
             });
             chmodSync(authPath, 0o600);
-            logger.debug(`Created OpenCode auth file: ${authPath}`);
-            logger.debug(`Configured providers: ${Object.keys(auth).join(', ')}`);
+            logger.info(`Created OpenCode auth file: ${authPath}`);
+            logger.info(`Configured providers: ${Object.keys(auth).join(', ')}`);
         }
         catch (error) {
             throw new OpenCodeError(`Failed to write auth file: ${error instanceof Error ? error.message : String(error)}`);
@@ -38229,6 +38531,7 @@ class OpenCodeServer {
             }
             this.authFilePath = null;
         }
+        this.dataDir = null;
     }
     attachProcessHandlers() {
         if (!this.serverProcess) {
@@ -38256,7 +38559,24 @@ class OpenCodeServer {
             this.serverProcess.stderr.on('data', (data) => {
                 const output = data.toString().trim();
                 if (output) {
-                    logger.warning(`[OpenCode STDERR] ${output}`);
+                    // Check for critical errors that should be surfaced prominently
+                    if (output.includes('ERROR')) {
+                        logger.error(`[OpenCode ERROR] ${output}`);
+                        // Extract specific error types for clearer messaging
+                        if (output.includes('ProviderModelNotFoundError')) {
+                            logger.error('[OpenCode ERROR] Model not found! Check that the configured model exists and is available.');
+                            logger.error('[OpenCode ERROR] Run "opencode models" to see available models.');
+                        }
+                        else if (output.includes('ProviderInitError')) {
+                            logger.error('[OpenCode ERROR] Provider initialization failed! Check your API keys and provider configuration.');
+                        }
+                        else if (output.includes('AI_APICallError')) {
+                            logger.error('[OpenCode ERROR] API call failed! This may be due to rate limiting, invalid credentials, or network issues.');
+                        }
+                    }
+                    else {
+                        logger.warning(`[OpenCode STDERR] ${output}`);
+                    }
                 }
             });
         }
@@ -38273,6 +38593,8 @@ class OpenCodeServer {
                 if (isHealthy) {
                     this.status = 'running';
                     logger.info(`Server became healthy after ${Date.now() - startTime}ms`);
+                    // Log server configuration for debugging
+                    await this.logServerState();
                     return;
                 }
             }
@@ -38296,6 +38618,83 @@ class OpenCodeServer {
         }
         catch {
             return false;
+        }
+    }
+    async logServerState() {
+        try {
+            // Log config
+            const configResponse = await fetch(`${this.healthCheckUrl}/config`);
+            if (configResponse.ok) {
+                const config = await configResponse.json();
+                logger.info(`[DEBUG] Server config: ${JSON.stringify(config)}`);
+            }
+            // Log providers
+            const providersResponse = await fetch(`${this.healthCheckUrl}/config/providers`);
+            if (providersResponse.ok) {
+                const providers = await providersResponse.json();
+                logger.info(`[DEBUG] Server providers: ${JSON.stringify(providers)}`);
+            }
+            // Log health
+            const healthResponse = await fetch(`${this.healthCheckUrl}/global/health`);
+            if (healthResponse.ok) {
+                const health = await healthResponse.json();
+                logger.info(`[DEBUG] Server health: ${JSON.stringify(health)}`);
+            }
+            // Log session status
+            const sessionStatusResponse = await fetch(`${this.healthCheckUrl}/session/status`);
+            if (sessionStatusResponse.ok) {
+                const sessionStatus = await sessionStatusResponse.json();
+                logger.info(`[DEBUG] Session status: ${JSON.stringify(sessionStatus)}`);
+            }
+            // Run opencode models CLI to see available models
+            await this.logAvailableModels();
+        }
+        catch (error) {
+            logger.warning(`[DEBUG] Failed to log server state: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    async logAvailableModels() {
+        try {
+            const { command, args } = getOpenCodeCLICommand();
+            const modelsArgs = [...args, 'models'];
+            logger.info(`[DEBUG] Running: ${command} ${modelsArgs.join(' ')}`);
+            const env = {
+                OPENCODE_CONFIG: this.configFilePath || '',
+                XDG_DATA_HOME: this.dataDir || '',
+                PATH: process.env.PATH || '',
+                HOME: process.env.HOME || '',
+                TMPDIR: process.env.TMPDIR || process.env.TEMP || '/tmp',
+                NODE_ENV: process.env.NODE_ENV || 'production'
+            };
+            const output = execSync(`${command} ${modelsArgs.join(' ')}`, {
+                encoding: 'utf8',
+                timeout: 30000,
+                env: { ...process.env, ...env },
+                maxBuffer: 1024 * 1024
+            });
+            logger.info(`[DEBUG] Available models from 'opencode models':`);
+            const lines = output.split('\n');
+            for (const line of lines) {
+                if (line.trim()) {
+                    logger.info(`[DEBUG]   ${line}`);
+                }
+            }
+        }
+        catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            logger.warning(`[DEBUG] Failed to run 'opencode models': ${errorMessage}`);
+            if (error && typeof error === 'object' && 'stdout' in error) {
+                const stdout = error.stdout;
+                if (stdout) {
+                    logger.info(`[DEBUG] Partial stdout: ${stdout}`);
+                }
+            }
+            if (error && typeof error === 'object' && 'stderr' in error) {
+                const stderr = error.stderr;
+                if (stderr) {
+                    logger.warning(`[DEBUG] stderr: ${stderr}`);
+                }
+            }
         }
     }
     async killServerProcess() {
@@ -40956,6 +41355,7 @@ function buildSecuritySensitivity(packageJson, readme) {
     return `High sensitivity detected: ${indicators.join(', ')}`;
 }
 
+const MAX_TOKEN_REFRESH_RETRIES = 2;
 class ReviewExecutor {
     opencode;
     stateManager;
@@ -40969,6 +41369,7 @@ class ReviewExecutor {
     currentPhase = 'idle';
     passCompletionResolvers = new Map();
     currentTaskInfo = undefined;
+    server = null;
     constructor(opencode, stateManager, github, config, workspaceRoot) {
         this.opencode = opencode;
         this.stateManager = stateManager;
@@ -41233,9 +41634,30 @@ class ReviewExecutor {
         await this.ensureSession();
     }
     async sendPromptToOpenCode(prompt) {
-        const sessionId = await this.ensureSession();
-        logger.debug(`Sending prompt to session ${sessionId}`);
-        await this.opencode.sendPrompt(sessionId, prompt);
+        let tokenRefreshRetries = 0;
+        while (tokenRefreshRetries <= MAX_TOKEN_REFRESH_RETRIES) {
+            try {
+                const sessionId = await this.ensureSession();
+                logger.debug(`Sending prompt to session ${sessionId}`);
+                await this.opencode.sendPrompt(sessionId, prompt);
+                return;
+            }
+            catch (error) {
+                if (isTokenRefreshError(error) && this.server) {
+                    tokenRefreshRetries++;
+                    if (tokenRefreshRetries <= MAX_TOKEN_REFRESH_RETRIES) {
+                        logger.warning(`Token refresh error detected (attempt ${tokenRefreshRetries}/${MAX_TOKEN_REFRESH_RETRIES}), restarting OpenCode server...`);
+                        await this.server.restart();
+                        this.currentSessionId = null;
+                        continue;
+                    }
+                }
+                throw error;
+            }
+        }
+    }
+    setServer(server) {
+        this.server = server;
     }
     async cleanup() {
         if (this.currentSessionId) {
@@ -51579,6 +52001,7 @@ async function run() {
         const workspaceRoot = process.env.GITHUB_WORKSPACE || process.cwd();
         const stateManager = new StateManager(config, classificationLlmClient, github.getOctokit());
         reviewExecutor = new ReviewExecutor(opencode, stateManager, github, config, workspaceRoot);
+        reviewExecutor.setServer(openCodeServer);
         const taskOrchestrator = new TaskOrchestrator(config, github, reviewExecutor, stateManager, classificationLlmClient);
         trpcServer = new TRPCServer(reviewExecutor, github, classificationLlmClient);
         await trpcServer.start();
@@ -51587,9 +52010,30 @@ async function run() {
         logger.info(`Execution complete: ${executionResult.totalTasks} task(s) executed`);
         let totalIssuesFound = 0;
         let totalBlockingIssues = 0;
+        const failedTasks = [];
         for (const result of executionResult.results) {
             totalIssuesFound += result.issuesFound;
             totalBlockingIssues += result.blockingIssues;
+            // Track failed tasks - check success flag, error is optional
+            if (!result.success) {
+                failedTasks.push({
+                    type: result.type,
+                    error: result.error || 'Unknown error'
+                });
+            }
+        }
+        // If any tasks failed with errors, fail the workflow immediately
+        if (failedTasks.length > 0) {
+            const errorMessages = failedTasks
+                .map((t) => `${t.type}: ${t.error}`)
+                .join('; ');
+            const message = `Task execution failed: ${errorMessages}`;
+            logger.error(message);
+            coreExports.setFailed(message);
+            exitCode = 1;
+            // Don't continue processing - we've already failed
+            logger.info('Review My Code, OpenCode! completed with errors');
+            return;
         }
         if (executionResult.reviewCompleted) {
             coreExports.setOutput('review_status', 'completed');

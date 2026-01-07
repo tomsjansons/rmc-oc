@@ -9,7 +9,7 @@ import type {
 } from '../state/manager.js'
 import type { OpenCodeClient } from '../opencode/client.js'
 
-import { OrchestratorError } from '../utils/errors.js'
+import { OrchestratorError, isTokenRefreshError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
 import {
   type PromptInjectionDetector,
@@ -22,9 +22,11 @@ import type {
   QuestionContext
 } from '../task/types.js'
 import type { TaskInfo } from '../task/task-info.js'
+import type { OpenCodeServer } from '../opencode/server.js'
 import type { PassResult, ReviewConfig, ReviewOutput } from './types.js'
 
 type PassNumber = 1 | 2 | 3
+const MAX_TOKEN_REFRESH_RETRIES = 2
 
 type ReviewPhase =
   | 'idle'
@@ -40,6 +42,7 @@ export class ReviewExecutor {
   private currentPhase: ReviewPhase = 'idle'
   private passCompletionResolvers: Map<number, () => void> = new Map()
   private currentTaskInfo: TaskInfo | undefined = undefined
+  private server: OpenCodeServer | null = null
 
   constructor(
     private opencode: OpenCodeClient,
@@ -507,9 +510,33 @@ export class ReviewExecutor {
   }
 
   private async sendPromptToOpenCode(prompt: string): Promise<void> {
-    const sessionId = await this.ensureSession()
-    logger.debug(`Sending prompt to session ${sessionId}`)
-    await this.opencode.sendPrompt(sessionId, prompt)
+    let tokenRefreshRetries = 0
+
+    while (tokenRefreshRetries <= MAX_TOKEN_REFRESH_RETRIES) {
+      try {
+        const sessionId = await this.ensureSession()
+        logger.debug(`Sending prompt to session ${sessionId}`)
+        await this.opencode.sendPrompt(sessionId, prompt)
+        return
+      } catch (error) {
+        if (isTokenRefreshError(error) && this.server) {
+          tokenRefreshRetries++
+          if (tokenRefreshRetries <= MAX_TOKEN_REFRESH_RETRIES) {
+            logger.warning(
+              `Token refresh error detected (attempt ${tokenRefreshRetries}/${MAX_TOKEN_REFRESH_RETRIES}), restarting OpenCode server...`
+            )
+            await this.server.restart()
+            this.currentSessionId = null
+            continue
+          }
+        }
+        throw error
+      }
+    }
+  }
+
+  setServer(server: OpenCodeServer): void {
+    this.server = server
   }
 
   async cleanup(): Promise<void> {

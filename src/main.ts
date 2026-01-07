@@ -80,6 +80,7 @@ export async function run(): Promise<void> {
       config,
       workspaceRoot
     )
+    reviewExecutor.setServer(openCodeServer)
 
     const taskOrchestrator = new TaskOrchestrator(
       config,
@@ -101,10 +102,33 @@ export async function run(): Promise<void> {
 
     let totalIssuesFound = 0
     let totalBlockingIssues = 0
+    const failedTasks: Array<{ type: string; error: string }> = []
 
     for (const result of executionResult.results) {
       totalIssuesFound += result.issuesFound
       totalBlockingIssues += result.blockingIssues
+
+      // Track failed tasks - check success flag, error is optional
+      if (!result.success) {
+        failedTasks.push({
+          type: result.type,
+          error: result.error || 'Unknown error'
+        })
+      }
+    }
+
+    // If any tasks failed with errors, fail the workflow immediately
+    if (failedTasks.length > 0) {
+      const errorMessages = failedTasks
+        .map((t) => `${t.type}: ${t.error}`)
+        .join('; ')
+      const message = `Task execution failed: ${errorMessages}`
+      logger.error(message)
+      core.setFailed(message)
+      exitCode = 1
+      // Don't continue processing - we've already failed
+      logger.info('Review My Code, OpenCode! completed with errors')
+      return
     }
 
     if (executionResult.reviewCompleted) {

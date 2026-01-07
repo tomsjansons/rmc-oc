@@ -27,7 +27,7 @@ import require$$6 from 'string_decoder';
 import require$$0$9 from 'diagnostics_channel';
 import require$$2$3 from 'child_process';
 import require$$6$1 from 'timers';
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, chmodSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { readFile, mkdir, readdir, copyFile } from 'node:fs/promises';
@@ -38074,6 +38074,7 @@ class OpenCodeServer {
     shutdownTimeoutMs = 10000;
     configFilePath = null;
     authFilePath = null;
+    dataDir = null;
     constructor(config) {
         this.config = config;
         this.healthCheckUrl = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SERVER_PORT}`;
@@ -38161,6 +38162,7 @@ class OpenCodeServer {
         const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd();
         const env = {
             OPENCODE_CONFIG: this.configFilePath || '',
+            XDG_DATA_HOME: this.dataDir || '',
             PATH: process.env.PATH || '',
             HOME: process.env.HOME || '',
             TMPDIR: process.env.TMPDIR || process.env.TEMP || '/tmp',
@@ -38171,7 +38173,8 @@ class OpenCodeServer {
             env.OPENCODE_DEBUG = 'true';
         }
         logger.info(`OpenCode environment: OPENCODE_CONFIG=${env.OPENCODE_CONFIG}`);
-        logger.debug('Auth credentials passed via auth.json file');
+        logger.info(`OpenCode environment: XDG_DATA_HOME=${env.XDG_DATA_HOME}`);
+        logger.debug('Auth credentials passed via auth.json file at $XDG_DATA_HOME/opencode/auth.json');
         logger.debug(`Minimal environment: ${Object.keys(env).join(', ')}`);
         this.serverProcess = spawn(command, serveArgs, {
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -38198,15 +38201,14 @@ class OpenCodeServer {
         catch (error) {
             throw new OpenCodeError(`Failed to parse auth JSON: ${error instanceof Error ? error.message : String(error)}`);
         }
-        // Enable all providers from auth.json - no filtering needed
+        // Let OpenCode auto-discover providers from auth.json
+        // Do NOT set enabled_providers as it interferes with provider loading
         const availableProviders = Object.keys(auth);
         logger.info(`[DEBUG] Available providers from auth.json: ${availableProviders.join(', ')}`);
         logger.info(`[DEBUG] Configured model: ${model}`);
         const config = {
             $schema: 'https://opencode.ai/config.json',
             model: model,
-            enabled_providers: availableProviders,
-            disabled_providers: [],
             plugin: ['opencode-openai-codex-auth'],
             provider: {
                 openrouter: {
@@ -38453,7 +38455,17 @@ class OpenCodeServer {
         return configPath;
     }
     createAuthFile(secureConfigDir) {
-        const authPath = join(secureConfigDir, 'auth.json');
+        // OpenCode expects auth.json at $XDG_DATA_HOME/opencode/auth.json
+        // We set XDG_DATA_HOME to our secure config dir, so auth.json goes in opencode/ subdir
+        this.dataDir = secureConfigDir;
+        const opencodeDataDir = join(secureConfigDir, 'opencode');
+        try {
+            mkdirSync(opencodeDataDir, { recursive: true, mode: 0o700 });
+        }
+        catch (error) {
+            throw new OpenCodeError(`Failed to create opencode data directory: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        const authPath = join(opencodeDataDir, 'auth.json');
         this.authFilePath = authPath;
         let auth;
         try {
@@ -38468,8 +38480,8 @@ class OpenCodeServer {
                 mode: 0o600
             });
             chmodSync(authPath, 0o600);
-            logger.debug(`Created OpenCode auth file: ${authPath}`);
-            logger.debug(`Configured providers: ${Object.keys(auth).join(', ')}`);
+            logger.info(`Created OpenCode auth file: ${authPath}`);
+            logger.info(`Configured providers: ${Object.keys(auth).join(', ')}`);
         }
         catch (error) {
             throw new OpenCodeError(`Failed to write auth file: ${error instanceof Error ? error.message : String(error)}`);
@@ -38496,6 +38508,7 @@ class OpenCodeServer {
             }
             this.authFilePath = null;
         }
+        this.dataDir = null;
     }
     attachProcessHandlers() {
         if (!this.serverProcess) {
@@ -38610,9 +38623,55 @@ class OpenCodeServer {
                 const sessionStatus = await sessionStatusResponse.json();
                 logger.info(`[DEBUG] Session status: ${JSON.stringify(sessionStatus)}`);
             }
+            // Run opencode models CLI to see available models
+            await this.logAvailableModels();
         }
         catch (error) {
             logger.warning(`[DEBUG] Failed to log server state: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    async logAvailableModels() {
+        try {
+            const { command, args } = getOpenCodeCLICommand();
+            const modelsArgs = [...args, 'models'];
+            logger.info(`[DEBUG] Running: ${command} ${modelsArgs.join(' ')}`);
+            const env = {
+                OPENCODE_CONFIG: this.configFilePath || '',
+                XDG_DATA_HOME: this.dataDir || '',
+                PATH: process.env.PATH || '',
+                HOME: process.env.HOME || '',
+                TMPDIR: process.env.TMPDIR || process.env.TEMP || '/tmp',
+                NODE_ENV: process.env.NODE_ENV || 'production'
+            };
+            const output = execSync(`${command} ${modelsArgs.join(' ')}`, {
+                encoding: 'utf8',
+                timeout: 30000,
+                env: { ...process.env, ...env },
+                maxBuffer: 1024 * 1024
+            });
+            logger.info(`[DEBUG] Available models from 'opencode models':`);
+            const lines = output.split('\n');
+            for (const line of lines) {
+                if (line.trim()) {
+                    logger.info(`[DEBUG]   ${line}`);
+                }
+            }
+        }
+        catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            logger.warning(`[DEBUG] Failed to run 'opencode models': ${errorMessage}`);
+            if (error && typeof error === 'object' && 'stdout' in error) {
+                const stdout = error.stdout;
+                if (stdout) {
+                    logger.info(`[DEBUG] Partial stdout: ${stdout}`);
+                }
+            }
+            if (error && typeof error === 'object' && 'stderr' in error) {
+                const stderr = error.stderr;
+                if (stderr) {
+                    logger.warning(`[DEBUG] stderr: ${stderr}`);
+                }
+            }
         }
     }
     async killServerProcess() {
@@ -51908,18 +51967,26 @@ async function run() {
         for (const result of executionResult.results) {
             totalIssuesFound += result.issuesFound;
             totalBlockingIssues += result.blockingIssues;
-            if (!result.success && result.error) {
-                failedTasks.push({ type: result.type, error: result.error });
+            // Track failed tasks - check success flag, error is optional
+            if (!result.success) {
+                failedTasks.push({
+                    type: result.type,
+                    error: result.error || 'Unknown error'
+                });
             }
         }
-        // If any tasks failed with errors, fail the workflow
+        // If any tasks failed with errors, fail the workflow immediately
         if (failedTasks.length > 0) {
             const errorMessages = failedTasks
                 .map((t) => `${t.type}: ${t.error}`)
                 .join('; ');
             const message = `Task execution failed: ${errorMessages}`;
+            logger.error(message);
             coreExports.setFailed(message);
             exitCode = 1;
+            // Don't continue processing - we've already failed
+            logger.info('Review My Code, OpenCode! completed with errors');
+            return;
         }
         if (executionResult.reviewCompleted) {
             coreExports.setOutput('review_status', 'completed');

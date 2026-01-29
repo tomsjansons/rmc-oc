@@ -21,7 +21,6 @@ import type {
   DisputeContext,
   QuestionContext
 } from '../task/types.js'
-import type { TaskInfo } from '../task/task-info.js'
 import type { PassResult, ReviewConfig, ReviewOutput } from './types.js'
 
 type PassNumber = 1 | 2 | 3
@@ -39,7 +38,6 @@ export class ReviewExecutor {
   private currentSessionId: string | null = null
   private currentPhase: ReviewPhase = 'idle'
   private passCompletionResolvers: Map<number, () => void> = new Map()
-  private currentTaskInfo: TaskInfo | undefined = undefined
 
   constructor(
     private opencode: OpenCodeClient,
@@ -48,63 +46,15 @@ export class ReviewExecutor {
     private config: ReviewConfig,
     private workspaceRoot: string
   ) {
-    const apiKey = this.extractApiKeyForModel(
-      config.opencode.authJson,
-      config.security.injectionVerificationModel
-    )
-    if (!apiKey) {
-      throw new OrchestratorError(
-        `Could not extract API key for injection verification model "${config.security.injectionVerificationModel}" from auth JSON`
-      )
-    }
     this.injectionDetector = createPromptInjectionDetector(
-      apiKey,
+      config.opencode.apiKey,
       config.security.injectionVerificationModel,
       config.security.injectionDetectionEnabled
     )
   }
 
-  private extractApiKeyForModel(
-    authJson: string,
-    model: string
-  ): string | null {
-    try {
-      const auth = JSON.parse(authJson) as Record<
-        string,
-        { type: string; key: string }
-      >
-
-      const modelParts = model.split('/')
-      const provider = modelParts[0]
-
-      if (!provider) {
-        return null
-      }
-
-      if (provider === 'openrouter' && modelParts.length > 1) {
-        return auth.openrouter?.key || null
-      }
-
-      if (auth[provider]?.key) {
-        return auth[provider].key
-      }
-
-      if (auth.openrouter?.key) {
-        return auth.openrouter.key
-      }
-
-      return null
-    } catch {
-      return null
-    }
-  }
-
-  async executeReview(taskInfo?: TaskInfo): Promise<ReviewOutput> {
+  async executeReview(): Promise<ReviewOutput> {
     return await logger.group('Executing Multi-Pass Review', async () => {
-      this.currentTaskInfo = taskInfo
-      if (taskInfo?.description.trim()) {
-        logger.info('Task info provided from PR description')
-      }
       logger.info(
         `Review configuration: timeout=${this.config.review.timeoutMs / 1000}s, maxRetries=${this.config.review.maxRetries}`
       )
@@ -211,29 +161,9 @@ export class ReviewExecutor {
       'Starting 3-pass review in single OpenCode session (context preserved across all passes)'
     )
 
-    const taskInfoContext =
-      this.currentTaskInfo?.description.trim() || undefined
-    const linkedFilePaths = this.currentTaskInfo?.linkedFiles.map((f) => f.path)
-
-    if (taskInfoContext) {
-      logger.info('Task context from PR description will be included in review')
-      if (linkedFilePaths && linkedFilePaths.length > 0) {
-        logger.info(`Referenced task files: ${linkedFilePaths.join(', ')}`)
-      }
-    }
-
-    await this.executePass(
-      1,
-      REVIEW_PROMPTS.PASS_1(files, taskInfoContext, linkedFilePaths)
-    )
-    await this.executePass(
-      2,
-      REVIEW_PROMPTS.PASS_2(taskInfoContext, linkedFilePaths)
-    )
-    await this.executePass(
-      3,
-      REVIEW_PROMPTS.PASS_3(securitySensitivity, taskInfoContext)
-    )
+    await this.executePass(1, REVIEW_PROMPTS.PASS_1(files))
+    await this.executePass(2, REVIEW_PROMPTS.PASS_2())
+    await this.executePass(3, REVIEW_PROMPTS.PASS_3(securitySensitivity))
 
     logger.info('All 3 passes completed in single session')
 

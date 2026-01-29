@@ -16,16 +16,6 @@ We will work on tasks within the broader poject.
 
 # Task
 
-## Completed Tasks
-
-I got the review failure for an empty PR description. but this is not handled
-the same as other tasks:
-
-- thereis no rmcoc code block for the review to reference later
-- the workflow did not exit with non-zero code to block merges
-
-the PR description check needs to be treated the same as any other issue
-comment.
-
-the contents of the PR also need to be fed troough an llm to determine if it is
-sufficient or not
+Please create a detailed README and update it in place about the funcionality of
+this review agent. mention review passes, issue scoring, threshold and other
+features

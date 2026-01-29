@@ -83,7 +83,6 @@ export class GitHubAPI {
     head: { ref: string; sha: string }
     title: string
     number: number
-    description: string
   }> {
     try {
       const pr = await this.octokit.pulls.get({
@@ -102,33 +101,11 @@ export class GitHubAPI {
           sha: pr.data.head.sha
         },
         title: pr.data.title,
-        number: pr.data.number,
-        description: pr.data.body || ''
+        number: pr.data.number
       }
     } catch (error) {
       throw new GitHubAPIError(
         `Failed to fetch PR info: ${error instanceof Error ? error.message : String(error)}`
-      )
-    }
-  }
-
-  async getPRDescription(): Promise<string> {
-    try {
-      logger.debug('Fetching PR description')
-
-      const pr = await this.octokit.pulls.get({
-        owner: this.owner,
-        repo: this.repo,
-        pull_number: this.prNumber
-      })
-
-      const description = pr.data.body || ''
-      logger.debug(`PR description length: ${description.length} characters`)
-
-      return description
-    } catch (error) {
-      throw new GitHubAPIError(
-        `Failed to fetch PR description: ${error instanceof Error ? error.message : String(error)}`
       )
     }
   }
@@ -395,21 +372,18 @@ ${reviewerTags} - Please review this dispute and make a final decision.
     }
   }
 
-  async postIssueComment(body: string): Promise<string> {
+  async postIssueComment(body: string): Promise<void> {
     try {
       logger.debug('Posting issue comment')
 
-      const response = await this.octokit.issues.createComment({
+      await this.octokit.issues.createComment({
         owner: this.owner,
         repo: this.repo,
         issue_number: this.prNumber,
         body
       })
 
-      const commentId = String(response.data.id)
-      logger.info(`Posted issue comment: ID ${commentId}`)
-
-      return commentId
+      logger.info('Posted issue comment')
     } catch (error) {
       throw new GitHubAPIError(
         `Failed to post issue comment: ${error instanceof Error ? error.message : String(error)}`

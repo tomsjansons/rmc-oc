@@ -9,7 +9,7 @@ import type { QuestionContext, DisputeContext } from '../task/types.js'
 
 export type ReviewConfig = {
   opencode: {
-    authJson: string
+    apiKey: string
     model: string
     enableWeb: boolean
     debugLogging: boolean
@@ -35,9 +35,6 @@ export type ReviewConfig = {
   dispute: {
     enableHumanEscalation: boolean
     humanReviewers: string[]
-  }
-  taskInfo: {
-    requireTaskInfoInPrDesc: boolean
   }
   execution: {
     mode: ExecutionMode

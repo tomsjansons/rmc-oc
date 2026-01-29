@@ -32,20 +32,9 @@ type OpenCodeConfig = {
   model: string
   enabled_providers: string[]
   disabled_providers: string[]
-  plugin?: string[]
   provider: {
     openrouter: {
       models: Record<string, object>
-    }
-    openai?: {
-      options: {
-        reasoningEffort: string
-        reasoningSummary: string
-        textVerbosity: string
-        include: string[]
-        store: boolean
-      }
-      models: Record<string, unknown>
     }
   }
   tools: {
@@ -60,17 +49,12 @@ type OpenCodeConfig = {
   }
 }
 
-type OpenCodeAuth = Record<
-  string,
-  | {
-      type: 'api'
-      key: string
-    }
-  | {
-      type: 'oauth'
-      [key: string]: unknown
-    }
->
+type OpenCodeAuth = {
+  openrouter: {
+    type: 'api'
+    key: string
+  }
+}
 
 export class OpenCodeServer {
   private serverProcess: ChildProcess | null = null
@@ -193,6 +177,7 @@ export class OpenCodeServer {
 
     const env: Record<string, string> = {
       OPENCODE_CONFIG: this.configFilePath || '',
+      OPENROUTER_API_KEY: this.config.opencode.apiKey,
       PATH: process.env.PATH || '',
       HOME: process.env.HOME || '',
       TMPDIR: process.env.TMPDIR || process.env.TEMP || '/tmp',
@@ -205,8 +190,12 @@ export class OpenCodeServer {
     }
 
     logger.info(`OpenCode environment: OPENCODE_CONFIG=${env.OPENCODE_CONFIG}`)
-    logger.debug('Auth credentials passed via auth.json file')
-    logger.debug(`Minimal environment: ${Object.keys(env).join(', ')}`)
+    logger.debug('OPENROUTER_API_KEY passed via environment variable')
+    logger.debug(
+      `Minimal environment: ${Object.keys(env)
+        .filter((k) => k !== 'OPENROUTER_API_KEY')
+        .join(', ')}`
+    )
 
     this.serverProcess = spawn(command, serveArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -232,252 +221,16 @@ export class OpenCodeServer {
     const configPath = join(secureConfigDir, 'opencode.json')
     const model = this.config.opencode.model
 
-    let auth: OpenCodeAuth
-    try {
-      auth = JSON.parse(this.config.opencode.authJson) as OpenCodeAuth
-    } catch (error) {
-      throw new OpenCodeError(
-        `Failed to parse auth JSON: ${error instanceof Error ? error.message : String(error)}`
-      )
-    }
-
-    const availableProviders = Object.keys(auth)
-    const modelParts = model.split('/')
-    const modelProvider = modelParts[0]
-
-    let enabledProviders: string[]
-    let disabledProviders: string[]
-    let finalModel: string
-
-    if (modelProvider === 'openrouter') {
-      enabledProviders = ['openrouter']
-      disabledProviders = ['gemini', 'anthropic', 'openai', 'azure', 'bedrock']
-      finalModel = model
-    } else if (modelProvider && availableProviders.includes(modelProvider)) {
-      enabledProviders = [modelProvider]
-      disabledProviders = [
-        'gemini',
-        'anthropic',
-        'openai',
-        'azure',
-        'bedrock',
-        'openrouter'
-      ].filter((p) => p !== modelProvider)
-      finalModel = model
-    } else {
-      enabledProviders = availableProviders
-      disabledProviders = []
-      finalModel = model
-    }
+    const openrouterModel = `openrouter/${model}`
 
     const config: OpenCodeConfig = {
       $schema: 'https://opencode.ai/config.json',
-      model: finalModel,
-      enabled_providers: enabledProviders,
-      disabled_providers: disabledProviders,
-      plugin: ['opencode-openai-codex-auth'],
+      model: openrouterModel,
+      enabled_providers: ['openrouter'],
+      disabled_providers: ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'],
       provider: {
         openrouter: {
           models: {}
-        },
-        openai: {
-          options: {
-            reasoningEffort: 'medium',
-            reasoningSummary: 'auto',
-            textVerbosity: 'medium',
-            include: ['reasoning.encrypted_content'],
-            store: false
-          },
-          models: {
-            'gpt-5.2': {
-              name: 'GPT 5.2 (OAuth)',
-              limit: {
-                context: 272000,
-                output: 128000
-              },
-              modalities: {
-                input: ['text', 'image'],
-                output: ['text']
-              },
-              variants: {
-                none: {
-                  reasoningEffort: 'none',
-                  reasoningSummary: 'auto',
-                  textVerbosity: 'medium'
-                },
-                low: {
-                  reasoningEffort: 'low',
-                  reasoningSummary: 'auto',
-                  textVerbosity: 'medium'
-                },
-                medium: {
-                  reasoningEffort: 'medium',
-                  reasoningSummary: 'auto',
-                  textVerbosity: 'medium'
-                },
-                high: {
-                  reasoningEffort: 'high',
-                  reasoningSummary: 'detailed',
-                  textVerbosity: 'medium'
-                },
-                xhigh: {
-                  reasoningEffort: 'xhigh',
-                  reasoningSummary: 'detailed',
-                  textVerbosity: 'medium'
-                }
-              }
-            },
-            'gpt-5.2-codex': {
-              name: 'GPT 5.2 Codex (OAuth)',
-              limit: {
-                context: 272000,
-                output: 128000
-              },
-              modalities: {
-                input: ['text', 'image'],
-                output: ['text']
-              },
-              variants: {
-                low: {
-                  reasoningEffort: 'low',
-                  reasoningSummary: 'auto',
-                  textVerbosity: 'medium'
-                },
-                medium: {
-                  reasoningEffort: 'medium',
-                  reasoningSummary: 'auto',
-                  textVerbosity: 'medium'
-                },
-                high: {
-                  reasoningEffort: 'high',
-                  reasoningSummary: 'detailed',
-                  textVerbosity: 'medium'
-                },
-                xhigh: {
-                  reasoningEffort: 'xhigh',
-                  reasoningSummary: 'detailed',
-                  textVerbosity: 'medium'
-                }
-              }
-            },
-            'gpt-5.1-codex-max': {
-              name: 'GPT 5.1 Codex Max (OAuth)',
-              limit: {
-                context: 272000,
-                output: 128000
-              },
-              modalities: {
-                input: ['text', 'image'],
-                output: ['text']
-              },
-              variants: {
-                low: {
-                  reasoningEffort: 'low',
-                  reasoningSummary: 'detailed',
-                  textVerbosity: 'medium'
-                },
-                medium: {
-                  reasoningEffort: 'medium',
-                  reasoningSummary: 'detailed',
-                  textVerbosity: 'medium'
-                },
-                high: {
-                  reasoningEffort: 'high',
-                  reasoningSummary: 'detailed',
-                  textVerbosity: 'medium'
-                },
-                xhigh: {
-                  reasoningEffort: 'xhigh',
-                  reasoningSummary: 'detailed',
-                  textVerbosity: 'medium'
-                }
-              }
-            },
-            'gpt-5.1-codex': {
-              name: 'GPT 5.1 Codex (OAuth)',
-              limit: {
-                context: 272000,
-                output: 128000
-              },
-              modalities: {
-                input: ['text', 'image'],
-                output: ['text']
-              },
-              variants: {
-                low: {
-                  reasoningEffort: 'low',
-                  reasoningSummary: 'auto',
-                  textVerbosity: 'medium'
-                },
-                medium: {
-                  reasoningEffort: 'medium',
-                  reasoningSummary: 'auto',
-                  textVerbosity: 'medium'
-                },
-                high: {
-                  reasoningEffort: 'high',
-                  reasoningSummary: 'detailed',
-                  textVerbosity: 'medium'
-                }
-              }
-            },
-            'gpt-5.1-codex-mini': {
-              name: 'GPT 5.1 Codex Mini (OAuth)',
-              limit: {
-                context: 272000,
-                output: 128000
-              },
-              modalities: {
-                input: ['text', 'image'],
-                output: ['text']
-              },
-              variants: {
-                medium: {
-                  reasoningEffort: 'medium',
-                  reasoningSummary: 'auto',
-                  textVerbosity: 'medium'
-                },
-                high: {
-                  reasoningEffort: 'high',
-                  reasoningSummary: 'detailed',
-                  textVerbosity: 'medium'
-                }
-              }
-            },
-            'gpt-5.1': {
-              name: 'GPT 5.1 (OAuth)',
-              limit: {
-                context: 272000,
-                output: 128000
-              },
-              modalities: {
-                input: ['text', 'image'],
-                output: ['text']
-              },
-              variants: {
-                none: {
-                  reasoningEffort: 'none',
-                  reasoningSummary: 'auto',
-                  textVerbosity: 'medium'
-                },
-                low: {
-                  reasoningEffort: 'low',
-                  reasoningSummary: 'auto',
-                  textVerbosity: 'low'
-                },
-                medium: {
-                  reasoningEffort: 'medium',
-                  reasoningSummary: 'auto',
-                  textVerbosity: 'medium'
-                },
-                high: {
-                  reasoningEffort: 'high',
-                  reasoningSummary: 'detailed',
-                  textVerbosity: 'high'
-                }
-              }
-            }
-          }
         }
       },
       tools: {
@@ -488,7 +241,9 @@ export class OpenCodeServer {
       permission: {
         edit: 'deny',
         bash: {
+          // Deny all commands by default
           '*': 'deny',
+          // Allow read-only git commands for code analysis
           'git status': 'allow',
           'git diff *': 'allow',
           'git log *': 'allow',
@@ -511,8 +266,7 @@ export class OpenCodeServer {
         mode: 0o600
       })
       logger.info(`Created OpenCode config file: ${configPath}`)
-      logger.info(`Config model: ${finalModel}`)
-      logger.info(`Enabled providers: ${enabledProviders.join(', ')}`)
+      logger.info(`Config model: ${openrouterModel}`)
       logger.info(`Config contents: ${JSON.stringify(config, null, 2)}`)
     } catch (error) {
       throw new OpenCodeError(
@@ -529,13 +283,8 @@ export class OpenCodeServer {
     const authPath = join(secureConfigDir, 'auth.json')
     this.authFilePath = authPath
 
-    let auth: OpenCodeAuth
-    try {
-      auth = JSON.parse(this.config.opencode.authJson) as OpenCodeAuth
-    } catch (error) {
-      throw new OpenCodeError(
-        `Failed to parse auth JSON: ${error instanceof Error ? error.message : String(error)}`
-      )
+    const auth: OpenCodeAuth = {
+      openrouter: { type: 'api', key: this.config.opencode.apiKey }
     }
 
     try {
@@ -545,7 +294,9 @@ export class OpenCodeServer {
       })
       chmodSync(authPath, 0o600)
       logger.debug(`Created OpenCode auth file: ${authPath}`)
-      logger.debug(`Configured providers: ${Object.keys(auth).join(', ')}`)
+      logger.debug(
+        'Note: Auth is also passed via OPENROUTER_API_KEY env var as backup'
+      )
     } catch (error) {
       throw new OpenCodeError(
         `Failed to write auth file: ${error instanceof Error ? error.message : String(error)}`

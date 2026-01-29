@@ -59,8 +59,7 @@ why and keeps the thread open.
 
 ### Stateful Without External Dependencies
 
-A key design goal: **no external state management**. No Redis, no databases, no
-GitHub Actions cache (which proved unreliable).
+A key design goal: **no external state management**. No Redis, no databases.
 
 Instead, all state lives in PR comments using embedded `rmcoc` code blocks:
 
@@ -119,7 +118,7 @@ silent on everything below your threshold.
 When you disagree with a finding:
 
 1. Reply to the comment explaining your reasoning
-2. The bot re-examines with your context
+2. The bot re-examines with your context on next run (or immediately if @ tagged)
 3. If valid, it concedes and resolves the thread
 4. If the risk remains, it explains why (with option to escalate to human
    reviewers)

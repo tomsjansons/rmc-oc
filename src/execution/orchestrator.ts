@@ -139,6 +139,8 @@ export class ReviewExecutor {
 
     const files = await this.github.getPRFiles()
     const securitySensitivity = await this.detectSecuritySensitivity()
+    const prInfo = await this.github.getPRInfo()
+    const prDescription = prInfo.body
 
     // Log detailed file information for debugging
     logger.info(`Fetched ${files.length} changed files for review`)
@@ -149,7 +151,6 @@ export class ReviewExecutor {
     logger.info('=== END FILES LIST ===')
 
     // Log PR diff range info
-    const prInfo = await this.github.getPRInfo()
     logger.info(
       `PR diff range: ${prInfo.base.sha.substring(0, 7)}...${prInfo.head.sha.substring(0, 7)}`
     )
@@ -161,9 +162,12 @@ export class ReviewExecutor {
       'Starting 3-pass review in single OpenCode session (context preserved across all passes)'
     )
 
-    await this.executePass(1, REVIEW_PROMPTS.PASS_1(files))
-    await this.executePass(2, REVIEW_PROMPTS.PASS_2())
-    await this.executePass(3, REVIEW_PROMPTS.PASS_3(securitySensitivity))
+    await this.executePass(1, REVIEW_PROMPTS.PASS_1(files, prDescription))
+    await this.executePass(2, REVIEW_PROMPTS.PASS_2(prDescription))
+    await this.executePass(
+      3,
+      REVIEW_PROMPTS.PASS_3(securitySensitivity, prDescription)
+    )
 
     logger.info('All 3 passes completed in single session')
 
@@ -180,8 +184,13 @@ export class ReviewExecutor {
 
       const previousIssues = this.formatPreviousIssues()
       const newCommits = await this.getNewCommitsSummary()
+      const prInfo = await this.github.getPRInfo()
 
-      const prompt = REVIEW_PROMPTS.FIX_VERIFICATION(previousIssues, newCommits)
+      const prompt = REVIEW_PROMPTS.FIX_VERIFICATION(
+        previousIssues,
+        newCommits,
+        prInfo.body
+      )
 
       logger.info(
         `Verifying ${this.processState.threads.filter((t) => t.status !== 'RESOLVED').length} unresolved issues`
@@ -198,6 +207,7 @@ export class ReviewExecutor {
   ): Promise<void> {
     await logger.group('Dispute Resolution', async () => {
       this.currentPhase = 'dispute-resolution'
+      const prDescription = (await this.github.getPRInfo()).body
 
       if (disputeContext) {
         await this.handleSingleDispute(disputeContext)
@@ -261,7 +271,8 @@ export class ReviewExecutor {
             thread.assessment.assessment,
             sanitizedReplyBody,
             thread.file,
-            thread.line
+            thread.line,
+            prDescription
           )
         } else {
           prompt = REVIEW_PROMPTS.DISPUTE_EVALUATION(
@@ -273,7 +284,8 @@ export class ReviewExecutor {
             thread.line,
             sanitizedReplyBody,
             classification,
-            this.config.dispute.enableHumanEscalation
+            this.config.dispute.enableHumanEscalation,
+            prDescription
           )
         }
 
@@ -288,6 +300,7 @@ export class ReviewExecutor {
     disputeContext: DisputeContext
   ): Promise<void> {
     const { threadId, replyBody, replyAuthor, file, line } = disputeContext
+    const prDescription = (await this.github.getPRInfo()).body
 
     logger.info(`Processing reply from ${replyAuthor} on thread ${threadId}`)
     logger.info(`File: ${file}:${line || 'N/A'}`)
@@ -332,7 +345,8 @@ export class ReviewExecutor {
         thread.assessment.assessment,
         sanitizedReplyBody,
         thread.file,
-        thread.line
+        thread.line,
+        prDescription
       )
     } else {
       prompt = REVIEW_PROMPTS.DISPUTE_EVALUATION(
@@ -344,7 +358,8 @@ export class ReviewExecutor {
         thread.line,
         sanitizedReplyBody,
         classification,
-        this.config.dispute.enableHumanEscalation
+        this.config.dispute.enableHumanEscalation,
+        prDescription
       )
     }
 

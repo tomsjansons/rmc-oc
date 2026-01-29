@@ -83,6 +83,7 @@ export class GitHubAPI {
     head: { ref: string; sha: string }
     title: string
     number: number
+    body: string | null
   }> {
     try {
       const pr = await this.octokit.pulls.get({
@@ -101,7 +102,8 @@ export class GitHubAPI {
           sha: pr.data.head.sha
         },
         title: pr.data.title,
-        number: pr.data.number
+        number: pr.data.number,
+        body: pr.data.body ?? null
       }
     } catch (error) {
       throw new GitHubAPIError(

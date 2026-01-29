@@ -88,13 +88,23 @@ export async function run(): Promise<void> {
 
     let totalIssuesFound = 0
     let totalBlockingIssues = 0
+    let hasFailedTasks = false
 
     for (const result of executionResult.results) {
       totalIssuesFound += result.issuesFound
       totalBlockingIssues += result.blockingIssues
+      if (!result.success) {
+        hasFailedTasks = true
+      }
     }
 
-    if (executionResult.reviewCompleted) {
+    if (hasFailedTasks) {
+      core.setOutput('review_status', 'failed')
+      core.setOutput('issues_found', String(totalIssuesFound))
+      core.setOutput('blocking_issues', String(totalBlockingIssues))
+      core.setFailed('One or more tasks failed to execute')
+      exitCode = 1
+    } else if (executionResult.reviewCompleted) {
       core.setOutput('review_status', 'completed')
       core.setOutput('issues_found', String(totalIssuesFound))
       core.setOutput('blocking_issues', String(totalBlockingIssues))

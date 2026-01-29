@@ -1,3 +1,5 @@
+import { sanitizeDelimiters } from '../utils/security.js'
+
 const SCORING_RUBRIC = `## Issue Severity Scoring Rubric (1-10)
 
 You must assign a score from 1 to 10 for every identified issue based on the following criteria:
@@ -222,7 +224,9 @@ const formatPrDescriptionContext = (prDescription?: string | null): string => {
     return '**PR Description:**\n<pr_desc>*(empty)*</pr_desc>\n\n'
   }
 
-  return `**PR Description:**\n<pr_desc>\n${prDescription.trim()}\n</pr_desc>\n\n`
+  const sanitizedDescription = sanitizeDelimiters(prDescription.trim())
+
+  return `**PR Description:**\n<pr_desc>\n${sanitizedDescription}\n</pr_desc>\n\n`
 }
 
 const SYSTEM_PROMPT = `# Review My Code, OpenCode! - PR Review Agent

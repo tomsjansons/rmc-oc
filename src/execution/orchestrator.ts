@@ -38,6 +38,8 @@ export class ReviewExecutor {
   private currentSessionId: string | null = null
   private currentPhase: ReviewPhase = 'idle'
   private passCompletionResolvers: Map<number, () => void> = new Map()
+  private cachedPRInfo: Awaited<ReturnType<GitHubAPI['getPRInfo']>> | null =
+    null
 
   constructor(
     private opencode: OpenCodeClient,
@@ -139,7 +141,7 @@ export class ReviewExecutor {
 
     const files = await this.github.getPRFiles()
     const securitySensitivity = await this.detectSecuritySensitivity()
-    const prInfo = await this.github.getPRInfo()
+    const prInfo = await this.getCachedPRInfo()
     const prDescription = prInfo.body
 
     // Log detailed file information for debugging
@@ -184,7 +186,7 @@ export class ReviewExecutor {
 
       const previousIssues = this.formatPreviousIssues()
       const newCommits = await this.getNewCommitsSummary()
-      const prInfo = await this.github.getPRInfo()
+      const prInfo = await this.getCachedPRInfo()
 
       const prompt = REVIEW_PROMPTS.FIX_VERIFICATION(
         previousIssues,
@@ -207,7 +209,7 @@ export class ReviewExecutor {
   ): Promise<void> {
     await logger.group('Dispute Resolution', async () => {
       this.currentPhase = 'dispute-resolution'
-      const prDescription = (await this.github.getPRInfo()).body
+      const prDescription = (await this.getCachedPRInfo()).body
 
       if (disputeContext) {
         await this.handleSingleDispute(disputeContext)
@@ -300,7 +302,7 @@ export class ReviewExecutor {
     disputeContext: DisputeContext
   ): Promise<void> {
     const { threadId, replyBody, replyAuthor, file, line } = disputeContext
-    const prDescription = (await this.github.getPRInfo()).body
+    const prDescription = (await this.getCachedPRInfo()).body
 
     logger.info(`Processing reply from ${replyAuthor} on thread ${threadId}`)
     logger.info(`File: ${file}:${line || 'N/A'}`)
@@ -634,6 +636,15 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
 
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
+  private async getCachedPRInfo(): Promise<
+    Awaited<ReturnType<GitHubAPI['getPRInfo']>>
+  > {
+    if (!this.cachedPRInfo) {
+      this.cachedPRInfo = await this.github.getPRInfo()
+    }
+    return this.cachedPRInfo
   }
 
   private async sanitizeExternalInput(

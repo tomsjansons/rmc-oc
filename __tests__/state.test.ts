@@ -67,8 +67,7 @@ describe('StateManager', () => {
     } as ReviewConfig
 
     mockLLMClient = {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      complete: jest.fn() as any
+      complete: jest.fn<LLMClient['complete']>()
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

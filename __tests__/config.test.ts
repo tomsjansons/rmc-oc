@@ -4,7 +4,7 @@
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals'
 import { validateConfig } from '../src/config/inputs.js'
-import type { ReviewConfig } from '../src/review/types.js'
+import type { ReviewConfig } from '../src/execution/types.js'
 
 describe('Configuration Parser', () => {
   beforeEach(() => {

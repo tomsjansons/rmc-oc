@@ -142,7 +142,10 @@ export class ReviewExecutor {
     const files = await this.github.getPRFiles()
     const securitySensitivity = await this.detectSecuritySensitivity()
     const prInfo = await this.getCachedPRInfo()
-    const prDescription = prInfo.body
+    const prDescription = await this.sanitizeExternalInput(
+      prInfo.body || '',
+      'PR description'
+    )
 
     // Log detailed file information for debugging
     logger.info(`Fetched ${files.length} changed files for review`)
@@ -187,11 +190,15 @@ export class ReviewExecutor {
       const previousIssues = this.formatPreviousIssues()
       const newCommits = await this.getNewCommitsSummary()
       const prInfo = await this.getCachedPRInfo()
+      const prDescription = await this.sanitizeExternalInput(
+        prInfo.body || '',
+        'PR description'
+      )
 
       const prompt = REVIEW_PROMPTS.FIX_VERIFICATION(
         previousIssues,
         newCommits,
-        prInfo.body
+        prDescription
       )
 
       logger.info(
@@ -209,7 +216,10 @@ export class ReviewExecutor {
   ): Promise<void> {
     await logger.group('Dispute Resolution', async () => {
       this.currentPhase = 'dispute-resolution'
-      const prDescription = (await this.getCachedPRInfo()).body
+      const prDescription = await this.sanitizeExternalInput(
+        (await this.getCachedPRInfo()).body || '',
+        'PR description'
+      )
 
       if (disputeContext) {
         await this.handleSingleDispute(disputeContext)
@@ -302,7 +312,10 @@ export class ReviewExecutor {
     disputeContext: DisputeContext
   ): Promise<void> {
     const { threadId, replyBody, replyAuthor, file, line } = disputeContext
-    const prDescription = (await this.getCachedPRInfo()).body
+    const prDescription = await this.sanitizeExternalInput(
+      (await this.getCachedPRInfo()).body || '',
+      'PR description'
+    )
 
     logger.info(`Processing reply from ${replyAuthor} on thread ${threadId}`)
     logger.info(`File: ${file}:${line || 'N/A'}`)

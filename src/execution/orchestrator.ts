@@ -21,7 +21,6 @@ import type {
   DisputeContext,
   QuestionContext
 } from '../task/types.js'
-import type { TaskInfo } from '../task/task-info.js'
 import type { PassResult, ReviewConfig, ReviewOutput } from './types.js'
 
 type PassNumber = 1 | 2 | 3
@@ -39,7 +38,8 @@ export class ReviewExecutor {
   private currentSessionId: string | null = null
   private currentPhase: ReviewPhase = 'idle'
   private passCompletionResolvers: Map<number, () => void> = new Map()
-  private currentTaskInfo: TaskInfo | undefined = undefined
+  private cachedPRInfo: Awaited<ReturnType<GitHubAPI['getPRInfo']>> | null =
+    null
 
   constructor(
     private opencode: OpenCodeClient,
@@ -48,63 +48,15 @@ export class ReviewExecutor {
     private config: ReviewConfig,
     private workspaceRoot: string
   ) {
-    const apiKey = this.extractApiKeyForModel(
-      config.opencode.authJson,
-      config.security.injectionVerificationModel
-    )
-    if (!apiKey) {
-      throw new OrchestratorError(
-        `Could not extract API key for injection verification model "${config.security.injectionVerificationModel}" from auth JSON`
-      )
-    }
     this.injectionDetector = createPromptInjectionDetector(
-      apiKey,
+      config.opencode.apiKey,
       config.security.injectionVerificationModel,
       config.security.injectionDetectionEnabled
     )
   }
 
-  private extractApiKeyForModel(
-    authJson: string,
-    model: string
-  ): string | null {
-    try {
-      const auth = JSON.parse(authJson) as Record<
-        string,
-        { type: string; key: string }
-      >
-
-      const modelParts = model.split('/')
-      const provider = modelParts[0]
-
-      if (!provider) {
-        return null
-      }
-
-      if (provider === 'openrouter' && modelParts.length > 1) {
-        return auth.openrouter?.key || null
-      }
-
-      if (auth[provider]?.key) {
-        return auth[provider].key
-      }
-
-      if (auth.openrouter?.key) {
-        return auth.openrouter.key
-      }
-
-      return null
-    } catch {
-      return null
-    }
-  }
-
-  async executeReview(taskInfo?: TaskInfo): Promise<ReviewOutput> {
+  async executeReview(): Promise<ReviewOutput> {
     return await logger.group('Executing Multi-Pass Review', async () => {
-      this.currentTaskInfo = taskInfo
-      if (taskInfo?.description.trim()) {
-        logger.info('Task info provided from PR description')
-      }
       logger.info(
         `Review configuration: timeout=${this.config.review.timeoutMs / 1000}s, maxRetries=${this.config.review.maxRetries}`
       )
@@ -189,6 +141,11 @@ export class ReviewExecutor {
 
     const files = await this.github.getPRFiles()
     const securitySensitivity = await this.detectSecuritySensitivity()
+    const prInfo = await this.getCachedPRInfo()
+    const prDescription = await this.sanitizeExternalInput(
+      prInfo.body || '',
+      'PR description'
+    )
 
     // Log detailed file information for debugging
     logger.info(`Fetched ${files.length} changed files for review`)
@@ -199,7 +156,6 @@ export class ReviewExecutor {
     logger.info('=== END FILES LIST ===')
 
     // Log PR diff range info
-    const prInfo = await this.github.getPRInfo()
     logger.info(
       `PR diff range: ${prInfo.base.sha.substring(0, 7)}...${prInfo.head.sha.substring(0, 7)}`
     )
@@ -211,28 +167,11 @@ export class ReviewExecutor {
       'Starting 3-pass review in single OpenCode session (context preserved across all passes)'
     )
 
-    const taskInfoContext =
-      this.currentTaskInfo?.description.trim() || undefined
-    const linkedFilePaths = this.currentTaskInfo?.linkedFiles.map((f) => f.path)
-
-    if (taskInfoContext) {
-      logger.info('Task context from PR description will be included in review')
-      if (linkedFilePaths && linkedFilePaths.length > 0) {
-        logger.info(`Referenced task files: ${linkedFilePaths.join(', ')}`)
-      }
-    }
-
-    await this.executePass(
-      1,
-      REVIEW_PROMPTS.PASS_1(files, taskInfoContext, linkedFilePaths)
-    )
-    await this.executePass(
-      2,
-      REVIEW_PROMPTS.PASS_2(taskInfoContext, linkedFilePaths)
-    )
+    await this.executePass(1, REVIEW_PROMPTS.PASS_1(files, prDescription))
+    await this.executePass(2, REVIEW_PROMPTS.PASS_2(prDescription))
     await this.executePass(
       3,
-      REVIEW_PROMPTS.PASS_3(securitySensitivity, taskInfoContext)
+      REVIEW_PROMPTS.PASS_3(securitySensitivity, prDescription)
     )
 
     logger.info('All 3 passes completed in single session')
@@ -250,8 +189,17 @@ export class ReviewExecutor {
 
       const previousIssues = this.formatPreviousIssues()
       const newCommits = await this.getNewCommitsSummary()
+      const prInfo = await this.getCachedPRInfo()
+      const prDescription = await this.sanitizeExternalInput(
+        prInfo.body || '',
+        'PR description'
+      )
 
-      const prompt = REVIEW_PROMPTS.FIX_VERIFICATION(previousIssues, newCommits)
+      const prompt = REVIEW_PROMPTS.FIX_VERIFICATION(
+        previousIssues,
+        newCommits,
+        prDescription
+      )
 
       logger.info(
         `Verifying ${this.processState.threads.filter((t) => t.status !== 'RESOLVED').length} unresolved issues`
@@ -268,6 +216,10 @@ export class ReviewExecutor {
   ): Promise<void> {
     await logger.group('Dispute Resolution', async () => {
       this.currentPhase = 'dispute-resolution'
+      const prDescription = await this.sanitizeExternalInput(
+        (await this.getCachedPRInfo()).body || '',
+        'PR description'
+      )
 
       if (disputeContext) {
         await this.handleSingleDispute(disputeContext)
@@ -331,7 +283,8 @@ export class ReviewExecutor {
             thread.assessment.assessment,
             sanitizedReplyBody,
             thread.file,
-            thread.line
+            thread.line,
+            prDescription
           )
         } else {
           prompt = REVIEW_PROMPTS.DISPUTE_EVALUATION(
@@ -343,7 +296,8 @@ export class ReviewExecutor {
             thread.line,
             sanitizedReplyBody,
             classification,
-            this.config.dispute.enableHumanEscalation
+            this.config.dispute.enableHumanEscalation,
+            prDescription
           )
         }
 
@@ -358,6 +312,10 @@ export class ReviewExecutor {
     disputeContext: DisputeContext
   ): Promise<void> {
     const { threadId, replyBody, replyAuthor, file, line } = disputeContext
+    const prDescription = await this.sanitizeExternalInput(
+      (await this.getCachedPRInfo()).body || '',
+      'PR description'
+    )
 
     logger.info(`Processing reply from ${replyAuthor} on thread ${threadId}`)
     logger.info(`File: ${file}:${line || 'N/A'}`)
@@ -402,7 +360,8 @@ export class ReviewExecutor {
         thread.assessment.assessment,
         sanitizedReplyBody,
         thread.file,
-        thread.line
+        thread.line,
+        prDescription
       )
     } else {
       prompt = REVIEW_PROMPTS.DISPUTE_EVALUATION(
@@ -414,7 +373,8 @@ export class ReviewExecutor {
         thread.line,
         sanitizedReplyBody,
         classification,
-        this.config.dispute.enableHumanEscalation
+        this.config.dispute.enableHumanEscalation,
+        prDescription
       )
     }
 
@@ -689,6 +649,15 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
 
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
+  private async getCachedPRInfo(): Promise<
+    Awaited<ReturnType<GitHubAPI['getPRInfo']>>
+  > {
+    if (!this.cachedPRInfo) {
+      this.cachedPRInfo = await this.github.getPRInfo()
+    }
+    return this.cachedPRInfo
   }
 
   private async sanitizeExternalInput(

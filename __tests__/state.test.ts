@@ -49,7 +49,7 @@ describe('StateManager', () => {
   beforeEach(() => {
     mockConfig = {
       opencode: {
-        authJson: '{"openrouter":{"type":"api","key":"test-key"}}',
+        apiKey: 'test-key',
         model: 'test-model',
         enableWeb: false,
         debugLogging: false
@@ -67,13 +67,13 @@ describe('StateManager', () => {
     } as ReviewConfig
 
     mockLLMClient = {
-      complete: jest.fn() as unknown as LLMClient['complete']
+      complete: jest.fn<LLMClient['complete']>()
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     stateManager = new StateManager(
       mockConfig,
       mockLLMClient,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockOctokit as any
     )
 

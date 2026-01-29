@@ -1,11 +1,7 @@
 import * as core from '@actions/core'
 
 import { OPENCODE_SERVER_URL } from './config/constants.js'
-import {
-  parseInputs,
-  validateConfig,
-  extractApiKeyForModel
-} from './config/inputs.js'
+import { parseInputs, validateConfig } from './config/inputs.js'
 import { GitHubAPI } from './github/api.js'
 import { OpenCodeClientImpl } from './opencode/client.js'
 import { LLMClientImpl } from './opencode/llm-client.js'
@@ -51,17 +47,8 @@ export async function run(): Promise<void> {
     // LLM client for classification and sentiment analysis tasks
     // Uses injection_verification_model which is faster and doesn't have
     // reasoning token issues that can cause empty responses with reasoning models
-    const verificationApiKey = extractApiKeyForModel(
-      config.opencode.authJson,
-      config.security.injectionVerificationModel
-    )
-    if (!verificationApiKey) {
-      throw new Error(
-        `Could not extract API key for injection verification model "${config.security.injectionVerificationModel}" from auth JSON`
-      )
-    }
     const classificationLlmClient = new LLMClientImpl({
-      apiKey: verificationApiKey,
+      apiKey: config.opencode.apiKey,
       model: config.security.injectionVerificationModel
     })
 
@@ -101,13 +88,23 @@ export async function run(): Promise<void> {
 
     let totalIssuesFound = 0
     let totalBlockingIssues = 0
+    let hasFailedTasks = false
 
     for (const result of executionResult.results) {
       totalIssuesFound += result.issuesFound
       totalBlockingIssues += result.blockingIssues
+      if (!result.success) {
+        hasFailedTasks = true
+      }
     }
 
-    if (executionResult.reviewCompleted) {
+    if (hasFailedTasks) {
+      core.setOutput('review_status', 'failed')
+      core.setOutput('issues_found', String(totalIssuesFound))
+      core.setOutput('blocking_issues', String(totalBlockingIssues))
+      core.setFailed('One or more tasks failed to execute')
+      exitCode = 1
+    } else if (executionResult.reviewCompleted) {
       core.setOutput('review_status', 'completed')
       core.setOutput('issues_found', String(totalIssuesFound))
       core.setOutput('blocking_issues', String(totalBlockingIssues))
@@ -132,16 +129,6 @@ export async function run(): Promise<void> {
       core.setOutput('review_status', 'tasks_executed')
       core.setOutput('issues_found', String(totalIssuesFound))
       core.setOutput('blocking_issues', String(totalBlockingIssues))
-
-      if (executionResult.hasBlockingIssues && totalBlockingIssues > 0) {
-        // Review didn't complete but we have blocking issues (e.g., PR description validation failed)
-        // Fail for AUTO reviews only
-        if (executionResult.hadAutoReview) {
-          const message = `Review blocked: ${totalBlockingIssues} blocking issue(s) found. Please address the issues before merging.`
-          core.setFailed(message)
-          exitCode = 1
-        }
-      }
     }
 
     logger.info('Review My Code, OpenCode! completed')

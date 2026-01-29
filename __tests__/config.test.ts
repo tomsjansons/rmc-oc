@@ -16,7 +16,7 @@ describe('Configuration Parser', () => {
     it('should pass validation for valid config', () => {
       const validConfig: ReviewConfig = {
         opencode: {
-          authJson: '{"openrouter":{"type":"api","key":"test-key"}}',
+          apiKey: 'test-key',
           model: 'test-model',
           enableWeb: false,
           debugLogging: false
@@ -43,9 +43,6 @@ describe('Configuration Parser', () => {
           injectionDetectionEnabled: true,
           injectionVerificationModel: 'openai/gpt-4o-mini'
         },
-        taskInfo: {
-          requireTaskInfoInPrDesc: false
-        },
         execution: {
           mode: 'full-review',
           isManuallyTriggered: false,
@@ -59,10 +56,10 @@ describe('Configuration Parser', () => {
       expect(() => validateConfig(validConfig)).not.toThrow()
     })
 
-    it('should throw error for missing auth JSON', () => {
+    it('should throw error for missing API key', () => {
       const invalidConfig = {
         opencode: {
-          authJson: '',
+          apiKey: '',
           model: 'test-model',
           enableWeb: false,
           debugLogging: false
@@ -84,14 +81,14 @@ describe('Configuration Parser', () => {
       } as ReviewConfig
 
       expect(() => validateConfig(invalidConfig)).toThrow(
-        'OpenCode auth JSON is required'
+        'OpenCode API key is required'
       )
     })
 
     it('should throw error for invalid problem threshold - too high', () => {
       const invalidConfig = {
         opencode: {
-          authJson: '{"openrouter":{"type":"api","key":"test-key"}}',
+          apiKey: 'test-key',
           model: 'test-model',
           enableWeb: false,
           debugLogging: false
@@ -120,7 +117,7 @@ describe('Configuration Parser', () => {
     it('should throw error for invalid problem threshold - too low', () => {
       const invalidConfig = {
         opencode: {
-          authJson: '{"openrouter":{"type":"api","key":"test-key"}}',
+          apiKey: 'test-key',
           model: 'test-model',
           enableWeb: false,
           debugLogging: false
@@ -149,7 +146,7 @@ describe('Configuration Parser', () => {
     it('should throw error for invalid PR number', () => {
       const invalidConfig: ReviewConfig = {
         opencode: {
-          authJson: '{"openrouter":{"type":"api","key":"test-key"}}',
+          apiKey: 'test-key',
           model: 'test-model',
           enableWeb: false,
           debugLogging: false
@@ -176,9 +173,6 @@ describe('Configuration Parser', () => {
           injectionDetectionEnabled: true,
           injectionVerificationModel: 'openai/gpt-4o-mini'
         },
-        taskInfo: {
-          requireTaskInfoInPrDesc: false
-        },
         execution: {
           mode: 'full-review',
           isManuallyTriggered: false,
@@ -197,7 +191,7 @@ describe('Configuration Parser', () => {
     it('should throw error for missing GitHub token', () => {
       const invalidConfig: ReviewConfig = {
         opencode: {
-          authJson: '{"openrouter":{"type":"api","key":"test-key"}}',
+          apiKey: 'test-key',
           model: 'test-model',
           enableWeb: false,
           debugLogging: false
@@ -224,9 +218,6 @@ describe('Configuration Parser', () => {
           injectionDetectionEnabled: true,
           injectionVerificationModel: 'openai/gpt-4o-mini'
         },
-        taskInfo: {
-          requireTaskInfoInPrDesc: false
-        },
         execution: {
           mode: 'full-review',
           isManuallyTriggered: false,
@@ -245,7 +236,7 @@ describe('Configuration Parser', () => {
     it('should throw error for missing model', () => {
       const invalidConfig = {
         opencode: {
-          authJson: '{"openrouter":{"type":"api","key":"test-key"}}',
+          apiKey: 'test-key',
           model: '',
           enableWeb: false,
           debugLogging: false

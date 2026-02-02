@@ -28,7 +28,8 @@ import require$$0$9 from 'diagnostics_channel';
 import require$$2$3 from 'child_process';
 import require$$6$1 from 'timers';
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync, chmodSync, unlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, chmodSync, unlinkSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { readFile, mkdir, readdir, copyFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -38036,10 +38037,14 @@ class OpenCodeServer {
                     await this.startServerProcess();
                     await this.waitForHealthy();
                     logger.info('OpenCode server started successfully');
+                    // Log OpenCode's internal logs after successful startup
+                    this.logOpenCodeLogFiles();
                     return;
                 }
                 catch (error) {
                     logger.error(`Startup attempt ${attempt} failed: ${error instanceof Error ? error.message : String(error)}`);
+                    // Log OpenCode's internal logs after failed attempt
+                    this.logOpenCodeLogFiles();
                     if (this.serverProcess) {
                         await this.killServerProcess();
                     }
@@ -38062,6 +38067,8 @@ class OpenCodeServer {
         }
         await logger.group('Stopping OpenCode Server', async () => {
             this.status = 'stopping';
+            // Log OpenCode's internal logs before stopping
+            this.logOpenCodeLogFiles();
             try {
                 await this.killServerProcess();
                 this.cleanupConfigFile();
@@ -38082,6 +38089,9 @@ class OpenCodeServer {
     }
     getStatus() {
         return this.status;
+    }
+    dumpLogs() {
+        this.logOpenCodeLogFiles();
     }
     async startServerProcess() {
         this.status = 'starting';
@@ -38362,6 +38372,49 @@ class OpenCodeServer {
     }
     delay(ms) {
         return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+    logOpenCodeLogFiles() {
+        const home = process.env.HOME || homedir();
+        const logDir = join(home, '.local', 'share', 'opencode', 'log');
+        logger.info(`[OpenCode Logs] Checking for log files in: ${logDir}`);
+        if (!existsSync(logDir)) {
+            logger.info(`[OpenCode Logs] Log directory does not exist: ${logDir}`);
+            return;
+        }
+        try {
+            const files = readdirSync(logDir)
+                .filter((f) => f.endsWith('.log'))
+                .sort()
+                .reverse(); // Most recent first
+            if (files.length === 0) {
+                logger.info('[OpenCode Logs] No log files found');
+                return;
+            }
+            logger.info(`[OpenCode Logs] Found ${files.length} log file(s): ${files.join(', ')}`);
+            // Read the most recent log file (or last 2 if there are multiple)
+            const filesToRead = files.slice(0, 2);
+            for (const file of filesToRead) {
+                const filePath = join(logDir, file);
+                try {
+                    const content = readFileSync(filePath, 'utf8');
+                    const lines = content.split('\n');
+                    const lastLines = lines.slice(-100); // Last 100 lines
+                    logger.info(`[OpenCode Logs] === ${file} (last ${lastLines.length} lines) ===`);
+                    for (const line of lastLines) {
+                        if (line.trim()) {
+                            logger.info(`[OpenCode Log] ${line}`);
+                        }
+                    }
+                    logger.info(`[OpenCode Logs] === End of ${file} ===`);
+                }
+                catch (readError) {
+                    logger.warning(`[OpenCode Logs] Failed to read ${file}: ${readError instanceof Error ? readError.message : String(readError)}`);
+                }
+            }
+        }
+        catch (error) {
+            logger.warning(`[OpenCode Logs] Failed to read log directory: ${error instanceof Error ? error.message : String(error)}`);
+        }
     }
 }
 
@@ -51343,6 +51396,11 @@ async function run() {
 }
 async function cleanup(executor, trpcServer, openCodeServer) {
     logger.debug('Cleanup: Starting cleanup sequence');
+    // Dump OpenCode internal logs before cleanup to help diagnose issues
+    if (openCodeServer) {
+        logger.info('Cleanup: Dumping OpenCode internal logs for diagnostics...');
+        openCodeServer.dumpLogs();
+    }
     try {
         if (executor) {
             logger.debug('Cleanup: Cleaning up executor...');

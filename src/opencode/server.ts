@@ -1,5 +1,14 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync
+} from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import {
@@ -90,11 +99,16 @@ export class OpenCodeServer {
           await this.startServerProcess()
           await this.waitForHealthy()
           logger.info('OpenCode server started successfully')
+          // Log OpenCode's internal logs after successful startup
+          this.logOpenCodeLogFiles()
           return
         } catch (error) {
           logger.error(
             `Startup attempt ${attempt} failed: ${error instanceof Error ? error.message : String(error)}`
           )
+
+          // Log OpenCode's internal logs after failed attempt
+          this.logOpenCodeLogFiles()
 
           if (this.serverProcess) {
             await this.killServerProcess()
@@ -126,6 +140,9 @@ export class OpenCodeServer {
     await logger.group('Stopping OpenCode Server', async () => {
       this.status = 'stopping'
 
+      // Log OpenCode's internal logs before stopping
+      this.logOpenCodeLogFiles()
+
       try {
         await this.killServerProcess()
         this.cleanupConfigFile()
@@ -150,6 +167,10 @@ export class OpenCodeServer {
 
   getStatus(): ServerStatus {
     return this.status
+  }
+
+  dumpLogs(): void {
+    this.logOpenCodeLogFiles()
   }
 
   private async startServerProcess(): Promise<void> {
@@ -501,5 +522,63 @@ export class OpenCodeServer {
 
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
+  private logOpenCodeLogFiles(): void {
+    const home = process.env.HOME || homedir()
+    const logDir = join(home, '.local', 'share', 'opencode', 'log')
+
+    logger.info(`[OpenCode Logs] Checking for log files in: ${logDir}`)
+
+    if (!existsSync(logDir)) {
+      logger.info(`[OpenCode Logs] Log directory does not exist: ${logDir}`)
+      return
+    }
+
+    try {
+      const files = readdirSync(logDir)
+        .filter((f) => f.endsWith('.log'))
+        .sort()
+        .reverse() // Most recent first
+
+      if (files.length === 0) {
+        logger.info('[OpenCode Logs] No log files found')
+        return
+      }
+
+      logger.info(
+        `[OpenCode Logs] Found ${files.length} log file(s): ${files.join(', ')}`
+      )
+
+      // Read the most recent log file (or last 2 if there are multiple)
+      const filesToRead = files.slice(0, 2)
+
+      for (const file of filesToRead) {
+        const filePath = join(logDir, file)
+        try {
+          const content = readFileSync(filePath, 'utf8')
+          const lines = content.split('\n')
+          const lastLines = lines.slice(-100) // Last 100 lines
+
+          logger.info(
+            `[OpenCode Logs] === ${file} (last ${lastLines.length} lines) ===`
+          )
+          for (const line of lastLines) {
+            if (line.trim()) {
+              logger.info(`[OpenCode Log] ${line}`)
+            }
+          }
+          logger.info(`[OpenCode Logs] === End of ${file} ===`)
+        } catch (readError) {
+          logger.warning(
+            `[OpenCode Logs] Failed to read ${file}: ${readError instanceof Error ? readError.message : String(readError)}`
+          )
+        }
+      }
+    } catch (error) {
+      logger.warning(
+        `[OpenCode Logs] Failed to read log directory: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
   }
 }

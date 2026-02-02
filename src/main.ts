@@ -162,6 +162,12 @@ async function cleanup(
 ): Promise<void> {
   logger.debug('Cleanup: Starting cleanup sequence')
 
+  // Dump OpenCode internal logs before cleanup to help diagnose issues
+  if (openCodeServer) {
+    logger.info('Cleanup: Dumping OpenCode internal logs for diagnostics...')
+    openCodeServer.dumpLogs()
+  }
+
   try {
     if (executor) {
       logger.debug('Cleanup: Cleaning up executor...')

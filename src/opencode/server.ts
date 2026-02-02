@@ -106,16 +106,12 @@ export class OpenCodeServer {
           await this.startServerProcess()
           await this.waitForHealthy()
           logger.info('OpenCode server started successfully')
-          // Log OpenCode's internal logs after successful startup
-          this.logOpenCodeLogFiles()
           return
         } catch (error) {
           logger.error(
             `Startup attempt ${attempt} failed: ${error instanceof Error ? error.message : String(error)}`
           )
-
-          // Log OpenCode's internal logs after failed attempt
-          this.logOpenCodeLogFiles()
+          this.logOpenCodeLogFiles() // Log errors on failure
 
           if (this.serverProcess) {
             await this.killServerProcess()
@@ -146,9 +142,6 @@ export class OpenCodeServer {
 
     await logger.group('Stopping OpenCode Server', async () => {
       this.status = 'stopping'
-
-      // Log OpenCode's internal logs before stopping
-      this.logOpenCodeLogFiles()
 
       try {
         await this.killServerProcess()
@@ -585,10 +578,7 @@ export class OpenCodeServer {
     const home = process.env.HOME || homedir()
     const logDir = join(home, '.local', 'share', 'opencode', 'log')
 
-    logger.info(`[OpenCode Logs] Checking for log files in: ${logDir}`)
-
     if (!existsSync(logDir)) {
-      logger.info(`[OpenCode Logs] Log directory does not exist: ${logDir}`)
       return
     }
 
@@ -596,62 +586,29 @@ export class OpenCodeServer {
       const files = readdirSync(logDir)
         .filter((f) => f.endsWith('.log'))
         .sort()
-        .reverse() // Most recent first
+        .reverse()
 
-      if (files.length === 0) {
-        logger.info('[OpenCode Logs] No log files found')
+      const file = files[0]
+      if (!file) {
         return
       }
 
-      logger.info(
-        `[OpenCode Logs] Found ${files.length} log file(s): ${files.join(', ')}`
-      )
+      const filePath = join(logDir, file)
+      const content = readFileSync(filePath, 'utf8')
+      const lines = content.split('\n')
 
-      // Read the most recent log file
-      const filesToRead = files.slice(0, 1)
-
-      for (const file of filesToRead) {
-        const filePath = join(logDir, file)
-        try {
-          const content = readFileSync(filePath, 'utf8')
-          const lines = content.split('\n')
-
-          // First, show all ERROR lines from the entire log
-          const errorLines = lines.filter((line) => line.includes('ERROR'))
-          if (errorLines.length > 0) {
-            logger.info(
-              `[OpenCode Logs] === ${file} ERRORS (${errorLines.length} total) ===`
-            )
-            for (const line of errorLines) {
-              logger.error(`[OpenCode Error] ${line}`)
-            }
-            logger.info(`[OpenCode Logs] === End of ERRORS ===`)
-          } else {
-            logger.info(`[OpenCode Logs] No ERROR entries found in ${file}`)
-          }
-
-          // Then show the last 200 lines for context
-          const lastLines = lines.slice(-200)
-
-          logger.info(
-            `[OpenCode Logs] === ${file} (last ${lastLines.length} of ${lines.length} lines) ===`
-          )
-          for (const line of lastLines) {
-            if (line.trim()) {
-              logger.info(`[OpenCode Log] ${line}`)
-            }
-          }
-          logger.info(`[OpenCode Logs] === End of ${file} ===`)
-        } catch (readError) {
-          logger.warning(
-            `[OpenCode Logs] Failed to read ${file}: ${readError instanceof Error ? readError.message : String(readError)}`
-          )
+      // Only show ERROR lines
+      const errorLines = lines.filter((line) => line.includes('ERROR'))
+      if (errorLines.length > 0) {
+        logger.warning(
+          `[OpenCode] Found ${errorLines.length} errors in log file ${file}`
+        )
+        for (const line of errorLines) {
+          logger.error(`[OpenCode Error] ${line}`)
         }
       }
-    } catch (error) {
-      logger.warning(
-        `[OpenCode Logs] Failed to read log directory: ${error instanceof Error ? error.message : String(error)}`
-      )
+    } catch {
+      // Silently ignore log reading errors
     }
   }
 }

@@ -37564,65 +37564,9 @@ class OpenCodeClientImpl {
     }
     logActivitySummary(sessionId, durationMs) {
         const m = this.activityMetrics;
-        logger.info(`Session ${sessionId} activity summary: ${m.toolCalls} tool calls, ${m.messageUpdates} message updates, ${m.busyEvents} busy events, ${m.idleEvents} idle events, ${m.errors} errors (duration: ${durationMs}ms)`);
-        // Warn if session completed with no meaningful activity
-        if (m.toolCalls === 0 && m.messageUpdates === 0) {
-            logger.warning(`Session ${sessionId} completed with NO tool calls or message updates - model may not have done any work!`);
-        }
-    }
-    async fetchAndLogSessionInfo(sessionId) {
-        try {
-            // Fetch session info
-            const sessionResult = await this.client.session.get({
-                path: { id: sessionId }
-            });
-            const session = sessionResult.data;
-            if (session) {
-                logger.info(`[DEBUG] Session ${sessionId} info: title="${session.title}", created=${session.time?.created}`);
-                logger.info(`[DEBUG] Session raw data: ${JSON.stringify(session).substring(0, 500)}`);
-            }
-            // Fetch all messages in the session to see what was sent/received
-            const messagesResult = await this.client.session.messages({
-                path: { id: sessionId }
-            });
-            const messages = messagesResult.data || [];
-            logger.info(`[DEBUG] Session ${sessionId} has ${messages.length} total messages`);
-            for (let i = 0; i < messages.length; i++) {
-                const msg = messages[i];
-                const info = msg?.info;
-                const parts = msg?.parts || [];
-                const role = info?.role || 'unknown';
-                const msgId = info?.id || 'none';
-                // Summarize parts
-                const partsSummary = parts
-                    .map((p) => {
-                    if (p.type === 'text') {
-                        const text = p.text || '';
-                        return `text(${text.length}ch)`;
-                    }
-                    if (p.type === 'tool') {
-                        return `tool:${p.tool || 'unknown'}`;
-                    }
-                    return p.type || 'unknown';
-                })
-                    .join(', ');
-                logger.info(`[DEBUG] Message ${i + 1}: role=${role}, id=${msgId}, parts=[${partsSummary}]`);
-                // If it's an assistant message, log a preview of the text
-                if (role === 'assistant') {
-                    for (const p of parts) {
-                        const part = p;
-                        if (part.type === 'text' && part.text) {
-                            const preview = part.text.length > 300
-                                ? `${part.text.substring(0, 300)}...`
-                                : part.text;
-                            logger.info(`[DEBUG] Assistant text preview: "${preview}"`);
-                        }
-                    }
-                }
-            }
-        }
-        catch (error) {
-            logger.warning(`Failed to fetch session info/messages: ${error instanceof Error ? error.message : String(error)}`);
+        logger.info(`Session ${sessionId} activity: ${m.toolCalls} tool calls, ${m.busyEvents} busy events, ${m.errors} errors (${durationMs}ms)`);
+        if (m.toolCalls === 0) {
+            logger.warning(`Session ${sessionId} completed with NO tool calls - model may not have done any work`);
         }
     }
     detectLoop(toolCall) {
@@ -37714,13 +37658,9 @@ class OpenCodeClientImpl {
     }
     async sendPrompt(sessionId, prompt) {
         try {
-            const promptPreview = prompt.length > 500
-                ? `${prompt.substring(0, 500)}...[truncated, total ${prompt.length} chars]`
-                : prompt;
-            logger.info(`Sending prompt to session ${sessionId} (${prompt.length} chars)`);
-            logger.info(`Prompt preview: ${promptPreview}`);
+            logger.debug(`Sending prompt to session ${sessionId} (${prompt.length} chars)`);
             const completionPromise = this.waitForPromptCompletion(sessionId);
-            const asyncResult = await this.client.session.promptAsync({
+            await this.client.session.promptAsync({
                 path: { id: sessionId },
                 body: {
                     parts: [
@@ -37731,8 +37671,6 @@ class OpenCodeClientImpl {
                     ]
                 }
             });
-            logger.info(`Prompt queued for session ${sessionId}. Response: ${JSON.stringify(asyncResult.data || asyncResult)}`);
-            logger.info(`Waiting for LLM to complete via events...`);
             await completionPromise;
             logger.debug(`Prompt completed successfully for session ${sessionId}`);
         }
@@ -37787,37 +37725,6 @@ class OpenCodeClientImpl {
                         const props = event.properties;
                         // Extract sessionID from either top-level or nested in info (message events use info.sessionID)
                         const eventSessionId = props.sessionID || props.info?.sessionID;
-                        // Log ALL events for debugging, including session ID info
-                        const statusInfo = props.status
-                            ? ` status.type=${props.status.type}`
-                            : '';
-                        const partInfo = props.part ? ` part.type=${props.part.type}` : '';
-                        // Log full event for session.status to see what's happening
-                        if (event.type === 'session.status') {
-                            logger.info(`[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, match=${eventSessionId === sessionId}, FULL: ${JSON.stringify(event.properties).substring(0, 500)}`);
-                        }
-                        // For message.part.updated with text, log the content (even if sessionID doesn't match)
-                        // Also check the role to distinguish user vs assistant messages
-                        else if (event.type === 'message.part.updated' &&
-                            props.part?.type === 'text') {
-                            const textPart = props.part;
-                            const textPreview = textPart.text
-                                ? `"${textPart.text.substring(0, 200)}${textPart.text.length > 200 ? '...' : ''}"`
-                                : '(empty)';
-                            // Check if this is from the info object (for role)
-                            const role = props.info
-                                ? props.info.role
-                                : 'unknown';
-                            logger.info(`[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, match=${eventSessionId === sessionId} role=${role} part.type=text content=${textPreview}`);
-                        }
-                        // For message.updated, log the role
-                        else if (event.type === 'message.updated') {
-                            const messageInfo = props.info;
-                            logger.info(`[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, match=${eventSessionId === sessionId} role=${messageInfo?.role || 'unknown'} msgId=${messageInfo?.id || 'none'}`);
-                        }
-                        else {
-                            logger.info(`[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, targetSession=${sessionId}, match=${eventSessionId === sessionId}${statusInfo}${partInfo}`);
-                        }
                         if (eventSessionId !== sessionId) {
                             continue;
                         }
@@ -37867,11 +37774,6 @@ class OpenCodeClientImpl {
                                         const duration = Date.now() - startTime;
                                         logger.info(`Session ${sessionId} completed after ${duration}ms (idle for ${IDLE_GRACE_PERIOD_MS}ms)`);
                                         this.logActivitySummary(sessionId, duration);
-                                        // Fetch session info to debug why no tool calls
-                                        // Always fetch if no tools were called - this helps debug model issues
-                                        if (this.activityMetrics.toolCalls === 0) {
-                                            await this.fetchAndLogSessionInfo(sessionId);
-                                        }
                                         resolved = true;
                                         cleanup();
                                         resolve();
@@ -38038,14 +37940,11 @@ class OpenCodeServer {
                     await this.startServerProcess();
                     await this.waitForHealthy();
                     logger.info('OpenCode server started successfully');
-                    // Log OpenCode's internal logs after successful startup
-                    this.logOpenCodeLogFiles();
                     return;
                 }
                 catch (error) {
                     logger.error(`Startup attempt ${attempt} failed: ${error instanceof Error ? error.message : String(error)}`);
-                    // Log OpenCode's internal logs after failed attempt
-                    this.logOpenCodeLogFiles();
+                    this.logOpenCodeLogFiles(); // Log errors on failure
                     if (this.serverProcess) {
                         await this.killServerProcess();
                     }
@@ -38068,8 +37967,6 @@ class OpenCodeServer {
         }
         await logger.group('Stopping OpenCode Server', async () => {
             this.status = 'stopping';
-            // Log OpenCode's internal logs before stopping
-            this.logOpenCodeLogFiles();
             try {
                 await this.killServerProcess();
                 this.cleanupConfigFile();
@@ -38417,57 +38314,32 @@ class OpenCodeServer {
     logOpenCodeLogFiles() {
         const home = process.env.HOME || homedir();
         const logDir = join(home, '.local', 'share', 'opencode', 'log');
-        logger.info(`[OpenCode Logs] Checking for log files in: ${logDir}`);
         if (!existsSync(logDir)) {
-            logger.info(`[OpenCode Logs] Log directory does not exist: ${logDir}`);
             return;
         }
         try {
             const files = readdirSync(logDir)
                 .filter((f) => f.endsWith('.log'))
                 .sort()
-                .reverse(); // Most recent first
-            if (files.length === 0) {
-                logger.info('[OpenCode Logs] No log files found');
+                .reverse();
+            const file = files[0];
+            if (!file) {
                 return;
             }
-            logger.info(`[OpenCode Logs] Found ${files.length} log file(s): ${files.join(', ')}`);
-            // Read the most recent log file
-            const filesToRead = files.slice(0, 1);
-            for (const file of filesToRead) {
-                const filePath = join(logDir, file);
-                try {
-                    const content = readFileSync(filePath, 'utf8');
-                    const lines = content.split('\n');
-                    // First, show all ERROR lines from the entire log
-                    const errorLines = lines.filter((line) => line.includes('ERROR'));
-                    if (errorLines.length > 0) {
-                        logger.info(`[OpenCode Logs] === ${file} ERRORS (${errorLines.length} total) ===`);
-                        for (const line of errorLines) {
-                            logger.error(`[OpenCode Error] ${line}`);
-                        }
-                        logger.info(`[OpenCode Logs] === End of ERRORS ===`);
-                    }
-                    else {
-                        logger.info(`[OpenCode Logs] No ERROR entries found in ${file}`);
-                    }
-                    // Then show the last 200 lines for context
-                    const lastLines = lines.slice(-200);
-                    logger.info(`[OpenCode Logs] === ${file} (last ${lastLines.length} of ${lines.length} lines) ===`);
-                    for (const line of lastLines) {
-                        if (line.trim()) {
-                            logger.info(`[OpenCode Log] ${line}`);
-                        }
-                    }
-                    logger.info(`[OpenCode Logs] === End of ${file} ===`);
-                }
-                catch (readError) {
-                    logger.warning(`[OpenCode Logs] Failed to read ${file}: ${readError instanceof Error ? readError.message : String(readError)}`);
+            const filePath = join(logDir, file);
+            const content = readFileSync(filePath, 'utf8');
+            const lines = content.split('\n');
+            // Only show ERROR lines
+            const errorLines = lines.filter((line) => line.includes('ERROR'));
+            if (errorLines.length > 0) {
+                logger.warning(`[OpenCode] Found ${errorLines.length} errors in log file ${file}`);
+                for (const line of errorLines) {
+                    logger.error(`[OpenCode Error] ${line}`);
                 }
             }
         }
-        catch (error) {
-            logger.warning(`[OpenCode Logs] Failed to read log directory: ${error instanceof Error ? error.message : String(error)}`);
+        catch {
+            // Silently ignore log reading errors
         }
     }
 }

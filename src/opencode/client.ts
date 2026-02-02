@@ -19,12 +19,27 @@ type OpenCodeSDKClient = ReturnType<typeof createOpencodeClient>
 const MAX_REPEATED_TOOL_CALLS = 5
 const LOOP_DETECTION_WINDOW = 10
 
+type ActivityMetrics = {
+  toolCalls: number
+  messageUpdates: number
+  busyEvents: number
+  idleEvents: number
+  errors: number
+}
+
 export class OpenCodeClientImpl implements OpenCodeClient {
   private currentSessionId: string | null = null
   private client: OpenCodeSDKClient
   private debugLogging: boolean
   private timeoutMs: number
   private recentToolCalls: string[] = []
+  private activityMetrics: ActivityMetrics = {
+    toolCalls: 0,
+    messageUpdates: 0,
+    busyEvents: 0,
+    idleEvents: 0,
+    errors: 0
+  }
 
   constructor(
     serverUrl: string,
@@ -41,6 +56,30 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
   private resetLoopDetection(): void {
     this.recentToolCalls = []
+  }
+
+  private resetActivityMetrics(): void {
+    this.activityMetrics = {
+      toolCalls: 0,
+      messageUpdates: 0,
+      busyEvents: 0,
+      idleEvents: 0,
+      errors: 0
+    }
+  }
+
+  private logActivitySummary(sessionId: string, durationMs: number): void {
+    const m = this.activityMetrics
+    logger.info(
+      `Session ${sessionId} activity summary: ${m.toolCalls} tool calls, ${m.messageUpdates} message updates, ${m.busyEvents} busy events, ${m.idleEvents} idle events, ${m.errors} errors (duration: ${durationMs}ms)`
+    )
+
+    // Warn if session completed with no meaningful activity
+    if (m.toolCalls === 0 && m.messageUpdates === 0) {
+      logger.warning(
+        `Session ${sessionId} completed with NO tool calls or message updates - model may not have done any work!`
+      )
+    }
   }
 
   private detectLoop(toolCall: string): boolean {
@@ -206,6 +245,7 @@ export class OpenCodeClientImpl implements OpenCodeClient {
     const IDLE_GRACE_PERIOD_MS = 10000
 
     this.resetLoopDetection()
+    this.resetActivityMetrics()
 
     return new Promise<void>((resolve, reject) => {
       let resolved = false
@@ -269,6 +309,7 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               event.type === 'message.part.updated' &&
               props.part?.type === 'tool'
             ) {
+              this.activityMetrics.toolCalls++
               const part = props.part as {
                 tool?: string
                 input?: Record<string, unknown>
@@ -299,6 +340,7 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               props.status.type !== 'idle'
             ) {
               sawBusy = true
+              this.activityMetrics.busyEvents++
               // Cancel any pending idle grace timer since model is active again
               cancelIdleGrace()
             }
@@ -308,12 +350,17 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               event.type === 'message.updated' ||
               event.type === 'message.part.updated'
             ) {
+              this.activityMetrics.messageUpdates++
               cancelIdleGrace()
             }
 
             const isIdle =
               event.type === 'session.idle' ||
               (event.type === 'session.status' && props.status?.type === 'idle')
+
+            if (isIdle) {
+              this.activityMetrics.idleEvents++
+            }
 
             if (isIdle && sawBusy) {
               // Don't immediately complete - wait for grace period
@@ -328,6 +375,7 @@ export class OpenCodeClientImpl implements OpenCodeClient {
                     logger.info(
                       `Session ${sessionId} completed after ${duration}ms (idle for ${IDLE_GRACE_PERIOD_MS}ms)`
                     )
+                    this.logActivitySummary(sessionId, duration)
                     resolved = true
                     cleanup()
                     resolve()
@@ -346,6 +394,9 @@ export class OpenCodeClientImpl implements OpenCodeClient {
             }
 
             if (event.type === 'session.error') {
+              this.activityMetrics.errors++
+              const duration = Date.now() - startTime
+              this.logActivitySummary(sessionId, duration)
               resolved = true
               cleanup()
               reject(

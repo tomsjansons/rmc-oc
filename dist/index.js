@@ -27289,7 +27289,7 @@ const OPENCODE_SERVER_PORT = 4096;
 const OPENCODE_SERVER_HOST = '127.0.0.1';
 const OPENCODE_SERVER_URL = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SERVER_PORT}`;
 const TRPC_SERVER_PORT = 38291;
-const TRPC_SERVER_HOST = 'localhost';
+const TRPC_SERVER_HOST = '127.0.0.1';
 const TRPC_SERVER_URL = `http://${TRPC_SERVER_HOST}:${TRPC_SERVER_PORT}`;
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const BOT_MENTION = '@review-my-code-bot';
@@ -37534,6 +37534,13 @@ class OpenCodeClientImpl {
     debugLogging;
     timeoutMs;
     recentToolCalls = [];
+    activityMetrics = {
+        toolCalls: 0,
+        messageUpdates: 0,
+        busyEvents: 0,
+        idleEvents: 0,
+        errors: 0
+    };
     constructor(serverUrl, debugLogging = false, timeoutMs = 600000) {
         this.client = createOpencodeClient({
             baseUrl: serverUrl,
@@ -37544,6 +37551,23 @@ class OpenCodeClientImpl {
     }
     resetLoopDetection() {
         this.recentToolCalls = [];
+    }
+    resetActivityMetrics() {
+        this.activityMetrics = {
+            toolCalls: 0,
+            messageUpdates: 0,
+            busyEvents: 0,
+            idleEvents: 0,
+            errors: 0
+        };
+    }
+    logActivitySummary(sessionId, durationMs) {
+        const m = this.activityMetrics;
+        logger.info(`Session ${sessionId} activity summary: ${m.toolCalls} tool calls, ${m.messageUpdates} message updates, ${m.busyEvents} busy events, ${m.idleEvents} idle events, ${m.errors} errors (duration: ${durationMs}ms)`);
+        // Warn if session completed with no meaningful activity
+        if (m.toolCalls === 0 && m.messageUpdates === 0) {
+            logger.warning(`Session ${sessionId} completed with NO tool calls or message updates - model may not have done any work!`);
+        }
     }
     detectLoop(toolCall) {
         this.recentToolCalls.push(toolCall);
@@ -37663,6 +37687,7 @@ class OpenCodeClientImpl {
         // This handles reasoning models that may pause briefly during thinking
         const IDLE_GRACE_PERIOD_MS = 10000;
         this.resetLoopDetection();
+        this.resetActivityMetrics();
         return new Promise((resolve, reject) => {
             let resolved = false;
             let idleGraceTimerId = null;
@@ -37704,6 +37729,7 @@ class OpenCodeClientImpl {
                         }
                         if (event.type === 'message.part.updated' &&
                             props.part?.type === 'tool') {
+                            this.activityMetrics.toolCalls++;
                             const part = props.part;
                             const toolName = part.tool || 'unknown';
                             const toolInput = part.input
@@ -37722,16 +37748,21 @@ class OpenCodeClientImpl {
                             props.status &&
                             props.status.type !== 'idle') {
                             sawBusy = true;
+                            this.activityMetrics.busyEvents++;
                             // Cancel any pending idle grace timer since model is active again
                             cancelIdleGrace();
                         }
                         // Message updates also indicate activity
                         if (event.type === 'message.updated' ||
                             event.type === 'message.part.updated') {
+                            this.activityMetrics.messageUpdates++;
                             cancelIdleGrace();
                         }
                         const isIdle = event.type === 'session.idle' ||
                             (event.type === 'session.status' && props.status?.type === 'idle');
+                        if (isIdle) {
+                            this.activityMetrics.idleEvents++;
+                        }
                         if (isIdle && sawBusy) {
                             // Don't immediately complete - wait for grace period
                             // This allows reasoning models time to resume after brief pauses
@@ -37741,6 +37772,7 @@ class OpenCodeClientImpl {
                                     if (!resolved) {
                                         const duration = Date.now() - startTime;
                                         logger.info(`Session ${sessionId} completed after ${duration}ms (idle for ${IDLE_GRACE_PERIOD_MS}ms)`);
+                                        this.logActivitySummary(sessionId, duration);
                                         resolved = true;
                                         cleanup();
                                         resolve();
@@ -37753,6 +37785,9 @@ class OpenCodeClientImpl {
                             logger.warning(`Session ${sessionId} is retrying (attempt ${props.status.attempt}): ${props.status.message}`);
                         }
                         if (event.type === 'session.error') {
+                            this.activityMetrics.errors++;
+                            const duration = Date.now() - startTime;
+                            this.logActivitySummary(sessionId, duration);
                             resolved = true;
                             cleanup();
                             reject(new OpenCodeError(`Session error: ${JSON.stringify(event.properties)}`));
@@ -39835,7 +39870,13 @@ class PromptInjectionDetector {
         logger.warning(`Vard detected potential prompt injection. Threats: ${vardResult.detectedThreats.join(', ')}`);
         const isConfirmed = await this.verifyWithLLM(input, vardResult.detectedThreats);
         if (isConfirmed) {
+            const inputPreview = input.length > 200
+                ? `${input.substring(0, 200)}...[truncated, total ${input.length} chars]`
+                : input;
             logger.error(`CONFIRMED prompt injection attempt blocked. Threats: ${vardResult.detectedThreats.join(', ')}`);
+            logger.error(`Blocked content preview: ${inputPreview}`);
+            logger.warning('If this is a false positive, the model may go idle with nothing to review. ' +
+                'Consider adjusting injection detection settings or the content that triggered this.');
             return {
                 isSuspicious: true,
                 isConfirmedInjection: true,
@@ -39930,7 +39971,11 @@ Respond with ONLY "INJECTION" if this is clearly a malicious prompt injection at
                 })
             });
             if (!response.ok) {
-                logger.error(`Injection verification API call failed: ${response.status}. Failing closed (blocking content for safety).`);
+                const responseText = await response
+                    .text()
+                    .catch(() => 'unable to read response');
+                logger.error(`Injection verification API call failed: ${response.status} ${response.statusText}. Response: ${responseText}`);
+                logger.warning('Failing closed (blocking content for safety). This may cause false positives if the API is unavailable.');
                 return true;
             }
             const data = (await response.json());
@@ -39941,11 +39986,13 @@ Respond with ONLY "INJECTION" if this is clearly a malicious prompt injection at
             if (result?.includes('SAFE')) {
                 return false;
             }
-            logger.warning(`Unexpected verification response: ${result}. Failing closed (blocking content for safety).`);
+            logger.warning(`Unexpected verification response: "${result}". Expected "SAFE" or "INJECTION". Failing closed (blocking content for safety).`);
+            logger.warning('This may cause false positives. Check if the verification model is responding correctly.');
             return true;
         }
         catch (error) {
-            logger.error(`Injection verification failed: ${error instanceof Error ? error.message : String(error)}. Failing closed (blocking content for safety).`);
+            logger.error(`Injection verification failed: ${error instanceof Error ? error.message : String(error)}`);
+            logger.warning('Failing closed (blocking content for safety). This may cause false positives if there are network issues.');
             return true;
         }
     }
@@ -40887,7 +40934,14 @@ class ReviewExecutor {
         const files = await this.github.getPRFiles();
         const securitySensitivity = await this.detectSecuritySensitivity();
         const prInfo = await this.getCachedPRInfo();
+        const prBodyLength = prInfo.body?.length || 0;
+        logger.info(`PR description length before sanitization: ${prBodyLength} chars`);
         const prDescription = await this.sanitizeExternalInput(prInfo.body || '', 'PR description');
+        const wasBlocked = prDescription.includes('[CONTENT BLOCKED');
+        logger.info(`PR description after sanitization: ${wasBlocked ? 'BLOCKED' : `${prDescription.length} chars`}`);
+        if (wasBlocked) {
+            logger.warning('PR description was blocked by injection detection - this may cause the model to go idle with nothing to review');
+        }
         // Log detailed file information for debugging
         logger.info(`Fetched ${files.length} changed files for review`);
         logger.info('=== FILES TO BE REVIEWED ===');

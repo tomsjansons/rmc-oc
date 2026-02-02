@@ -142,10 +142,25 @@ export class ReviewExecutor {
     const files = await this.github.getPRFiles()
     const securitySensitivity = await this.detectSecuritySensitivity()
     const prInfo = await this.getCachedPRInfo()
+    const prBodyLength = prInfo.body?.length || 0
+    logger.info(
+      `PR description length before sanitization: ${prBodyLength} chars`
+    )
+
     const prDescription = await this.sanitizeExternalInput(
       prInfo.body || '',
       'PR description'
     )
+
+    const wasBlocked = prDescription.includes('[CONTENT BLOCKED')
+    logger.info(
+      `PR description after sanitization: ${wasBlocked ? 'BLOCKED' : `${prDescription.length} chars`}`
+    )
+    if (wasBlocked) {
+      logger.warning(
+        'PR description was blocked by injection detection - this may cause the model to go idle with nothing to review'
+      )
+    }
 
     // Log detailed file information for debugging
     logger.info(`Fetched ${files.length} changed files for review`)

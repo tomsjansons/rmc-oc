@@ -1,5 +1,5 @@
 import { tool } from '@opencode-ai/plugin';
-import { c as createTRPCClient, h as httpBatchLink, S as SuperJSON, T as TRPC_SERVER_URL } from './constants-Bo10LBJa.js';
+import { c as createTRPCClient, h as httpBatchLink, S as SuperJSON, T as TRPC_SERVER_URL } from './constants-DzFYTjr8.js';
 
 const trpc = createTRPCClient({
     links: [

@@ -36,6 +36,12 @@ type BashPermission =
   | 'deny'
   | Record<string, 'allow' | 'ask' | 'deny'>
 
+type OpenCodeModelConfig = {
+  id?: string
+  name?: string
+  options?: Record<string, unknown>
+}
+
 type OpenCodeConfig = {
   $schema: string
   model: string
@@ -43,7 +49,7 @@ type OpenCodeConfig = {
   disabled_providers: string[]
   provider: {
     openrouter: {
-      models: Record<string, object>
+      models: Record<string, OpenCodeModelConfig>
     }
   }
   tools: {
@@ -75,6 +81,7 @@ export class OpenCodeServer {
   private readonly shutdownTimeoutMs = 10000
   private configFilePath: string | null = null
   private authFilePath: string | null = null
+  private workspaceConfigPath: string | null = null
 
   constructor(private config: ReviewConfig) {
     this.healthCheckUrl = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SERVER_PORT}`
@@ -239,6 +246,18 @@ export class OpenCodeServer {
       )
     }
 
+    // Also create config in workspace's .opencode directory so it takes precedence
+    // (OpenCode loads workspace configs AFTER the OPENCODE_CONFIG file)
+    const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd()
+    const workspaceConfigDir = join(workspaceDir, '.opencode')
+    try {
+      mkdirSync(workspaceConfigDir, { recursive: true })
+    } catch (error) {
+      logger.warning(
+        `Failed to create workspace .opencode directory: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+
     const configPath = join(secureConfigDir, 'opencode.json')
     const model = this.config.opencode.model
 
@@ -251,9 +270,12 @@ export class OpenCodeServer {
       disabled_providers: ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'],
       provider: {
         openrouter: {
-          // Explicitly register the model so OpenCode recognizes it
+          // Explicitly register the model with id field so OpenCode recognizes it
           models: {
-            [model]: {}
+            [model]: {
+              id: model,
+              name: model
+            }
           }
         }
       },
@@ -296,6 +318,24 @@ export class OpenCodeServer {
       throw new OpenCodeError(
         `Failed to write config file: ${error instanceof Error ? error.message : String(error)}`
       )
+    }
+
+    // Also write config to workspace's .opencode/opencode.json
+    // This ensures our config takes precedence over any repo-specific configs
+    // since OpenCode loads workspace configs AFTER OPENCODE_CONFIG
+    this.workspaceConfigPath = join(workspaceConfigDir, 'opencode.json')
+    try {
+      writeFileSync(this.workspaceConfigPath, JSON.stringify(config, null, 2), {
+        encoding: 'utf8'
+      })
+      logger.info(
+        `Created workspace OpenCode config: ${this.workspaceConfigPath}`
+      )
+    } catch (error) {
+      logger.warning(
+        `Failed to write workspace config (non-fatal): ${error instanceof Error ? error.message : String(error)}`
+      )
+      this.workspaceConfigPath = null
     }
 
     this.createAuthFile(secureConfigDir)
@@ -351,6 +391,20 @@ export class OpenCodeServer {
         )
       }
       this.authFilePath = null
+    }
+
+    if (this.workspaceConfigPath) {
+      try {
+        unlinkSync(this.workspaceConfigPath)
+        logger.debug(
+          `Removed workspace config file: ${this.workspaceConfigPath}`
+        )
+      } catch (error) {
+        logger.warning(
+          `Failed to remove workspace config file: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
+      this.workspaceConfigPath = null
     }
   }
 

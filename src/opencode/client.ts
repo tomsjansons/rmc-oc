@@ -340,9 +340,25 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               ? ` status.type=${props.status.type}`
               : ''
             const partInfo = props.part ? ` part.type=${props.part.type}` : ''
-            logger.info(
-              `[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, targetSession=${sessionId}, match=${eventSessionId === sessionId}${statusInfo}${partInfo}`
-            )
+
+            // For message.part.updated with text, log the content (even if sessionID doesn't match)
+            // This helps debug what the model is actually outputting
+            if (
+              event.type === 'message.part.updated' &&
+              props.part?.type === 'text'
+            ) {
+              const textPart = props.part as { text?: string }
+              const textPreview = textPart.text
+                ? `"${textPart.text.substring(0, 200)}${textPart.text.length > 200 ? '...' : ''}"`
+                : '(empty)'
+              logger.info(
+                `[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, match=${eventSessionId === sessionId} part.type=text content=${textPreview}`
+              )
+            } else {
+              logger.info(
+                `[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, targetSession=${sessionId}, match=${eventSessionId === sessionId}${statusInfo}${partInfo}`
+              )
+            }
 
             if (eventSessionId !== sessionId) {
               continue

@@ -37569,6 +37569,22 @@ class OpenCodeClientImpl {
             logger.warning(`Session ${sessionId} completed with NO tool calls or message updates - model may not have done any work!`);
         }
     }
+    async fetchAndLogSessionInfo(sessionId) {
+        try {
+            const sessionResult = await this.client.session.get({
+                path: { id: sessionId }
+            });
+            const session = sessionResult.data;
+            if (session) {
+                logger.info(`[DEBUG] Session ${sessionId} info: title="${session.title}", created=${session.time?.created}`);
+                // Log any available status or error info
+                logger.info(`[DEBUG] Session raw data: ${JSON.stringify(session).substring(0, 500)}`);
+            }
+        }
+        catch (error) {
+            logger.warning(`Failed to fetch session info: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
     detectLoop(toolCall) {
         this.recentToolCalls.push(toolCall);
         if (this.recentToolCalls.length > LOOP_DETECTION_WINDOW) {
@@ -37730,7 +37746,11 @@ class OpenCodeClientImpl {
                         this.logEvent(event, sessionId);
                         const props = event.properties;
                         // Log ALL events for debugging, including session ID info
-                        logger.info(`[EVENT] type=${event.type}, sessionID=${props.sessionID || 'none'}, targetSession=${sessionId}, match=${props.sessionID === sessionId}`);
+                        const statusInfo = props.status
+                            ? ` status.type=${props.status.type}`
+                            : '';
+                        const partInfo = props.part ? ` part.type=${props.part.type}` : '';
+                        logger.info(`[EVENT] type=${event.type}, sessionID=${props.sessionID || 'none'}, targetSession=${sessionId}, match=${props.sessionID === sessionId}${statusInfo}${partInfo}`);
                         if (props.sessionID !== sessionId) {
                             continue;
                         }
@@ -37775,11 +37795,16 @@ class OpenCodeClientImpl {
                             // This allows reasoning models time to resume after brief pauses
                             if (!idleGraceTimerId) {
                                 logger.debug(`Session ${sessionId} went idle, waiting ${IDLE_GRACE_PERIOD_MS}ms grace period...`);
-                                idleGraceTimerId = setTimeout(() => {
+                                idleGraceTimerId = setTimeout(async () => {
                                     if (!resolved) {
                                         const duration = Date.now() - startTime;
                                         logger.info(`Session ${sessionId} completed after ${duration}ms (idle for ${IDLE_GRACE_PERIOD_MS}ms)`);
                                         this.logActivitySummary(sessionId, duration);
+                                        // Fetch session info to debug why no activity
+                                        if (this.activityMetrics.toolCalls === 0 &&
+                                            this.activityMetrics.messageUpdates === 0) {
+                                            await this.fetchAndLogSessionInfo(sessionId);
+                                        }
                                         resolved = true;
                                         cleanup();
                                         resolve();

@@ -38394,15 +38394,28 @@ class OpenCodeServer {
                 return;
             }
             logger.info(`[OpenCode Logs] Found ${files.length} log file(s): ${files.join(', ')}`);
-            // Read the most recent log file (or last 2 if there are multiple)
-            const filesToRead = files.slice(0, 2);
+            // Read the most recent log file
+            const filesToRead = files.slice(0, 1);
             for (const file of filesToRead) {
                 const filePath = join(logDir, file);
                 try {
                     const content = readFileSync(filePath, 'utf8');
                     const lines = content.split('\n');
-                    const lastLines = lines.slice(-100); // Last 100 lines
-                    logger.info(`[OpenCode Logs] === ${file} (last ${lastLines.length} lines) ===`);
+                    // First, show all ERROR lines from the entire log
+                    const errorLines = lines.filter((line) => line.includes('ERROR'));
+                    if (errorLines.length > 0) {
+                        logger.info(`[OpenCode Logs] === ${file} ERRORS (${errorLines.length} total) ===`);
+                        for (const line of errorLines) {
+                            logger.error(`[OpenCode Error] ${line}`);
+                        }
+                        logger.info(`[OpenCode Logs] === End of ERRORS ===`);
+                    }
+                    else {
+                        logger.info(`[OpenCode Logs] No ERROR entries found in ${file}`);
+                    }
+                    // Then show the last 200 lines for context
+                    const lastLines = lines.slice(-200);
+                    logger.info(`[OpenCode Logs] === ${file} (last ${lastLines.length} of ${lines.length} lines) ===`);
                     for (const line of lastLines) {
                         if (line.trim()) {
                             logger.info(`[OpenCode Log] ${line}`);

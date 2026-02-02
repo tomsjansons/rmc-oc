@@ -37571,18 +37571,57 @@ class OpenCodeClientImpl {
     }
     async fetchAndLogSessionInfo(sessionId) {
         try {
+            // Fetch session info
             const sessionResult = await this.client.session.get({
                 path: { id: sessionId }
             });
             const session = sessionResult.data;
             if (session) {
                 logger.info(`[DEBUG] Session ${sessionId} info: title="${session.title}", created=${session.time?.created}`);
-                // Log any available status or error info
                 logger.info(`[DEBUG] Session raw data: ${JSON.stringify(session).substring(0, 500)}`);
+            }
+            // Fetch all messages in the session to see what was sent/received
+            const messagesResult = await this.client.session.messages({
+                path: { id: sessionId }
+            });
+            const messages = messagesResult.data || [];
+            logger.info(`[DEBUG] Session ${sessionId} has ${messages.length} total messages`);
+            for (let i = 0; i < messages.length; i++) {
+                const msg = messages[i];
+                const info = msg?.info;
+                const parts = msg?.parts || [];
+                const role = info?.role || 'unknown';
+                const msgId = info?.id || 'none';
+                // Summarize parts
+                const partsSummary = parts
+                    .map((p) => {
+                    if (p.type === 'text') {
+                        const text = p.text || '';
+                        return `text(${text.length}ch)`;
+                    }
+                    if (p.type === 'tool') {
+                        return `tool:${p.tool || 'unknown'}`;
+                    }
+                    return p.type || 'unknown';
+                })
+                    .join(', ');
+                logger.info(`[DEBUG] Message ${i + 1}: role=${role}, id=${msgId}, parts=[${partsSummary}]`);
+                // If it's an assistant message, log a preview of the text
+                if (role === 'assistant') {
+                    for (const p of parts) {
+                        const part = p;
+                        if (part.type === 'text' && part.text) {
+                            const preview = part.text.length > 300
+                                ? `${part.text.substring(0, 300)}...`
+                                : part.text;
+                            logger.info(`[DEBUG] Assistant text preview: "${preview}"`);
+                        }
+                    }
+                }
             }
         }
         catch (error) {
-            logger.warning(`Failed to fetch session info: ${error instanceof Error ? error.message : String(error)}`);
+            logger.warning(`Failed to fetch session info/messages: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
     detectLoop(toolCall) {
@@ -38107,15 +38146,7 @@ class OpenCodeServer {
                 }
             },
             tools: {
-                // Explicitly enable read-only tools for code analysis
-                read: true,
-                grep: true,
-                glob: true,
-                list: true,
-                // Disable write for security
                 write: false,
-                edit: false,
-                // Enable bash with restricted permissions (see permission.bash)
                 bash: true,
                 webfetch: this.config.opencode.enableWeb
             },

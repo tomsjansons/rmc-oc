@@ -84,6 +84,7 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
   private async fetchAndLogSessionInfo(sessionId: string): Promise<void> {
     try {
+      // Fetch session info
       const sessionResult = await this.client.session.get({
         path: { id: sessionId }
       })
@@ -92,14 +93,62 @@ export class OpenCodeClientImpl implements OpenCodeClient {
         logger.info(
           `[DEBUG] Session ${sessionId} info: title="${session.title}", created=${session.time?.created}`
         )
-        // Log any available status or error info
         logger.info(
           `[DEBUG] Session raw data: ${JSON.stringify(session).substring(0, 500)}`
         )
       }
+
+      // Fetch all messages in the session to see what was sent/received
+      const messagesResult = await this.client.session.messages({
+        path: { id: sessionId }
+      })
+      const messages = messagesResult.data || []
+      logger.info(
+        `[DEBUG] Session ${sessionId} has ${messages.length} total messages`
+      )
+
+      for (let i = 0; i < messages.length; i++) {
+        const msg = messages[i]
+        const info = msg?.info as { role?: string; id?: string } | undefined
+        const parts = msg?.parts || []
+        const role = info?.role || 'unknown'
+        const msgId = info?.id || 'none'
+
+        // Summarize parts
+        const partsSummary = parts
+          .map((p: { type?: string; text?: string; tool?: string }) => {
+            if (p.type === 'text') {
+              const text = p.text || ''
+              return `text(${text.length}ch)`
+            }
+            if (p.type === 'tool') {
+              return `tool:${p.tool || 'unknown'}`
+            }
+            return p.type || 'unknown'
+          })
+          .join(', ')
+
+        logger.info(
+          `[DEBUG] Message ${i + 1}: role=${role}, id=${msgId}, parts=[${partsSummary}]`
+        )
+
+        // If it's an assistant message, log a preview of the text
+        if (role === 'assistant') {
+          for (const p of parts) {
+            const part = p as { type?: string; text?: string }
+            if (part.type === 'text' && part.text) {
+              const preview =
+                part.text.length > 300
+                  ? `${part.text.substring(0, 300)}...`
+                  : part.text
+              logger.info(`[DEBUG] Assistant text preview: "${preview}"`)
+            }
+          }
+        }
+      }
     } catch (error) {
       logger.warning(
-        `Failed to fetch session info: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to fetch session info/messages: ${error instanceof Error ? error.message : String(error)}`
       )
     }
   }

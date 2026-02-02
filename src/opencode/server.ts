@@ -38,12 +38,7 @@ type OpenCodeConfig = {
     }
   }
   tools: {
-    read: boolean
-    grep: boolean
-    glob: boolean
-    list: boolean
     write: boolean
-    edit: boolean
     bash: boolean
     webfetch: boolean
   }
@@ -239,15 +234,7 @@ export class OpenCodeServer {
         }
       },
       tools: {
-        // Explicitly enable read-only tools for code analysis
-        read: true,
-        grep: true,
-        glob: true,
-        list: true,
-        // Disable write for security
         write: false,
-        edit: false,
-        // Enable bash with restricted permissions (see permission.bash)
         bash: true,
         webfetch: this.config.opencode.enableWeb
       },

@@ -255,6 +255,11 @@ export class OpenCodeServer {
     const model = this.config.opencode.model
 
     const openrouterModel = `openrouter/${model}`
+    const models: Record<string, OpenCodeModelConfig> = Object.create(null)
+    models[model] = {
+      id: model,
+      name: model
+    }
 
     const config: OpenCodeConfig = {
       $schema: 'https://opencode.ai/config.json',
@@ -264,12 +269,7 @@ export class OpenCodeServer {
       provider: {
         openrouter: {
           // Explicitly register the model with id field so OpenCode recognizes it
-          models: {
-            [model]: {
-              id: model,
-              name: model
-            }
-          }
+          models
         }
       },
       tools: {

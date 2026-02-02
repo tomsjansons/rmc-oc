@@ -251,7 +251,10 @@ export class OpenCodeServer {
       disabled_providers: ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'],
       provider: {
         openrouter: {
-          models: {}
+          // Explicitly register the model so OpenCode recognizes it
+          models: {
+            [model]: {}
+          }
         }
       },
       tools: {

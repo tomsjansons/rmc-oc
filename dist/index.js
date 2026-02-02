@@ -37745,13 +37745,15 @@ class OpenCodeClientImpl {
                         }
                         this.logEvent(event, sessionId);
                         const props = event.properties;
+                        // Extract sessionID from either top-level or nested in info (message events use info.sessionID)
+                        const eventSessionId = props.sessionID || props.info?.sessionID;
                         // Log ALL events for debugging, including session ID info
                         const statusInfo = props.status
                             ? ` status.type=${props.status.type}`
                             : '';
                         const partInfo = props.part ? ` part.type=${props.part.type}` : '';
-                        logger.info(`[EVENT] type=${event.type}, sessionID=${props.sessionID || 'none'}, targetSession=${sessionId}, match=${props.sessionID === sessionId}${statusInfo}${partInfo}`);
-                        if (props.sessionID !== sessionId) {
+                        logger.info(`[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, targetSession=${sessionId}, match=${eventSessionId === sessionId}${statusInfo}${partInfo}`);
+                        if (eventSessionId !== sessionId) {
                             continue;
                         }
                         if (event.type === 'message.part.updated' &&

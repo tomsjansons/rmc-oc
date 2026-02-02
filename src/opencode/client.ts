@@ -327,9 +327,13 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
             const props = event.properties as {
               sessionID?: string
+              info?: { sessionID?: string }
               status?: { type: string; attempt?: number; message?: string }
               part?: { type: string; tool?: string; state?: { status: string } }
             }
+
+            // Extract sessionID from either top-level or nested in info (message events use info.sessionID)
+            const eventSessionId = props.sessionID || props.info?.sessionID
 
             // Log ALL events for debugging, including session ID info
             const statusInfo = props.status
@@ -337,10 +341,10 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               : ''
             const partInfo = props.part ? ` part.type=${props.part.type}` : ''
             logger.info(
-              `[EVENT] type=${event.type}, sessionID=${props.sessionID || 'none'}, targetSession=${sessionId}, match=${props.sessionID === sessionId}${statusInfo}${partInfo}`
+              `[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, targetSession=${sessionId}, match=${eventSessionId === sessionId}${statusInfo}${partInfo}`
             )
 
-            if (props.sessionID !== sessionId) {
+            if (eventSessionId !== sessionId) {
               continue
             }
 

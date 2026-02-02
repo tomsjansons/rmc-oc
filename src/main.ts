@@ -211,6 +211,12 @@ async function testOpenRouterConnection(
   apiKey: string,
   model: string
 ): Promise<void> {
+  const controller = new AbortController()
+  const timeoutMs = 10000
+  const timeoutId = setTimeout(() => {
+    controller.abort()
+  }, timeoutMs)
+
   try {
     const response = await fetch(OPENROUTER_API_URL, {
       method: 'POST',
@@ -229,7 +235,8 @@ async function testOpenRouterConnection(
           }
         ],
         max_tokens: 20
-      })
+      }),
+      signal: controller.signal
     })
 
     if (!response.ok) {
@@ -267,5 +274,7 @@ async function testOpenRouterConnection(
     throw new Error(
       `Failed to connect to OpenRouter: ${error instanceof Error ? error.message : String(error)}`
     )
+  } finally {
+    clearTimeout(timeoutId)
   }
 }

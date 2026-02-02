@@ -37752,15 +37752,28 @@ class OpenCodeClientImpl {
                             ? ` status.type=${props.status.type}`
                             : '';
                         const partInfo = props.part ? ` part.type=${props.part.type}` : '';
+                        // Log full event for session.status to see what's happening
+                        if (event.type === 'session.status') {
+                            logger.info(`[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, match=${eventSessionId === sessionId}, FULL: ${JSON.stringify(event.properties).substring(0, 500)}`);
+                        }
                         // For message.part.updated with text, log the content (even if sessionID doesn't match)
-                        // This helps debug what the model is actually outputting
-                        if (event.type === 'message.part.updated' &&
+                        // Also check the role to distinguish user vs assistant messages
+                        else if (event.type === 'message.part.updated' &&
                             props.part?.type === 'text') {
                             const textPart = props.part;
                             const textPreview = textPart.text
                                 ? `"${textPart.text.substring(0, 200)}${textPart.text.length > 200 ? '...' : ''}"`
                                 : '(empty)';
-                            logger.info(`[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, match=${eventSessionId === sessionId} part.type=text content=${textPreview}`);
+                            // Check if this is from the info object (for role)
+                            const role = props.info
+                                ? props.info.role
+                                : 'unknown';
+                            logger.info(`[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, match=${eventSessionId === sessionId} role=${role} part.type=text content=${textPreview}`);
+                        }
+                        // For message.updated, log the role
+                        else if (event.type === 'message.updated') {
+                            const messageInfo = props.info;
+                            logger.info(`[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, match=${eventSessionId === sessionId} role=${messageInfo?.role || 'unknown'} msgId=${messageInfo?.id || 'none'}`);
                         }
                         else {
                             logger.info(`[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, targetSession=${sessionId}, match=${eventSessionId === sessionId}${statusInfo}${partInfo}`);
@@ -38094,7 +38107,15 @@ class OpenCodeServer {
                 }
             },
             tools: {
+                // Explicitly enable read-only tools for code analysis
+                read: true,
+                grep: true,
+                glob: true,
+                list: true,
+                // Disable write for security
                 write: false,
+                edit: false,
+                // Enable bash with restricted permissions (see permission.bash)
                 bash: true,
                 webfetch: this.config.opencode.enableWeb
             },

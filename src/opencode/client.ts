@@ -341,9 +341,15 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               : ''
             const partInfo = props.part ? ` part.type=${props.part.type}` : ''
 
+            // Log full event for session.status to see what's happening
+            if (event.type === 'session.status') {
+              logger.info(
+                `[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, match=${eventSessionId === sessionId}, FULL: ${JSON.stringify(event.properties).substring(0, 500)}`
+              )
+            }
             // For message.part.updated with text, log the content (even if sessionID doesn't match)
-            // This helps debug what the model is actually outputting
-            if (
+            // Also check the role to distinguish user vs assistant messages
+            else if (
               event.type === 'message.part.updated' &&
               props.part?.type === 'text'
             ) {
@@ -351,8 +357,21 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               const textPreview = textPart.text
                 ? `"${textPart.text.substring(0, 200)}${textPart.text.length > 200 ? '...' : ''}"`
                 : '(empty)'
+              // Check if this is from the info object (for role)
+              const role = props.info
+                ? (props.info as { role?: string }).role
+                : 'unknown'
               logger.info(
-                `[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, match=${eventSessionId === sessionId} part.type=text content=${textPreview}`
+                `[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, match=${eventSessionId === sessionId} role=${role} part.type=text content=${textPreview}`
+              )
+            }
+            // For message.updated, log the role
+            else if (event.type === 'message.updated') {
+              const messageInfo = props.info as
+                | { role?: string; id?: string }
+                | undefined
+              logger.info(
+                `[EVENT] type=${event.type}, sessionID=${eventSessionId || 'none'}, match=${eventSessionId === sessionId} role=${messageInfo?.role || 'unknown'} msgId=${messageInfo?.id || 'none'}`
               )
             } else {
               logger.info(

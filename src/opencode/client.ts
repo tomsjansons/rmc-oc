@@ -205,13 +205,18 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
   async sendPrompt(sessionId: string, prompt: string): Promise<void> {
     try {
-      logger.debug(
+      const promptPreview =
+        prompt.length > 500
+          ? `${prompt.substring(0, 500)}...[truncated, total ${prompt.length} chars]`
+          : prompt
+      logger.info(
         `Sending prompt to session ${sessionId} (${prompt.length} chars)`
       )
+      logger.info(`Prompt preview: ${promptPreview}`)
 
       const completionPromise = this.waitForPromptCompletion(sessionId)
 
-      await this.client.session.promptAsync({
+      const asyncResult = await this.client.session.promptAsync({
         path: { id: sessionId },
         body: {
           parts: [
@@ -223,7 +228,10 @@ export class OpenCodeClientImpl implements OpenCodeClient {
         }
       })
 
-      logger.debug(`Prompt queued, waiting for LLM to complete via events...`)
+      logger.info(
+        `Prompt queued for session ${sessionId}. Response: ${JSON.stringify(asyncResult.data || asyncResult)}`
+      )
+      logger.info(`Waiting for LLM to complete via events...`)
 
       await completionPromise
 
@@ -300,6 +308,11 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               status?: { type: string; attempt?: number; message?: string }
               part?: { type: string; tool?: string; state?: { status: string } }
             }
+
+            // Log ALL events for debugging, including session ID info
+            logger.info(
+              `[EVENT] type=${event.type}, sessionID=${props.sessionID || 'none'}, targetSession=${sessionId}, match=${props.sessionID === sessionId}`
+            )
 
             if (props.sessionID !== sessionId) {
               continue

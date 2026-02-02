@@ -37866,9 +37866,9 @@ class OpenCodeClientImpl {
                                         const duration = Date.now() - startTime;
                                         logger.info(`Session ${sessionId} completed after ${duration}ms (idle for ${IDLE_GRACE_PERIOD_MS}ms)`);
                                         this.logActivitySummary(sessionId, duration);
-                                        // Fetch session info to debug why no activity
-                                        if (this.activityMetrics.toolCalls === 0 &&
-                                            this.activityMetrics.messageUpdates === 0) {
+                                        // Fetch session info to debug why no tool calls
+                                        // Always fetch if no tools were called - this helps debug model issues
+                                        if (this.activityMetrics.toolCalls === 0) {
                                             await this.fetchAndLogSessionInfo(sessionId);
                                         }
                                         resolved = true;

@@ -64,8 +64,17 @@ export class PromptInjectionDetector {
     )
 
     if (isConfirmed) {
+      const inputPreview =
+        input.length > 200
+          ? `${input.substring(0, 200)}...[truncated, total ${input.length} chars]`
+          : input
       logger.error(
         `CONFIRMED prompt injection attempt blocked. Threats: ${vardResult.detectedThreats.join(', ')}`
+      )
+      logger.error(`Blocked content preview: ${inputPreview}`)
+      logger.warning(
+        'If this is a false positive, the model may go idle with nothing to review. ' +
+          'Consider adjusting injection detection settings or the content that triggered this.'
       )
       return {
         isSuspicious: true,
@@ -183,8 +192,14 @@ Respond with ONLY "INJECTION" if this is clearly a malicious prompt injection at
       })
 
       if (!response.ok) {
+        const responseText = await response
+          .text()
+          .catch(() => 'unable to read response')
         logger.error(
-          `Injection verification API call failed: ${response.status}. Failing closed (blocking content for safety).`
+          `Injection verification API call failed: ${response.status} ${response.statusText}. Response: ${responseText}`
+        )
+        logger.warning(
+          'Failing closed (blocking content for safety). This may cause false positives if the API is unavailable.'
         )
         return true
       }
@@ -204,12 +219,18 @@ Respond with ONLY "INJECTION" if this is clearly a malicious prompt injection at
       }
 
       logger.warning(
-        `Unexpected verification response: ${result}. Failing closed (blocking content for safety).`
+        `Unexpected verification response: "${result}". Expected "SAFE" or "INJECTION". Failing closed (blocking content for safety).`
+      )
+      logger.warning(
+        'This may cause false positives. Check if the verification model is responding correctly.'
       )
       return true
     } catch (error) {
       logger.error(
-        `Injection verification failed: ${error instanceof Error ? error.message : String(error)}. Failing closed (blocking content for safety).`
+        `Injection verification failed: ${error instanceof Error ? error.message : String(error)}`
+      )
+      logger.warning(
+        'Failing closed (blocking content for safety). This may cause false positives if there are network issues.'
       )
       return true
     }

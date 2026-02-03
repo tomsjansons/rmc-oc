@@ -1,6 +1,6 @@
 import * as core from '@actions/core'
 
-import { OPENCODE_SERVER_URL } from './config/constants.js'
+import { OPENCODE_SERVER_URL, OPENROUTER_API_URL } from './config/constants.js'
 import { parseInputs, validateConfig } from './config/inputs.js'
 import { GitHubAPI } from './github/api.js'
 import { OpenCodeClientImpl } from './opencode/client.js'
@@ -30,6 +30,13 @@ export async function run(): Promise<void> {
     )
     logger.info(
       `Model: ${config.opencode.model}, Threshold: ${config.scoring.problemThreshold}`
+    )
+
+    // Test direct OpenRouter API call to verify model/API key work
+    logger.info('Testing OpenRouter API connection...')
+    await testOpenRouterConnection(
+      config.opencode.apiKey,
+      config.opencode.model
     )
 
     logger.info('Setting up OpenCode tools...')
@@ -155,6 +162,12 @@ async function cleanup(
 ): Promise<void> {
   logger.debug('Cleanup: Starting cleanup sequence')
 
+  // Dump OpenCode internal logs before cleanup to help diagnose issues
+  if (openCodeServer) {
+    logger.info('Cleanup: Dumping OpenCode internal logs for diagnostics...')
+    await openCodeServer.dumpLogs()
+  }
+
   try {
     if (executor) {
       logger.debug('Cleanup: Cleaning up executor...')
@@ -192,4 +205,76 @@ async function cleanup(
   }
 
   logger.debug('Cleanup: All cleanup complete, calling process.exit()')
+}
+
+async function testOpenRouterConnection(
+  apiKey: string,
+  model: string
+): Promise<void> {
+  const controller = new AbortController()
+  const timeoutMs = 10000
+  const timeoutId = setTimeout(() => {
+    controller.abort()
+  }, timeoutMs)
+
+  try {
+    const response = await fetch(OPENROUTER_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        'HTTP-Referer': 'https://github.com/tomsjansons/rmc-oc',
+        'X-Title': 'Review My Code - API Test'
+      },
+      body: JSON.stringify({
+        model: model,
+        messages: [
+          {
+            role: 'user',
+            content: 'Say "API test successful" and nothing else.'
+          }
+        ],
+        max_tokens: 20
+      }),
+      signal: controller.signal
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      logger.error(
+        `OpenRouter API test failed: ${response.status} ${response.statusText}`
+      )
+      logger.error(`Response: ${errorText}`)
+      throw new Error(
+        `OpenRouter API test failed: ${response.status} - ${errorText}`
+      )
+    }
+
+    const data = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>
+      error?: { message?: string }
+    }
+
+    if (data.error) {
+      logger.error(`OpenRouter API error: ${data.error.message}`)
+      throw new Error(`OpenRouter API error: ${data.error.message}`)
+    }
+
+    const content = data.choices?.[0]?.message?.content || '(no content)'
+    logger.info(
+      `OpenRouter API test successful. Model ${model} responded: "${content}"`
+    )
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('OpenRouter')) {
+      throw error
+    }
+    logger.error(
+      `OpenRouter API test failed: ${error instanceof Error ? error.message : String(error)}`
+    )
+    throw new Error(
+      `Failed to connect to OpenRouter: ${error instanceof Error ? error.message : String(error)}`
+    )
+  } finally {
+    clearTimeout(timeoutId)
+  }
 }

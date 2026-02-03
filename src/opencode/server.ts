@@ -1,5 +1,13 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from 'node:fs'
+import { readFile, readdir } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import {
@@ -27,6 +35,12 @@ type BashPermission =
   | 'deny'
   | Record<string, 'allow' | 'ask' | 'deny'>
 
+type OpenCodeModelConfig = {
+  id?: string
+  name?: string
+  options?: Record<string, unknown>
+}
+
 type OpenCodeConfig = {
   $schema: string
   model: string
@@ -34,7 +48,7 @@ type OpenCodeConfig = {
   disabled_providers: string[]
   provider: {
     openrouter: {
-      models: Record<string, object>
+      models: Record<string, OpenCodeModelConfig>
     }
   }
   tools: {
@@ -66,6 +80,7 @@ export class OpenCodeServer {
   private readonly shutdownTimeoutMs = 10000
   private configFilePath: string | null = null
   private authFilePath: string | null = null
+  private workspaceConfigPath: string | null = null
 
   constructor(private config: ReviewConfig) {
     this.healthCheckUrl = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SERVER_PORT}`
@@ -95,6 +110,7 @@ export class OpenCodeServer {
           logger.error(
             `Startup attempt ${attempt} failed: ${error instanceof Error ? error.message : String(error)}`
           )
+          await this.logOpenCodeLogFiles() // Log errors on failure
 
           if (this.serverProcess) {
             await this.killServerProcess()
@@ -150,6 +166,10 @@ export class OpenCodeServer {
 
   getStatus(): ServerStatus {
     return this.status
+  }
+
+  async dumpLogs(): Promise<void> {
+    await this.logOpenCodeLogFiles()
   }
 
   private async startServerProcess(): Promise<void> {
@@ -218,10 +238,27 @@ export class OpenCodeServer {
       )
     }
 
+    // Also create config in workspace's .opencode directory so it takes precedence
+    // (OpenCode loads workspace configs AFTER the OPENCODE_CONFIG file)
+    const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd()
+    const workspaceConfigDir = join(workspaceDir, '.opencode')
+    try {
+      mkdirSync(workspaceConfigDir, { recursive: true })
+    } catch (error) {
+      logger.warning(
+        `Failed to create workspace .opencode directory: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+
     const configPath = join(secureConfigDir, 'opencode.json')
     const model = this.config.opencode.model
 
     const openrouterModel = `openrouter/${model}`
+    const models: Record<string, OpenCodeModelConfig> = Object.create(null)
+    models[model] = {
+      id: model,
+      name: model
+    }
 
     const config: OpenCodeConfig = {
       $schema: 'https://opencode.ai/config.json',
@@ -230,7 +267,8 @@ export class OpenCodeServer {
       disabled_providers: ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'],
       provider: {
         openrouter: {
-          models: {}
+          // Explicitly register the model with id field so OpenCode recognizes it
+          models
         }
       },
       tools: {
@@ -272,6 +310,25 @@ export class OpenCodeServer {
       throw new OpenCodeError(
         `Failed to write config file: ${error instanceof Error ? error.message : String(error)}`
       )
+    }
+
+    // Also write config to workspace's .opencode/opencode.json
+    // This ensures our config takes precedence over any repo-specific configs
+    // since OpenCode loads workspace configs AFTER OPENCODE_CONFIG
+    this.workspaceConfigPath = join(workspaceConfigDir, 'opencode.json')
+    try {
+      writeFileSync(this.workspaceConfigPath, JSON.stringify(config, null, 2), {
+        encoding: 'utf8',
+        mode: 0o600
+      })
+      logger.info(
+        `Created workspace OpenCode config: ${this.workspaceConfigPath}`
+      )
+    } catch (error) {
+      logger.warning(
+        `Failed to write workspace config (non-fatal): ${error instanceof Error ? error.message : String(error)}`
+      )
+      this.workspaceConfigPath = null
     }
 
     this.createAuthFile(secureConfigDir)
@@ -327,6 +384,20 @@ export class OpenCodeServer {
         )
       }
       this.authFilePath = null
+    }
+
+    if (this.workspaceConfigPath) {
+      try {
+        unlinkSync(this.workspaceConfigPath)
+        logger.debug(
+          `Removed workspace config file: ${this.workspaceConfigPath}`
+        )
+      } catch (error) {
+        logger.warning(
+          `Failed to remove workspace config file: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
+      this.workspaceConfigPath = null
     }
   }
 
@@ -501,5 +572,48 @@ export class OpenCodeServer {
 
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
+  private async logOpenCodeLogFiles(): Promise<void> {
+    const home = process.env.HOME || homedir()
+    const logDir = join(home, '.local', 'share', 'opencode', 'log')
+
+    try {
+      const files = (await readdir(logDir))
+        .filter((f) => f.endsWith('.log'))
+        .sort()
+        .reverse()
+
+      const file = files[0]
+      if (!file) {
+        return
+      }
+
+      const filePath = join(logDir, file)
+      const maxLogSize = 10 * 1024 * 1024
+      const stats = statSync(filePath)
+      if (stats.size > maxLogSize) {
+        logger.warning(
+          `Log file ${file} too large (${stats.size} bytes), skipping`
+        )
+        return
+      }
+
+      const content = await readFile(filePath, 'utf8')
+      const lines = content.split('\n')
+
+      // Only show ERROR lines
+      const errorLines = lines.filter((line) => line.includes('ERROR'))
+      if (errorLines.length > 0) {
+        logger.warning(
+          `[OpenCode] Found ${errorLines.length} errors in log file ${file}`
+        )
+        for (const line of errorLines) {
+          logger.error(`[OpenCode Error] ${line}`)
+        }
+      }
+    } catch {
+      // Silently ignore log reading errors
+    }
   }
 }

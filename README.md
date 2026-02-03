@@ -4,8 +4,7 @@ A GitHub Action that uses OpenCode to do LLM-powered code reviews. The reivew
 process should behave like a real developer review. No silly diagrams and other
 nonsense. Ask follow up questions, argue in comments and fix what's broken!
 
-> [!NOTE] 
-> This project is in no way associated with the OpenCode team
+> [!NOTE] This project is in no way associated with the OpenCode team
 
 ## The Idea
 
@@ -118,7 +117,8 @@ silent on everything below your threshold.
 When you disagree with a finding:
 
 1. Reply to the comment explaining your reasoning
-2. The bot re-examines with your context on next run (or immediately if @ tagged)
+2. The bot re-examines with your context on next run (or immediately if @
+   tagged)
 3. If valid, it concedes and resolves the thread
 4. If the risk remains, it explains why (with option to escalate to human
    reviewers)

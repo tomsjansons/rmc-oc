@@ -1,13 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import {
   chmodSync,
-  existsSync,
   mkdirSync,
-  readdirSync,
-  readFileSync,
+  statSync,
   unlinkSync,
   writeFileSync
 } from 'node:fs'
+import { readFile, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -111,7 +110,7 @@ export class OpenCodeServer {
           logger.error(
             `Startup attempt ${attempt} failed: ${error instanceof Error ? error.message : String(error)}`
           )
-          this.logOpenCodeLogFiles() // Log errors on failure
+          await this.logOpenCodeLogFiles() // Log errors on failure
 
           if (this.serverProcess) {
             await this.killServerProcess()
@@ -169,8 +168,8 @@ export class OpenCodeServer {
     return this.status
   }
 
-  dumpLogs(): void {
-    this.logOpenCodeLogFiles()
+  async dumpLogs(): Promise<void> {
+    await this.logOpenCodeLogFiles()
   }
 
   private async startServerProcess(): Promise<void> {
@@ -319,7 +318,8 @@ export class OpenCodeServer {
     this.workspaceConfigPath = join(workspaceConfigDir, 'opencode.json')
     try {
       writeFileSync(this.workspaceConfigPath, JSON.stringify(config, null, 2), {
-        encoding: 'utf8'
+        encoding: 'utf8',
+        mode: 0o600
       })
       logger.info(
         `Created workspace OpenCode config: ${this.workspaceConfigPath}`
@@ -574,16 +574,12 @@ export class OpenCodeServer {
     return new Promise((resolve) => setTimeout(resolve, ms))
   }
 
-  private logOpenCodeLogFiles(): void {
+  private async logOpenCodeLogFiles(): Promise<void> {
     const home = process.env.HOME || homedir()
     const logDir = join(home, '.local', 'share', 'opencode', 'log')
 
-    if (!existsSync(logDir)) {
-      return
-    }
-
     try {
-      const files = readdirSync(logDir)
+      const files = (await readdir(logDir))
         .filter((f) => f.endsWith('.log'))
         .sort()
         .reverse()
@@ -594,7 +590,16 @@ export class OpenCodeServer {
       }
 
       const filePath = join(logDir, file)
-      const content = readFileSync(filePath, 'utf8')
+      const maxLogSize = 10 * 1024 * 1024
+      const stats = statSync(filePath)
+      if (stats.size > maxLogSize) {
+        logger.warning(
+          `Log file ${file} too large (${stats.size} bytes), skipping`
+        )
+        return
+      }
+
+      const content = await readFile(filePath, 'utf8')
       const lines = content.split('\n')
 
       // Only show ERROR lines

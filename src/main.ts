@@ -165,7 +165,7 @@ async function cleanup(
   // Dump OpenCode internal logs before cleanup to help diagnose issues
   if (openCodeServer) {
     logger.info('Cleanup: Dumping OpenCode internal logs for diagnostics...')
-    openCodeServer.dumpLogs()
+    await openCodeServer.dumpLogs()
   }
 
   try {

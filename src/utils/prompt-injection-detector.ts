@@ -152,7 +152,10 @@ export class PromptInjectionDetector {
   private normalizeForDetection(input: string): string {
     return input
       .normalize('NFC')
-      .replace(/[\u00A0\u2000-\u200A\u202F\u205F]/g, ' ')
+      .replace(
+        /[\u00A0\u1680\u180E\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]/g,
+        ' '
+      )
   }
 
   private detectWithVard(input: string): {
@@ -366,22 +369,93 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
   }
 
   private extractVerdictFromJson(output: string): VerificationDecision | null {
-    const firstJsonObject = output.match(/\{[\s\S]*?\}/)?.[0]
-    if (!firstJsonObject) {
+    let searchStart = 0
+
+    while (searchStart < output.length) {
+      const jsonCandidate = this.extractFirstBalancedJsonObject(
+        output,
+        searchStart
+      )
+      if (!jsonCandidate) {
+        return null
+      }
+
+      const { json, nextIndex } = jsonCandidate
+      searchStart = nextIndex
+
+      try {
+        const parsed = JSON.parse(json) as { verdict?: unknown }
+        const verdict =
+          typeof parsed.verdict === 'string' ? parsed.verdict.toUpperCase() : ''
+        if (verdict === 'SAFE' || verdict === 'INJECTION') {
+          return verdict
+        }
+      } catch {
+        continue
+      }
+    }
+
+    return null
+  }
+
+  private extractFirstBalancedJsonObject(
+    output: string,
+    startIndex: number
+  ): { json: string; nextIndex: number } | null {
+    const openBraceIndex = output.indexOf('{', startIndex)
+    if (openBraceIndex === -1) {
       return null
     }
 
-    try {
-      const parsed = JSON.parse(firstJsonObject) as { verdict?: unknown }
-      const verdict =
-        typeof parsed.verdict === 'string' ? parsed.verdict.toUpperCase() : ''
-      if (verdict === 'SAFE' || verdict === 'INJECTION') {
-        return verdict
+    let depth = 0
+    let inString = false
+    let isEscaped = false
+
+    for (let index = openBraceIndex; index < output.length; index += 1) {
+      const character = output[index]
+      if (!character) {
+        continue
       }
-      return null
-    } catch {
-      return null
+
+      if (inString) {
+        if (isEscaped) {
+          isEscaped = false
+          continue
+        }
+
+        if (character === '\\') {
+          isEscaped = true
+          continue
+        }
+
+        if (character === '"') {
+          inString = false
+        }
+        continue
+      }
+
+      if (character === '"') {
+        inString = true
+        continue
+      }
+
+      if (character === '{') {
+        depth += 1
+        continue
+      }
+
+      if (character === '}') {
+        depth -= 1
+        if (depth === 0) {
+          return {
+            json: output.slice(openBraceIndex, index + 1),
+            nextIndex: index + 1
+          }
+        }
+      }
     }
+
+    return null
   }
 
   private extractMessageText(value: unknown): string {

@@ -40147,10 +40147,11 @@ class PromptInjectionDetector {
             };
         }
         if (verificationResult.decision === 'UNKNOWN') {
+            const safeResponseForLog = this.sanitizeForLog(verificationResult.rawResponse);
             const inputPreview = normalizedInput.length > 200
                 ? `${normalizedInput.substring(0, 200)}...[truncated, total ${normalizedInput.length} chars]`
                 : normalizedInput;
-            logger.error(`Unable to verify suspicious content with LLM. Blocking content for safety. Model: ${verificationResult.model}, response: "${verificationResult.rawResponse}"`);
+            logger.error(`Unable to verify suspicious content with LLM. Blocking content for safety. Model: ${verificationResult.model}, response: "${safeResponseForLog}"`);
             logger.error(`Blocked content preview: ${inputPreview}`);
             return {
                 isSuspicious: true,
@@ -40273,7 +40274,7 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
                     rawResponse: decision.rawResponse
                 };
             }
-            logger.warning(`Unexpected verification response for model ${model}: "${decision.rawResponse}". Expected SAFE or INJECTION verdict.`);
+            logger.warning(`Unexpected verification response for model ${model}: "${this.sanitizeForLog(decision.rawResponse)}". Expected SAFE or INJECTION verdict.`);
             return {
                 decision: 'UNKNOWN',
                 model,
@@ -40387,6 +40388,12 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
     }
     hasVerdictField(parsed) {
         return typeof parsed === 'object' && parsed !== null && 'verdict' in parsed;
+    }
+    sanitizeForLog(value) {
+        return value
+            .replace(/[\r\n\t\f\v]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
     }
 }
 function createPromptInjectionDetector(apiKey, verificationModel, enabled = true) {

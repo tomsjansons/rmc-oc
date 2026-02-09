@@ -116,12 +116,15 @@ export class PromptInjectionDetector {
     }
 
     if (verificationResult.decision === 'UNKNOWN') {
+      const safeResponseForLog = this.sanitizeForLog(
+        verificationResult.rawResponse
+      )
       const inputPreview =
         normalizedInput.length > 200
           ? `${normalizedInput.substring(0, 200)}...[truncated, total ${normalizedInput.length} chars]`
           : normalizedInput
       logger.error(
-        `Unable to verify suspicious content with LLM. Blocking content for safety. Model: ${verificationResult.model}, response: "${verificationResult.rawResponse}"`
+        `Unable to verify suspicious content with LLM. Blocking content for safety. Model: ${verificationResult.model}, response: "${safeResponseForLog}"`
       )
       logger.error(`Blocked content preview: ${inputPreview}`)
       return {
@@ -284,7 +287,7 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
       }
 
       logger.warning(
-        `Unexpected verification response for model ${model}: "${decision.rawResponse}". Expected SAFE or INJECTION verdict.`
+        `Unexpected verification response for model ${model}: "${this.sanitizeForLog(decision.rawResponse)}". Expected SAFE or INJECTION verdict.`
       )
       return {
         decision: 'UNKNOWN',
@@ -431,6 +434,13 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
 
   private hasVerdictField(parsed: unknown): parsed is { verdict: unknown } {
     return typeof parsed === 'object' && parsed !== null && 'verdict' in parsed
+  }
+
+  private sanitizeForLog(value: string): string {
+    return value
+      .replace(/[\r\n\t\f\v]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
   }
 }
 

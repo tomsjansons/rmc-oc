@@ -1,12 +1,13 @@
 import vard, { PromptInjectionError } from '@andersmyrmel/vard'
 
-import { OPENROUTER_API_URL } from '../config/constants.js'
+import { LLMClientImpl } from '../opencode/llm-client.js'
+import { delay } from './async.js'
 import { logger } from './logger.js'
 import { sanitizeDelimiters } from './security.js'
 
 export type InjectionDetectionResult = {
   isSuspicious: boolean
-  isConfirmedInjection: boolean
+  shouldBlockContent: boolean
   detectedThreats: string[]
   sanitizedInput: string
   originalInput: string
@@ -27,20 +28,6 @@ type VerificationResult = {
   rawResponse: string
 }
 
-type OpenRouterMessage = {
-  content?: unknown
-  reasoning?: unknown
-}
-
-type OpenRouterChoice = {
-  message?: OpenRouterMessage
-  text?: string
-}
-
-type OpenRouterResponse = {
-  choices?: OpenRouterChoice[]
-}
-
 const VERIFICATION_RETRY_DELAY_MS = 1000
 
 const vardValidator = vard
@@ -52,7 +39,20 @@ const vardValidator = vard
   .block('encoding')
 
 export class PromptInjectionDetector {
+  private verificationClient: LLMClientImpl | null = null
+
   constructor(private config: PromptInjectionDetectorConfig) {}
+
+  private getVerificationClient(): LLMClientImpl {
+    if (!this.verificationClient) {
+      this.verificationClient = new LLMClientImpl({
+        apiKey: this.config.apiKey,
+        model: this.config.verificationModel
+      })
+    }
+
+    return this.verificationClient
+  }
 
   async detectAndSanitize(input: string): Promise<InjectionDetectionResult> {
     const originalInput = input
@@ -62,7 +62,7 @@ export class PromptInjectionDetector {
     if (!this.config.enabled) {
       return {
         isSuspicious: false,
-        isConfirmedInjection: false,
+        shouldBlockContent: false,
         detectedThreats: [],
         sanitizedInput,
         originalInput
@@ -74,7 +74,7 @@ export class PromptInjectionDetector {
     if (!vardResult.isSuspicious) {
       return {
         isSuspicious: false,
-        isConfirmedInjection: false,
+        shouldBlockContent: false,
         detectedThreats: [],
         sanitizedInput,
         originalInput
@@ -105,7 +105,7 @@ export class PromptInjectionDetector {
       )
       return {
         isSuspicious: true,
-        isConfirmedInjection: true,
+        shouldBlockContent: true,
         detectedThreats: vardResult.detectedThreats,
         sanitizedInput:
           '[CONTENT BLOCKED: Potential prompt injection detected]',
@@ -126,7 +126,7 @@ export class PromptInjectionDetector {
       logger.error(`Blocked content preview: ${inputPreview}`)
       return {
         isSuspicious: true,
-        isConfirmedInjection: true,
+        shouldBlockContent: true,
         detectedThreats: vardResult.detectedThreats,
         sanitizedInput:
           '[CONTENT BLOCKED: Unable to verify suspicious content safely]',
@@ -142,7 +142,7 @@ export class PromptInjectionDetector {
 
     return {
       isSuspicious: true,
-      isConfirmedInjection: false,
+      shouldBlockContent: false,
       detectedThreats: vardResult.detectedThreats,
       sanitizedInput,
       originalInput
@@ -229,21 +229,15 @@ Consider:
 
 Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. When in doubt, respond with SAFE.`
 
-    const primaryResult = await this.requestVerificationWithModel(
-      this.config.verificationModel,
-      prompt
-    )
+    const primaryResult = await this.requestVerificationWithModel(prompt)
 
     if (primaryResult.decision !== 'UNKNOWN') {
       return primaryResult
     }
 
-    await this.delay(VERIFICATION_RETRY_DELAY_MS)
+    await delay(VERIFICATION_RETRY_DELAY_MS)
 
-    const retryResult = await this.requestVerificationWithModel(
-      this.config.verificationModel,
-      prompt
-    )
+    const retryResult = await this.requestVerificationWithModel(prompt)
 
     if (retryResult.decision !== 'UNKNOWN') {
       return retryResult
@@ -252,60 +246,26 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
     return retryResult
   }
 
-  private async delay(ms: number): Promise<void> {
-    return new Promise((resolve) => {
-      setTimeout(resolve, ms)
-    })
-  }
-
   private async requestVerificationWithModel(
-    model: string,
     prompt: string
   ): Promise<VerificationResult> {
+    const model = this.config.verificationModel
+
     try {
-      const response = await fetch(OPENROUTER_API_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.config.apiKey}`,
-          'HTTP-Referer': 'https://github.com/tomsjansons/rmc-oc',
-          'X-Title': 'Review My Code, OpenCode! - Injection Detection'
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            {
-              role: 'user',
-              content: prompt
-            }
-          ],
+      const response = await this.getVerificationClient().complete(prompt, {
+        temperature: 0.0,
+        maxTokens: null,
+        title: 'Review My Code, OpenCode! - Injection Detection',
+        extraBody: {
           stream: false,
           reasoning: {
             effort: 'low',
             exclude: true
-          },
-          temperature: 0.0
-        })
+          }
+        }
       })
 
-      if (!response.ok) {
-        const responseText = await response
-          .text()
-          .catch(() => 'unable to read response')
-        logger.error(
-          `Injection verification API call failed for model ${model}: ${response.status} ${response.statusText}. Response: ${responseText}`
-        )
-        return {
-          decision: 'UNKNOWN',
-          model,
-          rawResponse: ''
-        }
-      }
-
-      const rawData: unknown = await response.json()
-      const data = this.parseOpenRouterResponse(rawData)
-
-      const decision = this.extractVerificationDecision(data)
+      const decision = this.extractVerificationDecision(response ?? '')
 
       if (decision.decision === 'INJECTION') {
         return {
@@ -343,17 +303,11 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
     }
   }
 
-  private extractVerificationDecision(data: OpenRouterResponse): {
+  private extractVerificationDecision(output: string): {
     decision: VerificationDecision
     rawResponse: string
   } {
-    const choice = data.choices?.[0]
-    const messageContent = this.extractMessageText(choice?.message?.content)
-    const textContent = (choice?.text ?? '').trim()
-    const combinedOutput = [messageContent, textContent]
-      .filter((value) => value.length > 0)
-      .join('\n')
-      .trim()
+    const combinedOutput = output.trim()
 
     const jsonVerdict = this.extractVerdictFromJson(combinedOutput)
     if (jsonVerdict) {
@@ -367,68 +321,6 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
       decision: 'UNKNOWN',
       rawResponse: combinedOutput
     }
-  }
-
-  private parseOpenRouterResponse(data: unknown): OpenRouterResponse {
-    if (!this.isObjectRecord(data)) {
-      return {}
-    }
-
-    const choicesValue = Reflect.get(data, 'choices')
-    if (!Array.isArray(choicesValue)) {
-      return {}
-    }
-
-    const choices: OpenRouterChoice[] = []
-    for (const choiceValue of choicesValue) {
-      const parsedChoice = this.parseOpenRouterChoice(choiceValue)
-      if (parsedChoice) {
-        choices.push(parsedChoice)
-      }
-    }
-
-    return { choices }
-  }
-
-  private parseOpenRouterChoice(data: unknown): OpenRouterChoice | null {
-    if (!this.isObjectRecord(data)) {
-      return null
-    }
-
-    const parsedChoice: OpenRouterChoice = {}
-
-    const text = Reflect.get(data, 'text')
-    if (typeof text === 'string') {
-      parsedChoice.text = text
-    }
-
-    const messageValue = Reflect.get(data, 'message')
-    const message = this.parseOpenRouterMessage(messageValue)
-    if (message) {
-      parsedChoice.message = message
-    }
-
-    return parsedChoice
-  }
-
-  private parseOpenRouterMessage(data: unknown): OpenRouterMessage | null {
-    if (!this.isObjectRecord(data)) {
-      return null
-    }
-
-    const parsedMessage: OpenRouterMessage = {}
-
-    const content = Reflect.get(data, 'content')
-    if (content !== undefined) {
-      parsedMessage.content = content
-    }
-
-    const reasoning = Reflect.get(data, 'reasoning')
-    if (reasoning !== undefined) {
-      parsedMessage.reasoning = reasoning
-    }
-
-    return parsedMessage
   }
 
   private extractVerdictFromJson(output: string): VerificationDecision | null {
@@ -539,45 +431,6 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
 
   private hasVerdictField(parsed: unknown): parsed is { verdict: unknown } {
     return typeof parsed === 'object' && parsed !== null && 'verdict' in parsed
-  }
-
-  private extractMessageText(value: unknown): string {
-    if (typeof value === 'string') {
-      return value.trim()
-    }
-
-    if (!Array.isArray(value)) {
-      return ''
-    }
-
-    return value
-      .map((item) => {
-        if (typeof item === 'string') {
-          return item
-        }
-
-        if (!this.isObjectRecord(item)) {
-          return ''
-        }
-
-        const textValue = item.text
-        if (typeof textValue === 'string') {
-          return textValue
-        }
-
-        const contentValue = item.content
-        if (typeof contentValue === 'string') {
-          return contentValue
-        }
-
-        return ''
-      })
-      .join('\n')
-      .trim()
-  }
-
-  private isObjectRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null
   }
 }
 

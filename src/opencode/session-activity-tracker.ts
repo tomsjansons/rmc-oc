@@ -272,80 +272,80 @@ export class SessionActivityTracker {
   private parseEventProperties(
     properties: Event['properties']
   ): EventProperties {
-    if (typeof properties !== 'object' || properties === null) {
+    if (!this.isObjectRecord(properties)) {
       return {}
     }
 
-    const raw = properties as Record<string, unknown>
+    const raw = properties
 
     return {
-      sessionID: this.readString(raw.sessionID),
-      info: this.readInfo(raw.info),
-      status: this.readStatus(raw.status),
-      part: this.readPart(raw.part),
-      delta: this.readString(raw.delta),
-      error: raw.error,
-      todos: this.readArray(raw.todos)
+      sessionID: this.readString(Reflect.get(raw, 'sessionID')),
+      info: this.readInfo(Reflect.get(raw, 'info')),
+      status: this.readStatus(Reflect.get(raw, 'status')),
+      part: this.readPart(Reflect.get(raw, 'part')),
+      delta: this.readString(Reflect.get(raw, 'delta')),
+      error: Reflect.get(raw, 'error'),
+      todos: this.readArray(Reflect.get(raw, 'todos'))
     }
   }
 
   private readInfo(value: unknown): EventProperties['info'] {
-    if (typeof value !== 'object' || value === null) {
+    if (!this.isObjectRecord(value)) {
       return undefined
     }
 
-    const info = value as Record<string, unknown>
+    const info = value
     return {
-      sessionID: this.readString(info.sessionID),
-      role: this.readString(info.role),
-      id: this.readString(info.id)
+      sessionID: this.readString(Reflect.get(info, 'sessionID')),
+      role: this.readString(Reflect.get(info, 'role')),
+      id: this.readString(Reflect.get(info, 'id'))
     }
   }
 
   private readStatus(value: unknown): EventProperties['status'] {
-    if (typeof value !== 'object' || value === null) {
+    if (!this.isObjectRecord(value)) {
       return undefined
     }
 
-    const status = value as Record<string, unknown>
-    const type = this.readString(status.type)
+    const status = value
+    const type = this.readString(Reflect.get(status, 'type'))
     if (!type) {
       return undefined
     }
 
     return {
       type,
-      attempt: this.readNumber(status.attempt),
-      message: this.readString(status.message)
+      attempt: this.readNumber(Reflect.get(status, 'attempt')),
+      message: this.readString(Reflect.get(status, 'message'))
     }
   }
 
   private readPart(value: unknown): EventProperties['part'] {
-    if (typeof value !== 'object' || value === null) {
+    if (!this.isObjectRecord(value)) {
       return undefined
     }
 
-    const part = value as Record<string, unknown>
-    const type = this.readString(part.type)
+    const part = value
+    const type = this.readString(Reflect.get(part, 'type'))
     if (!type) {
       return undefined
     }
 
     return {
       type,
-      tool: this.readString(part.tool),
-      state: this.readState(part.state),
-      input: this.readRecord(part.input)
+      tool: this.readString(Reflect.get(part, 'tool')),
+      state: this.readState(Reflect.get(part, 'state')),
+      input: this.readRecord(Reflect.get(part, 'input'))
     }
   }
 
   private readState(value: unknown): { status: string } | undefined {
-    if (typeof value !== 'object' || value === null) {
+    if (!this.isObjectRecord(value)) {
       return undefined
     }
 
-    const state = value as Record<string, unknown>
-    const status = this.readString(state.status)
+    const state = value
+    const status = this.readString(Reflect.get(state, 'status'))
     if (!status) {
       return undefined
     }
@@ -354,11 +354,7 @@ export class SessionActivityTracker {
   }
 
   private readRecord(value: unknown): Record<string, unknown> | undefined {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-      return undefined
-    }
-
-    return value as Record<string, unknown>
+    return this.isObjectRecord(value) ? value : undefined
   }
 
   private readArray(value: unknown): unknown[] | undefined {
@@ -371,5 +367,9 @@ export class SessionActivityTracker {
 
   private readNumber(value: unknown): number | undefined {
     return typeof value === 'number' ? value : undefined
+  }
+
+  private isObjectRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
   }
 }

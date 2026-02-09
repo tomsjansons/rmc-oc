@@ -219,9 +219,7 @@ export class SessionActivityTracker {
       return
     }
 
-    const sessionId = this.extractSessionId(
-      event.properties as EventProperties
-    )
+    const sessionId = this.extractSessionId(event.properties as EventProperties)
 
     if (sessionId && sessionId !== targetSessionId) {
       return

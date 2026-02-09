@@ -302,7 +302,8 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
         }
       }
 
-      const data = (await response.json()) as OpenRouterResponse
+      const rawData: unknown = await response.json()
+      const data = this.parseOpenRouterResponse(rawData)
 
       const decision = this.extractVerificationDecision(data)
 
@@ -368,6 +369,68 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
     }
   }
 
+  private parseOpenRouterResponse(data: unknown): OpenRouterResponse {
+    if (!this.isObjectRecord(data)) {
+      return {}
+    }
+
+    const choicesValue = Reflect.get(data, 'choices')
+    if (!Array.isArray(choicesValue)) {
+      return {}
+    }
+
+    const choices: OpenRouterChoice[] = []
+    for (const choiceValue of choicesValue) {
+      const parsedChoice = this.parseOpenRouterChoice(choiceValue)
+      if (parsedChoice) {
+        choices.push(parsedChoice)
+      }
+    }
+
+    return { choices }
+  }
+
+  private parseOpenRouterChoice(data: unknown): OpenRouterChoice | null {
+    if (!this.isObjectRecord(data)) {
+      return null
+    }
+
+    const parsedChoice: OpenRouterChoice = {}
+
+    const text = Reflect.get(data, 'text')
+    if (typeof text === 'string') {
+      parsedChoice.text = text
+    }
+
+    const messageValue = Reflect.get(data, 'message')
+    const message = this.parseOpenRouterMessage(messageValue)
+    if (message) {
+      parsedChoice.message = message
+    }
+
+    return parsedChoice
+  }
+
+  private parseOpenRouterMessage(data: unknown): OpenRouterMessage | null {
+    if (!this.isObjectRecord(data)) {
+      return null
+    }
+
+    const parsedMessage: OpenRouterMessage = {}
+
+    const content = Reflect.get(data, 'content')
+    if (content !== undefined) {
+      parsedMessage.content = content
+    }
+
+    const reasoning = Reflect.get(data, 'reasoning')
+    if (reasoning !== undefined) {
+      parsedMessage.reasoning = reasoning
+    }
+
+    return parsedMessage
+  }
+
   private extractVerdictFromJson(output: string): VerificationDecision | null {
     let searchStart = 0
 
@@ -384,10 +447,9 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
       searchStart = nextIndex
 
       try {
-        const parsed = JSON.parse(json) as { verdict?: unknown }
-        const verdict =
-          typeof parsed.verdict === 'string' ? parsed.verdict.toUpperCase() : ''
-        if (verdict === 'SAFE' || verdict === 'INJECTION') {
+        const parsed: unknown = JSON.parse(json)
+        const verdict = this.getVerificationVerdict(parsed)
+        if (verdict) {
           return verdict
         }
       } catch {
@@ -458,6 +520,27 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
     return null
   }
 
+  private getVerificationVerdict(parsed: unknown): VerificationDecision | null {
+    if (!this.hasVerdictField(parsed)) {
+      return null
+    }
+
+    if (typeof parsed.verdict !== 'string') {
+      return null
+    }
+
+    const verdict = parsed.verdict.toUpperCase()
+    if (verdict === 'SAFE' || verdict === 'INJECTION') {
+      return verdict
+    }
+
+    return null
+  }
+
+  private hasVerdictField(parsed: unknown): parsed is { verdict: unknown } {
+    return typeof parsed === 'object' && parsed !== null && 'verdict' in parsed
+  }
+
   private extractMessageText(value: unknown): string {
     if (typeof value === 'string') {
       return value.trim()
@@ -473,21 +556,28 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
           return item
         }
 
-        if (typeof item !== 'object' || item === null) {
+        if (!this.isObjectRecord(item)) {
           return ''
         }
 
-        const textItem = item as { text?: unknown; content?: unknown }
-        if (typeof textItem.text === 'string') {
-          return textItem.text
+        const textValue = item.text
+        if (typeof textValue === 'string') {
+          return textValue
         }
-        if (typeof textItem.content === 'string') {
-          return textItem.content
+
+        const contentValue = item.content
+        if (typeof contentValue === 'string') {
+          return contentValue
         }
+
         return ''
       })
       .join('\n')
       .trim()
+  }
+
+  private isObjectRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null
   }
 }
 

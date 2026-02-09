@@ -81,7 +81,7 @@ export class SessionActivityTracker {
   }
 
   handleEvent(event: Event, targetSessionId: string): ActivitySignal {
-    const props = event.properties as EventProperties
+    const props = this.parseEventProperties(event.properties)
     const eventSessionId = this.extractSessionId(props)
     const isTargetSession = eventSessionId === targetSessionId
 
@@ -219,7 +219,8 @@ export class SessionActivityTracker {
       return
     }
 
-    const sessionId = this.extractSessionId(event.properties as EventProperties)
+    const props = this.parseEventProperties(event.properties)
+    const sessionId = this.extractSessionId(props)
 
     if (sessionId && sessionId !== targetSessionId) {
       return
@@ -266,5 +267,109 @@ export class SessionActivityTracker {
         logger.debug(`[LLM] Event: ${event.type}`)
       }
     }
+  }
+
+  private parseEventProperties(
+    properties: Event['properties']
+  ): EventProperties {
+    if (typeof properties !== 'object' || properties === null) {
+      return {}
+    }
+
+    const raw = properties as Record<string, unknown>
+
+    return {
+      sessionID: this.readString(raw.sessionID),
+      info: this.readInfo(raw.info),
+      status: this.readStatus(raw.status),
+      part: this.readPart(raw.part),
+      delta: this.readString(raw.delta),
+      error: raw.error,
+      todos: this.readArray(raw.todos)
+    }
+  }
+
+  private readInfo(value: unknown): EventProperties['info'] {
+    if (typeof value !== 'object' || value === null) {
+      return undefined
+    }
+
+    const info = value as Record<string, unknown>
+    return {
+      sessionID: this.readString(info.sessionID),
+      role: this.readString(info.role),
+      id: this.readString(info.id)
+    }
+  }
+
+  private readStatus(value: unknown): EventProperties['status'] {
+    if (typeof value !== 'object' || value === null) {
+      return undefined
+    }
+
+    const status = value as Record<string, unknown>
+    const type = this.readString(status.type)
+    if (!type) {
+      return undefined
+    }
+
+    return {
+      type,
+      attempt: this.readNumber(status.attempt),
+      message: this.readString(status.message)
+    }
+  }
+
+  private readPart(value: unknown): EventProperties['part'] {
+    if (typeof value !== 'object' || value === null) {
+      return undefined
+    }
+
+    const part = value as Record<string, unknown>
+    const type = this.readString(part.type)
+    if (!type) {
+      return undefined
+    }
+
+    return {
+      type,
+      tool: this.readString(part.tool),
+      state: this.readState(part.state),
+      input: this.readRecord(part.input)
+    }
+  }
+
+  private readState(value: unknown): { status: string } | undefined {
+    if (typeof value !== 'object' || value === null) {
+      return undefined
+    }
+
+    const state = value as Record<string, unknown>
+    const status = this.readString(state.status)
+    if (!status) {
+      return undefined
+    }
+
+    return { status }
+  }
+
+  private readRecord(value: unknown): Record<string, unknown> | undefined {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return undefined
+    }
+
+    return value as Record<string, unknown>
+  }
+
+  private readArray(value: unknown): unknown[] | undefined {
+    return Array.isArray(value) ? value : undefined
+  }
+
+  private readString(value: unknown): string | undefined {
+    return typeof value === 'string' ? value : undefined
+  }
+
+  private readNumber(value: unknown): number | undefined {
+    return typeof value === 'number' ? value : undefined
   }
 }

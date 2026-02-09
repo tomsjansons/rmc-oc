@@ -37560,7 +37560,7 @@ class SessionActivityTracker {
         }
     }
     handleEvent(event, targetSessionId) {
-        const props = event.properties;
+        const props = this.parseEventProperties(event.properties);
         const eventSessionId = this.extractSessionId(props);
         const isTargetSession = eventSessionId === targetSessionId;
         this.logEvent(event, targetSessionId);
@@ -37661,7 +37661,8 @@ class SessionActivityTracker {
         if (!this.debugLogging) {
             return;
         }
-        const sessionId = this.extractSessionId(event.properties);
+        const props = this.parseEventProperties(event.properties);
+        const sessionId = this.extractSessionId(props);
         if (sessionId && sessionId !== targetSessionId) {
             return;
         }
@@ -37705,6 +37706,89 @@ class SessionActivityTracker {
                 logger.debug(`[LLM] Event: ${event.type}`);
             }
         }
+    }
+    parseEventProperties(properties) {
+        if (typeof properties !== 'object' || properties === null) {
+            return {};
+        }
+        const raw = properties;
+        return {
+            sessionID: this.readString(raw.sessionID),
+            info: this.readInfo(raw.info),
+            status: this.readStatus(raw.status),
+            part: this.readPart(raw.part),
+            delta: this.readString(raw.delta),
+            error: raw.error,
+            todos: this.readArray(raw.todos)
+        };
+    }
+    readInfo(value) {
+        if (typeof value !== 'object' || value === null) {
+            return undefined;
+        }
+        const info = value;
+        return {
+            sessionID: this.readString(info.sessionID),
+            role: this.readString(info.role),
+            id: this.readString(info.id)
+        };
+    }
+    readStatus(value) {
+        if (typeof value !== 'object' || value === null) {
+            return undefined;
+        }
+        const status = value;
+        const type = this.readString(status.type);
+        if (!type) {
+            return undefined;
+        }
+        return {
+            type,
+            attempt: this.readNumber(status.attempt),
+            message: this.readString(status.message)
+        };
+    }
+    readPart(value) {
+        if (typeof value !== 'object' || value === null) {
+            return undefined;
+        }
+        const part = value;
+        const type = this.readString(part.type);
+        if (!type) {
+            return undefined;
+        }
+        return {
+            type,
+            tool: this.readString(part.tool),
+            state: this.readState(part.state),
+            input: this.readRecord(part.input)
+        };
+    }
+    readState(value) {
+        if (typeof value !== 'object' || value === null) {
+            return undefined;
+        }
+        const state = value;
+        const status = this.readString(state.status);
+        if (!status) {
+            return undefined;
+        }
+        return { status };
+    }
+    readRecord(value) {
+        if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+            return undefined;
+        }
+        return value;
+    }
+    readArray(value) {
+        return Array.isArray(value) ? value : undefined;
+    }
+    readString(value) {
+        return typeof value === 'string' ? value : undefined;
+    }
+    readNumber(value) {
+        return typeof value === 'number' ? value : undefined;
     }
 }
 
@@ -40183,7 +40267,8 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
                     rawResponse: ''
                 };
             }
-            const data = (await response.json());
+            const rawData = await response.json();
+            const data = this.parseOpenRouterResponse(rawData);
             const decision = this.extractVerificationDecision(data);
             if (decision.decision === 'INJECTION') {
                 return {
@@ -40235,6 +40320,54 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
             rawResponse: combinedOutput
         };
     }
+    parseOpenRouterResponse(data) {
+        if (!this.isObjectRecord(data)) {
+            return {};
+        }
+        const choicesValue = Reflect.get(data, 'choices');
+        if (!Array.isArray(choicesValue)) {
+            return {};
+        }
+        const choices = [];
+        for (const choiceValue of choicesValue) {
+            const parsedChoice = this.parseOpenRouterChoice(choiceValue);
+            if (parsedChoice) {
+                choices.push(parsedChoice);
+            }
+        }
+        return { choices };
+    }
+    parseOpenRouterChoice(data) {
+        if (!this.isObjectRecord(data)) {
+            return null;
+        }
+        const parsedChoice = {};
+        const text = Reflect.get(data, 'text');
+        if (typeof text === 'string') {
+            parsedChoice.text = text;
+        }
+        const messageValue = Reflect.get(data, 'message');
+        const message = this.parseOpenRouterMessage(messageValue);
+        if (message) {
+            parsedChoice.message = message;
+        }
+        return parsedChoice;
+    }
+    parseOpenRouterMessage(data) {
+        if (!this.isObjectRecord(data)) {
+            return null;
+        }
+        const parsedMessage = {};
+        const content = Reflect.get(data, 'content');
+        if (content !== undefined) {
+            parsedMessage.content = content;
+        }
+        const reasoning = Reflect.get(data, 'reasoning');
+        if (reasoning !== undefined) {
+            parsedMessage.reasoning = reasoning;
+        }
+        return parsedMessage;
+    }
     extractVerdictFromJson(output) {
         let searchStart = 0;
         while (searchStart < output.length) {
@@ -40246,8 +40379,8 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
             searchStart = nextIndex;
             try {
                 const parsed = JSON.parse(json);
-                const verdict = typeof parsed.verdict === 'string' ? parsed.verdict.toUpperCase() : '';
-                if (verdict === 'SAFE' || verdict === 'INJECTION') {
+                const verdict = this.getVerificationVerdict(parsed);
+                if (verdict) {
                     return verdict;
                 }
             }
@@ -40304,6 +40437,22 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
         }
         return null;
     }
+    getVerificationVerdict(parsed) {
+        if (!this.hasVerdictField(parsed)) {
+            return null;
+        }
+        if (typeof parsed.verdict !== 'string') {
+            return null;
+        }
+        const verdict = parsed.verdict.toUpperCase();
+        if (verdict === 'SAFE' || verdict === 'INJECTION') {
+            return verdict;
+        }
+        return null;
+    }
+    hasVerdictField(parsed) {
+        return typeof parsed === 'object' && parsed !== null && 'verdict' in parsed;
+    }
     extractMessageText(value) {
         if (typeof value === 'string') {
             return value.trim();
@@ -40316,20 +40465,24 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
             if (typeof item === 'string') {
                 return item;
             }
-            if (typeof item !== 'object' || item === null) {
+            if (!this.isObjectRecord(item)) {
                 return '';
             }
-            const textItem = item;
-            if (typeof textItem.text === 'string') {
-                return textItem.text;
+            const textValue = item.text;
+            if (typeof textValue === 'string') {
+                return textValue;
             }
-            if (typeof textItem.content === 'string') {
-                return textItem.content;
+            const contentValue = item.content;
+            if (typeof contentValue === 'string') {
+                return contentValue;
             }
             return '';
         })
             .join('\n')
             .trim();
+    }
+    isObjectRecord(value) {
+        return typeof value === 'object' && value !== null;
     }
 }
 function createPromptInjectionDetector(apiKey, verificationModel, enabled = true) {

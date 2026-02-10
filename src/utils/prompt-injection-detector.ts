@@ -28,7 +28,8 @@ type VerificationResult = {
   rawResponse: string
 }
 
-const VERIFICATION_RETRY_DELAY_MS = 1000
+const VERIFICATION_MAX_ATTEMPTS = 3
+const VERIFICATION_RETRY_BASE_DELAY_MS = 1000
 
 const vardValidator = vard
   .moderate()
@@ -232,14 +233,24 @@ Consider:
 
 Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. When in doubt, respond with SAFE.`
 
-    const primaryResult = await this.requestVerificationWithModel(prompt)
-    if (primaryResult.decision !== 'UNKNOWN') {
-      return primaryResult
+    let latestResult: VerificationResult = {
+      decision: 'UNKNOWN',
+      model: this.config.verificationModel,
+      rawResponse: ''
     }
 
-    await delay(VERIFICATION_RETRY_DELAY_MS)
+    for (let attempt = 1; attempt <= VERIFICATION_MAX_ATTEMPTS; attempt += 1) {
+      latestResult = await this.requestVerificationWithModel(prompt)
+      if (latestResult.decision !== 'UNKNOWN') {
+        return latestResult
+      }
 
-    return this.requestVerificationWithModel(prompt)
+      if (attempt < VERIFICATION_MAX_ATTEMPTS) {
+        await delay(VERIFICATION_RETRY_BASE_DELAY_MS * attempt)
+      }
+    }
+
+    return latestResult
   }
 
   private async requestVerificationWithModel(

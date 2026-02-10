@@ -228,23 +228,23 @@ export class SessionActivityTracker {
 
     switch (event.type) {
       case 'message.part.updated': {
-        const part = event.properties.part
-        const delta = event.properties.delta
-        if (part.type === 'text' && delta) {
+        const part = props.part
+        const delta = props.delta
+        if (part?.type === 'text' && delta) {
           process.stdout.write(delta)
-        } else if (part.type === 'tool') {
-          logger.debug(`[LLM] Tool call: ${part.tool} (${part.state.status})`)
+        } else if (part?.type === 'tool') {
+          logger.debug(`[LLM] Tool call: ${part.tool} (${part.state?.status})`)
         }
         break
       }
       case 'message.updated': {
-        const msg = event.properties.info
-        logger.debug(`[LLM] Message updated: ${msg.role} (${msg.id})`)
+        const msg = props.info
+        logger.debug(`[LLM] Message updated: ${msg?.role} (${msg?.id})`)
         break
       }
       case 'session.status': {
-        const status = event.properties.status
-        logger.debug(`[LLM] Session status: ${status.type}`)
+        const status = props.status
+        logger.debug(`[LLM] Session status: ${status?.type}`)
         break
       }
       case 'session.idle': {
@@ -252,15 +252,15 @@ export class SessionActivityTracker {
         break
       }
       case 'session.error': {
-        const err = event.properties.error
+        const err = props.error
         logger.error(
           `[LLM] Session error: ${err ? JSON.stringify(err) : 'unknown'}`
         )
         break
       }
       case 'todo.updated': {
-        const todos = event.properties.todos
-        logger.debug(`[LLM] Todos updated: ${todos.length} items`)
+        const todos = props.todos
+        logger.debug(`[LLM] Todos updated: ${todos?.length ?? 0} items`)
         break
       }
       default: {

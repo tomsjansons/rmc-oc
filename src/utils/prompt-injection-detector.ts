@@ -233,20 +233,13 @@ Consider:
 Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. When in doubt, respond with SAFE.`
 
     const primaryResult = await this.requestVerificationWithModel(prompt)
-
     if (primaryResult.decision !== 'UNKNOWN') {
       return primaryResult
     }
 
     await delay(VERIFICATION_RETRY_DELAY_MS)
 
-    const retryResult = await this.requestVerificationWithModel(prompt)
-
-    if (retryResult.decision !== 'UNKNOWN') {
-      return retryResult
-    }
-
-    return retryResult
+    return this.requestVerificationWithModel(prompt)
   }
 
   private async requestVerificationWithModel(
@@ -360,7 +353,7 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
     startIndex: number
   ): { json: string; nextIndex: number } | null {
     const openBraceIndex = output.indexOf('{', startIndex)
-    if (openBraceIndex === -1) {
+    if (openBraceIndex === -1 || openBraceIndex >= output.length) {
       return null
     }
 
@@ -370,9 +363,6 @@ Respond with a JSON object only: {"verdict":"INJECTION"} or {"verdict":"SAFE"}. 
 
     for (let index = openBraceIndex; index < output.length; index += 1) {
       const character = output[index]
-      if (!character) {
-        continue
-      }
 
       if (inString) {
         if (isEscaped) {

@@ -2,8 +2,10 @@ import { OPENROUTER_API_URL } from '../config/constants.js'
 import { logger } from '../utils/logger.js'
 
 type CompletionOptions = {
-  maxTokens?: number
+  maxTokens?: number | null
   temperature?: number
+  extraBody?: Record<string, unknown>
+  title?: string
 }
 
 export type LLMClient = {
@@ -25,7 +27,7 @@ export class LLMClientImpl implements LLMClient {
     prompt: string,
     options?: CompletionOptions
   ): Promise<string | null> {
-    const requestBody = {
+    const requestBody: Record<string, unknown> = {
       model: this.config.model,
       messages: [
         {
@@ -33,8 +35,15 @@ export class LLMClientImpl implements LLMClient {
           content: prompt
         }
       ],
-      temperature: options?.temperature ?? DEFAULT_TEMPERATURE,
-      max_tokens: options?.maxTokens ?? DEFAULT_MAX_TOKENS
+      temperature: options?.temperature ?? DEFAULT_TEMPERATURE
+    }
+
+    if (options?.maxTokens !== null) {
+      requestBody.max_tokens = options?.maxTokens ?? DEFAULT_MAX_TOKENS
+    }
+
+    if (options?.extraBody) {
+      Object.assign(requestBody, options.extraBody)
     }
 
     try {
@@ -43,7 +52,7 @@ export class LLMClientImpl implements LLMClient {
         headers: {
           Authorization: `Bearer ${this.config.apiKey}`,
           'HTTP-Referer': 'https://github.com/tomsjansons/rmc-oc',
-          'X-Title': 'Review My Code, OpenCode!',
+          'X-Title': options?.title ?? 'Review My Code, OpenCode!',
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(requestBody)

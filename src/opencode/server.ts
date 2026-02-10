@@ -15,6 +15,7 @@ import {
   OPENCODE_SERVER_PORT
 } from '../config/constants.js'
 import type { ReviewConfig } from '../execution/types.js'
+import { delay } from '../utils/async.js'
 import { OpenCodeError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
 
@@ -123,7 +124,7 @@ export class OpenCodeServer {
             )
           }
 
-          await this.delay(2000 * attempt)
+          await delay(2000 * attempt)
         }
       }
     })
@@ -465,7 +466,7 @@ export class OpenCodeServer {
         )
       }
 
-      await this.delay(this.healthCheckIntervalMs)
+      await delay(this.healthCheckIntervalMs)
     }
 
     throw new OpenCodeError(
@@ -568,10 +569,6 @@ export class OpenCodeServer {
         resolve()
       }
     })
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms))
   }
 
   private async logOpenCodeLogFiles(): Promise<void> {

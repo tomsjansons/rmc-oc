@@ -81,7 +81,7 @@ export class SessionActivityTracker {
   }
 
   handleEvent(event: Event, targetSessionId: string): ActivitySignal {
-    const props = event.properties as EventProperties
+    const props = this.parseEventProperties(event.properties)
     const eventSessionId = this.extractSessionId(props)
     const isTargetSession = eventSessionId === targetSessionId
 
@@ -219,9 +219,8 @@ export class SessionActivityTracker {
       return
     }
 
-    const sessionId = this.extractSessionId(
-      event.properties as EventProperties
-    )
+    const props = this.parseEventProperties(event.properties)
+    const sessionId = this.extractSessionId(props)
 
     if (sessionId && sessionId !== targetSessionId) {
       return
@@ -229,23 +228,23 @@ export class SessionActivityTracker {
 
     switch (event.type) {
       case 'message.part.updated': {
-        const part = event.properties.part
-        const delta = event.properties.delta
-        if (part.type === 'text' && delta) {
+        const part = props.part
+        const delta = props.delta
+        if (part?.type === 'text' && delta) {
           process.stdout.write(delta)
-        } else if (part.type === 'tool') {
-          logger.debug(`[LLM] Tool call: ${part.tool} (${part.state.status})`)
+        } else if (part?.type === 'tool') {
+          logger.debug(`[LLM] Tool call: ${part.tool} (${part.state?.status})`)
         }
         break
       }
       case 'message.updated': {
-        const msg = event.properties.info
-        logger.debug(`[LLM] Message updated: ${msg.role} (${msg.id})`)
+        const msg = props.info
+        logger.debug(`[LLM] Message updated: ${msg?.role} (${msg?.id})`)
         break
       }
       case 'session.status': {
-        const status = event.properties.status
-        logger.debug(`[LLM] Session status: ${status.type}`)
+        const status = props.status
+        logger.debug(`[LLM] Session status: ${status?.type}`)
         break
       }
       case 'session.idle': {
@@ -253,20 +252,124 @@ export class SessionActivityTracker {
         break
       }
       case 'session.error': {
-        const err = event.properties.error
+        const err = props.error
         logger.error(
           `[LLM] Session error: ${err ? JSON.stringify(err) : 'unknown'}`
         )
         break
       }
       case 'todo.updated': {
-        const todos = event.properties.todos
-        logger.debug(`[LLM] Todos updated: ${todos.length} items`)
+        const todos = props.todos
+        logger.debug(`[LLM] Todos updated: ${todos?.length ?? 0} items`)
         break
       }
       default: {
         logger.debug(`[LLM] Event: ${event.type}`)
       }
     }
+  }
+
+  private parseEventProperties(
+    properties: Event['properties']
+  ): EventProperties {
+    if (!this.isObjectRecord(properties)) {
+      return {}
+    }
+
+    const raw = properties
+
+    return {
+      sessionID: this.readString(Reflect.get(raw, 'sessionID')),
+      info: this.readInfo(Reflect.get(raw, 'info')),
+      status: this.readStatus(Reflect.get(raw, 'status')),
+      part: this.readPart(Reflect.get(raw, 'part')),
+      delta: this.readString(Reflect.get(raw, 'delta')),
+      error: Reflect.get(raw, 'error'),
+      todos: this.readArray(Reflect.get(raw, 'todos'))
+    }
+  }
+
+  private readInfo(value: unknown): EventProperties['info'] {
+    if (!this.isObjectRecord(value)) {
+      return undefined
+    }
+
+    const info = value
+    return {
+      sessionID: this.readString(Reflect.get(info, 'sessionID')),
+      role: this.readString(Reflect.get(info, 'role')),
+      id: this.readString(Reflect.get(info, 'id'))
+    }
+  }
+
+  private readStatus(value: unknown): EventProperties['status'] {
+    if (!this.isObjectRecord(value)) {
+      return undefined
+    }
+
+    const status = value
+    const type = this.readString(Reflect.get(status, 'type'))
+    if (!type) {
+      return undefined
+    }
+
+    return {
+      type,
+      attempt: this.readNumber(Reflect.get(status, 'attempt')),
+      message: this.readString(Reflect.get(status, 'message'))
+    }
+  }
+
+  private readPart(value: unknown): EventProperties['part'] {
+    if (!this.isObjectRecord(value)) {
+      return undefined
+    }
+
+    const part = value
+    const type = this.readString(Reflect.get(part, 'type'))
+    if (!type) {
+      return undefined
+    }
+
+    return {
+      type,
+      tool: this.readString(Reflect.get(part, 'tool')),
+      state: this.readState(Reflect.get(part, 'state')),
+      input: this.readRecord(Reflect.get(part, 'input'))
+    }
+  }
+
+  private readState(value: unknown): { status: string } | undefined {
+    if (!this.isObjectRecord(value)) {
+      return undefined
+    }
+
+    const state = value
+    const status = this.readString(Reflect.get(state, 'status'))
+    if (!status) {
+      return undefined
+    }
+
+    return { status }
+  }
+
+  private readRecord(value: unknown): Record<string, unknown> | undefined {
+    return this.isObjectRecord(value) ? value : undefined
+  }
+
+  private readArray(value: unknown): unknown[] | undefined {
+    return Array.isArray(value) ? value : undefined
+  }
+
+  private readString(value: unknown): string | undefined {
+    return typeof value === 'string' ? value : undefined
+  }
+
+  private readNumber(value: unknown): number | undefined {
+    return typeof value === 'number' ? value : undefined
+  }
+
+  private isObjectRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
   }
 }

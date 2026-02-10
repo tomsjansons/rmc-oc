@@ -11,6 +11,7 @@ import type { OpenCodeClient } from '../opencode/client.js'
 
 import { OrchestratorError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
+import { delay } from '../utils/async.js'
 import {
   type PromptInjectionDetector,
   createPromptInjectionDetector
@@ -111,7 +112,7 @@ export class ReviewExecutor {
             `Review attempt ${attempts} failed: ${error instanceof Error ? error.message : String(error)}`
           )
 
-          await this.delay(5000 * attempts)
+          await delay(5000 * attempts)
         }
       }
 
@@ -662,10 +663,6 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
     }
   }
 
-  private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms))
-  }
-
   private async getCachedPRInfo(): Promise<
     Awaited<ReturnType<GitHubAPI['getPRInfo']>>
   > {
@@ -681,7 +678,7 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
   ): Promise<string> {
     const result = await this.injectionDetector.detectAndSanitize(input)
 
-    if (result.isConfirmedInjection) {
+    if (result.shouldBlockContent) {
       logger.error(
         `Blocked prompt injection in ${context}. Threats: ${result.detectedThreats.join(', ')}`
       )

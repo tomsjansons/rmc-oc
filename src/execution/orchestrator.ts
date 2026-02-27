@@ -183,8 +183,11 @@ export class ReviewExecutor {
       'Starting 3-pass review in single OpenCode session (context preserved across all passes)'
     )
 
+    logger.info('Dispatching prompt for pass 1')
     await this.executePass(1, REVIEW_PROMPTS.PASS_1(files, prDescription))
+    logger.info('Dispatching prompt for pass 2')
     await this.executePass(2, REVIEW_PROMPTS.PASS_2(prDescription))
+    logger.info('Dispatching prompt for pass 3')
     await this.executePass(
       3,
       REVIEW_PROMPTS.PASS_3(securitySensitivity, prDescription)
@@ -413,7 +416,11 @@ export class ReviewExecutor {
       })
 
       // Send the prompt and wait for idle (with grace period)
+      logger.info(`Pass ${passNumber}: sending prompt to OpenCode`)
       await this.sendPromptToOpenCode(prompt)
+      logger.info(
+        `Pass ${passNumber}: OpenCode returned control to orchestrator`
+      )
 
       // Check if submit_pass_results was already called during execution
       // This is the common case - model calls the tool then goes idle
@@ -440,6 +447,10 @@ export class ReviewExecutor {
           )
         }
       }
+
+      logger.info(
+        `Pass ${passNumber}: completion recorded=${this.isPassCompleted(passNumber)}`
+      )
 
       // Clean up the resolver
       this.passCompletionResolvers.delete(passNumber)

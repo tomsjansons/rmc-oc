@@ -19,7 +19,6 @@ type OpenCodeSDKClient = ReturnType<typeof createOpencodeClient>
 export class OpenCodeClientImpl implements OpenCodeClient {
   private currentSessionId: string | null = null
   private client: OpenCodeSDKClient
-  private debugLogging: boolean
   private timeoutMs: number
   private activityTracker: SessionActivityTracker
 
@@ -32,7 +31,6 @@ export class OpenCodeClientImpl implements OpenCodeClient {
       baseUrl: serverUrl,
       throwOnError: true
     })
-    this.debugLogging = debugLogging
     this.timeoutMs = timeoutMs
     this.activityTracker = new SessionActivityTracker(debugLogging)
   }
@@ -123,6 +121,9 @@ export class OpenCodeClientImpl implements OpenCodeClient {
       logger.debug(
         `Sending prompt to session ${sessionId} (${prompt.length} chars)`
       )
+      logger.info(
+        `Waiting for OpenCode session ${sessionId} to finish current prompt`
+      )
 
       const completionPromise = this.waitForPromptCompletion(sessionId)
 
@@ -152,22 +153,40 @@ export class OpenCodeClientImpl implements OpenCodeClient {
     const startTime = Date.now()
     const abortController = new AbortController()
     let sawBusy = false
+    let totalEvents = 0
+    let targetEvents = 0
+    let lastTargetEventAt = 0
 
     const IDLE_GRACE_PERIOD_MS = 10000
+    const ACTIVITY_LOG_INTERVAL_MS = 30000
 
     this.activityTracker.reset()
 
     return new Promise<void>((resolve, reject) => {
       let resolved = false
       let idleGraceTimerId: ReturnType<typeof setTimeout> | null = null
+      let activityLogTimerId: ReturnType<typeof setInterval> | null = null
 
       const timeoutId = setTimeout(() => {
         if (!resolved) {
+          const metrics = this.activityTracker.getMetricsSnapshot()
+          const traces = this.activityTracker.getRecentEventTrace(12)
+          const lastTargetEventAgeMs =
+            lastTargetEventAt > 0 ? Date.now() - lastTargetEventAt : -1
+          const traceSummary =
+            traces.length > 0
+              ? traces
+                  .map(
+                    (trace) =>
+                      `${trace.eventType}${trace.detail ? `(${trace.detail})` : ''}`
+                  )
+                  .join(' -> ')
+              : 'none'
           resolved = true
           abortController.abort()
           reject(
             new OpenCodeError(
-              `Timeout waiting for session ${sessionId} to complete after ${this.timeoutMs}ms`
+              `Timeout waiting for session ${sessionId} to complete after ${this.timeoutMs}ms (events: total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceTimerId !== null}, lastTargetEventAgeMs=${lastTargetEventAgeMs}, metrics=${JSON.stringify(metrics)}, recentEvents=${traceSummary})`
             )
           )
         }
@@ -175,12 +194,27 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
       const cleanup = (): void => {
         clearTimeout(timeoutId)
+        if (activityLogTimerId) {
+          clearInterval(activityLogTimerId)
+          activityLogTimerId = null
+        }
         if (idleGraceTimerId) {
           clearTimeout(idleGraceTimerId)
           idleGraceTimerId = null
         }
         abortController.abort()
       }
+
+      activityLogTimerId = setInterval(() => {
+        if (resolved) {
+          return
+        }
+        const elapsedMs = Date.now() - startTime
+        const metrics = this.activityTracker.getMetricsSnapshot()
+        logger.info(
+          `Session ${sessionId} still running (${elapsedMs}ms, events total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceTimerId !== null}, metrics=${JSON.stringify(metrics)})`
+        )
+      }, ACTIVITY_LOG_INTERVAL_MS)
 
       const cancelIdleGrace = (): void => {
         if (idleGraceTimerId) {
@@ -203,11 +237,16 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               break
             }
 
+            totalEvents++
+
             const signal = this.activityTracker.handleEvent(event, sessionId)
 
             if (!signal.isTargetSession) {
               continue
             }
+
+            targetEvents++
+            lastTargetEventAt = Date.now()
 
             if (signal.loopDetected) {
               resolved = true
@@ -270,6 +309,9 @@ export class OpenCodeClientImpl implements OpenCodeClient {
           }
 
           if (!resolved) {
+            logger.warning(
+              `Event stream ended before session ${sessionId} reached completion state`
+            )
             reject(new OpenCodeError('Event stream ended unexpectedly'))
           }
         } catch (error) {

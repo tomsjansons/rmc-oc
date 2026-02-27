@@ -13,6 +13,12 @@ type ActivityMetrics = {
   errors: number
 }
 
+type EventTrace = {
+  at: number
+  eventType: string
+  detail: string
+}
+
 type EventProperties = {
   sessionID?: string
   info?: { sessionID?: string; role?: string; id?: string }
@@ -44,6 +50,7 @@ type ActivitySignal = {
 export class SessionActivityTracker {
   private debugLogging: boolean
   private recentToolCalls: string[] = []
+  private recentTargetEvents: EventTrace[] = []
   private activityMetrics: ActivityMetrics = {
     toolCalls: 0,
     messageUpdates: 0,
@@ -58,6 +65,7 @@ export class SessionActivityTracker {
 
   reset(): void {
     this.recentToolCalls = []
+    this.recentTargetEvents = []
     this.activityMetrics = {
       toolCalls: 0,
       messageUpdates: 0,
@@ -78,6 +86,32 @@ export class SessionActivityTracker {
         `Session ${sessionId} completed with NO tool calls - model may not have done any work`
       )
     }
+
+    const traces = this.getRecentEventTrace(8)
+    if (this.debugLogging && traces.length > 0) {
+      logger.info(
+        `Session ${sessionId} recent events: ${traces
+          .map(
+            (trace) =>
+              `${trace.eventType}${trace.detail ? `(${trace.detail})` : ''}`
+          )
+          .join(' -> ')}`
+      )
+    }
+  }
+
+  getMetricsSnapshot(): ActivityMetrics {
+    return {
+      toolCalls: this.activityMetrics.toolCalls,
+      messageUpdates: this.activityMetrics.messageUpdates,
+      busyEvents: this.activityMetrics.busyEvents,
+      idleEvents: this.activityMetrics.idleEvents,
+      errors: this.activityMetrics.errors
+    }
+  }
+
+  getRecentEventTrace(limit: number = 20): EventTrace[] {
+    return this.recentTargetEvents.slice(-limit)
   }
 
   handleEvent(event: Event, targetSessionId: string): ActivitySignal {
@@ -98,6 +132,8 @@ export class SessionActivityTracker {
         loopDetected: false
       }
     }
+
+    this.trackTargetEvent(event, props)
 
     let loopDetected = false
 
@@ -152,6 +188,40 @@ export class SessionActivityTracker {
       errorPayload: props.error,
       loopDetected
     }
+  }
+
+  private trackTargetEvent(event: Event, props: EventProperties): void {
+    const detail = this.buildEventDetail(event, props)
+    this.recentTargetEvents.push({
+      at: Date.now(),
+      eventType: event.type,
+      detail
+    })
+
+    if (this.recentTargetEvents.length > 100) {
+      this.recentTargetEvents.shift()
+    }
+  }
+
+  private buildEventDetail(event: Event, props: EventProperties): string {
+    if (event.type === 'session.status') {
+      return props.status?.type || ''
+    }
+
+    if (event.type === 'message.part.updated') {
+      const partType = props.part?.type
+      if (partType === 'tool') {
+        return `${props.part?.tool || 'unknown'}:${props.part?.state?.status || 'unknown'}`
+      }
+
+      if (partType === 'text') {
+        return 'text'
+      }
+
+      return partType || ''
+    }
+
+    return ''
   }
 
   private buildToolSignature(part: EventProperties['part']): string {

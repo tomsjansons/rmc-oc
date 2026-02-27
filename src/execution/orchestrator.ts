@@ -144,9 +144,11 @@ export class ReviewExecutor {
     const securitySensitivity = await this.detectSecuritySensitivity()
     const prInfo = await this.getCachedPRInfo()
     const prBodyLength = prInfo.body?.length || 0
-    logger.info(
-      `PR description length before sanitization: ${prBodyLength} chars`
-    )
+    if (this.config.opencode.debugLogging) {
+      logger.info(
+        `PR description length before sanitization: ${prBodyLength} chars`
+      )
+    }
 
     const prDescription = await this.sanitizeExternalInput(
       prInfo.body || '',
@@ -154,9 +156,11 @@ export class ReviewExecutor {
     )
 
     const wasBlocked = prDescription.includes('[CONTENT BLOCKED')
-    logger.info(
-      `PR description after sanitization: ${wasBlocked ? 'BLOCKED' : `${prDescription.length} chars`}`
-    )
+    if (this.config.opencode.debugLogging) {
+      logger.info(
+        `PR description after sanitization: ${wasBlocked ? 'BLOCKED' : `${prDescription.length} chars`}`
+      )
+    }
     if (wasBlocked) {
       logger.warning(
         'PR description was blocked by injection detection - this may cause the model to go idle with nothing to review'
@@ -164,27 +168,40 @@ export class ReviewExecutor {
     }
 
     // Log detailed file information for debugging
-    logger.info(`Fetched ${files.length} changed files for review`)
-    logger.info('=== FILES TO BE REVIEWED ===')
-    for (const file of files) {
-      logger.info(`  - ${file}`)
+    if (this.config.opencode.debugLogging) {
+      logger.info(`Fetched ${files.length} changed files for review`)
+      logger.info('=== FILES TO BE REVIEWED ===')
+      for (const file of files) {
+        logger.info(`  - ${file}`)
+      }
+      logger.info('=== END FILES LIST ===')
     }
-    logger.info('=== END FILES LIST ===')
 
     // Log PR diff range info
-    logger.info(
-      `PR diff range: ${prInfo.base.sha.substring(0, 7)}...${prInfo.head.sha.substring(0, 7)}`
-    )
-    logger.info(
-      `Base branch: ${prInfo.base.ref}, Head branch: ${prInfo.head.ref}`
-    )
+    if (this.config.opencode.debugLogging) {
+      logger.info(
+        `PR diff range: ${prInfo.base.sha.substring(0, 7)}...${prInfo.head.sha.substring(0, 7)}`
+      )
+      logger.info(
+        `Base branch: ${prInfo.base.ref}, Head branch: ${prInfo.head.ref}`
+      )
+    }
 
     logger.info(
       'Starting 3-pass review in single OpenCode session (context preserved across all passes)'
     )
 
+    if (this.config.opencode.debugLogging) {
+      logger.info('Dispatching prompt for pass 1')
+    }
     await this.executePass(1, REVIEW_PROMPTS.PASS_1(files, prDescription))
+    if (this.config.opencode.debugLogging) {
+      logger.info('Dispatching prompt for pass 2')
+    }
     await this.executePass(2, REVIEW_PROMPTS.PASS_2(prDescription))
+    if (this.config.opencode.debugLogging) {
+      logger.info('Dispatching prompt for pass 3')
+    }
     await this.executePass(
       3,
       REVIEW_PROMPTS.PASS_3(securitySensitivity, prDescription)
@@ -413,7 +430,15 @@ export class ReviewExecutor {
       })
 
       // Send the prompt and wait for idle (with grace period)
+      if (this.config.opencode.debugLogging) {
+        logger.info(`Pass ${passNumber}: sending prompt to OpenCode`)
+      }
       await this.sendPromptToOpenCode(prompt)
+      if (this.config.opencode.debugLogging) {
+        logger.info(
+          `Pass ${passNumber}: OpenCode returned control to orchestrator`
+        )
+      }
 
       // Check if submit_pass_results was already called during execution
       // This is the common case - model calls the tool then goes idle
@@ -439,6 +464,12 @@ export class ReviewExecutor {
             `Pass ${passNumber}: timed out waiting for submit_pass_results, proceeding anyway`
           )
         }
+      }
+
+      if (this.config.opencode.debugLogging) {
+        logger.info(
+          `Pass ${passNumber}: completion recorded=${this.isPassCompleted(passNumber)}`
+        )
       }
 
       // Clean up the resolver

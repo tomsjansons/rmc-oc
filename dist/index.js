@@ -37537,6 +37537,7 @@ const LOOP_DETECTION_WINDOW = 10;
 class SessionActivityTracker {
     debugLogging;
     recentToolCalls = [];
+    recentTargetEvents = [];
     activityMetrics = {
         toolCalls: 0,
         messageUpdates: 0,
@@ -37549,6 +37550,7 @@ class SessionActivityTracker {
     }
     reset() {
         this.recentToolCalls = [];
+        this.recentTargetEvents = [];
         this.activityMetrics = {
             toolCalls: 0,
             messageUpdates: 0,
@@ -37563,6 +37565,24 @@ class SessionActivityTracker {
         if (m.toolCalls === 0) {
             logger.warning(`Session ${sessionId} completed with NO tool calls - model may not have done any work`);
         }
+        const traces = this.getRecentEventTrace(8);
+        if (this.debugLogging && traces.length > 0) {
+            logger.info(`Session ${sessionId} recent events: ${traces
+                .map((trace) => `${trace.eventType}${trace.detail ? `(${trace.detail})` : ''}`)
+                .join(' -> ')}`);
+        }
+    }
+    getMetricsSnapshot() {
+        return {
+            toolCalls: this.activityMetrics.toolCalls,
+            messageUpdates: this.activityMetrics.messageUpdates,
+            busyEvents: this.activityMetrics.busyEvents,
+            idleEvents: this.activityMetrics.idleEvents,
+            errors: this.activityMetrics.errors
+        };
+    }
+    getRecentEventTrace(limit = 20) {
+        return this.recentTargetEvents.slice(-limit);
     }
     handleEvent(event, targetSessionId) {
         const props = this.parseEventProperties(event.properties);
@@ -37580,6 +37600,7 @@ class SessionActivityTracker {
                 loopDetected: false
             };
         }
+        this.trackTargetEvent(event, props);
         let loopDetected = false;
         if (event.type === 'message.part.updated' && props.part?.type === 'tool') {
             this.activityMetrics.toolCalls++;
@@ -37618,6 +37639,33 @@ class SessionActivityTracker {
             errorPayload: props.error,
             loopDetected
         };
+    }
+    trackTargetEvent(event, props) {
+        const detail = this.buildEventDetail(event, props);
+        this.recentTargetEvents.push({
+            at: Date.now(),
+            eventType: event.type,
+            detail
+        });
+        if (this.recentTargetEvents.length > 100) {
+            this.recentTargetEvents.shift();
+        }
+    }
+    buildEventDetail(event, props) {
+        if (event.type === 'session.status') {
+            return props.status?.type || '';
+        }
+        if (event.type === 'message.part.updated') {
+            const partType = props.part?.type;
+            if (partType === 'tool') {
+                return `${props.part?.tool || 'unknown'}:${props.part?.state?.status || 'unknown'}`;
+            }
+            if (partType === 'text') {
+                return 'text';
+            }
+            return partType || '';
+        }
+        return '';
     }
     buildToolSignature(part) {
         const toolName = part?.tool || 'unknown';
@@ -37875,6 +37923,9 @@ class OpenCodeClientImpl {
     async sendPrompt(sessionId, prompt) {
         try {
             logger.debug(`Sending prompt to session ${sessionId} (${prompt.length} chars)`);
+            if (this.debugLogging) {
+                logger.info(`Waiting for OpenCode session ${sessionId} to finish current prompt`);
+            }
             const completionPromise = this.waitForPromptCompletion(sessionId);
             await this.client.session.promptAsync({
                 path: { id: sessionId },
@@ -37898,31 +37949,251 @@ class OpenCodeClientImpl {
         const startTime = Date.now();
         const abortController = new AbortController();
         let sawBusy = false;
+        let totalEvents = 0;
+        let targetEvents = 0;
+        let lastTargetEventAt = 0;
+        let lastTargetStallLogAt = 0;
         const IDLE_GRACE_PERIOD_MS = 10000;
+        const ACTIVITY_LOG_INTERVAL_MS = 30000;
+        const TARGET_STALL_WARNING_MS = 60000;
+        const TARGET_STALL_LOG_COOLDOWN_MS = 60000;
+        const TARGET_INACTIVITY_FAIL_MS = 180000;
+        const INITIAL_TARGET_ACTIVITY_FAIL_MS = 120000;
+        const TRANSCRIPT_DUMP_COOLDOWN_MS = 60000;
+        const TRANSCRIPT_FETCH_TIMEOUT_MS = 5000;
         this.activityTracker.reset();
         return new Promise((resolve, reject) => {
             let resolved = false;
-            let idleGraceTimerId = null;
+            let idleGraceDeadlineMs = null;
+            let idleGraceStartedAtMs = null;
+            let activityLogTimerId = null;
+            let transcriptDumpInFlight = false;
+            let lastTranscriptDumpAt = 0;
+            const summarizePart = (part) => {
+                if (part.type === 'text') {
+                    const text = typeof part.text === 'string' ? part.text : '';
+                    const compact = text.replace(/\s+/g, ' ').trim();
+                    const clipped = compact.length > 220 ? `${compact.slice(0, 220)}...` : compact;
+                    return clipped ? `text:${clipped}` : 'text:<empty>';
+                }
+                if (part.type === 'tool') {
+                    const tool = typeof part.tool === 'string' ? part.tool : 'unknown';
+                    const state = typeof part.state === 'object' && part.state !== null
+                        ? part.state
+                        : null;
+                    const status = state && typeof state.status === 'string' ? state.status : 'unknown';
+                    if (status === 'completed') {
+                        const output = typeof state?.output === 'string' ? state.output : 'no output';
+                        const compact = output.replace(/\s+/g, ' ').trim();
+                        const clipped = compact.length > 160 ? `${compact.slice(0, 160)}...` : compact;
+                        return `tool:${tool}:${status}:${clipped}`;
+                    }
+                    if (status === 'error') {
+                        const error = typeof state?.error === 'string' ? state.error : 'unknown error';
+                        return `tool:${tool}:${status}:${error}`;
+                    }
+                    return `tool:${tool}:${status}`;
+                }
+                if (part.type === 'retry') {
+                    const attempt = typeof part.attempt === 'number' ? part.attempt : -1;
+                    return `retry:attempt=${attempt}`;
+                }
+                if (part.type === 'step-finish') {
+                    const reason = typeof part.reason === 'string' ? part.reason : 'unknown';
+                    return `step-finish:${reason}`;
+                }
+                return part.type;
+            };
+            const dumpRecentSessionMessages = async (reason) => {
+                const now = Date.now();
+                if (transcriptDumpInFlight) {
+                    return;
+                }
+                if (now - lastTranscriptDumpAt < TRANSCRIPT_DUMP_COOLDOWN_MS) {
+                    return;
+                }
+                transcriptDumpInFlight = true;
+                lastTranscriptDumpAt = now;
+                if (this.debugLogging) {
+                    logger.info(`Session ${sessionId} fetching transcript snapshot (${reason})`);
+                }
+                try {
+                    const response = await Promise.race([
+                        this.client.session.messages({
+                            path: { id: sessionId },
+                            query: { limit: 6 }
+                        }),
+                        new Promise((_resolve, rejectSnapshot) => {
+                            setTimeout(() => {
+                                rejectSnapshot(new Error(`Transcript fetch timed out after ${TRANSCRIPT_FETCH_TIMEOUT_MS}ms`));
+                            }, TRANSCRIPT_FETCH_TIMEOUT_MS);
+                        })
+                    ]);
+                    if (!response.data || response.data.length === 0) {
+                        if (this.debugLogging) {
+                            logger.warning(`Session ${sessionId} transcript snapshot (${reason}): no messages returned`);
+                        }
+                        return;
+                    }
+                    const formatted = response.data
+                        .map((message) => {
+                        const role = message.info.role;
+                        const messageId = message.info.id;
+                        const partsSummary = message.parts
+                            .slice(-3)
+                            .map((part) => summarizePart(part))
+                            .join(' | ');
+                        return `${role}:${messageId} => ${partsSummary || 'no parts'}`;
+                    })
+                        .join(' || ');
+                    if (this.debugLogging) {
+                        logger.info(`Session ${sessionId} transcript snapshot (${reason}): ${formatted}`);
+                    }
+                }
+                catch (error) {
+                    if (this.debugLogging) {
+                        logger.warning(`Failed to fetch transcript snapshot for session ${sessionId} (${reason}): ${error instanceof Error ? error.message : String(error)}`);
+                    }
+                }
+                finally {
+                    transcriptDumpInFlight = false;
+                }
+            };
+            const rejectForInactivity = (reason) => {
+                if (resolved) {
+                    return;
+                }
+                const lastTargetEventAgeMs = lastTargetEventAt > 0 ? Date.now() - lastTargetEventAt : -1;
+                const metrics = this.activityTracker.getMetricsSnapshot();
+                const traceSummary = formatRecentTargetEvents();
+                resolved = true;
+                cleanup();
+                reject(new OpenCodeError(`Session ${sessionId} became inactive (${reason}). events: total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceDeadlineMs !== null}, lastTargetEventAgeMs=${lastTargetEventAgeMs}, metrics=${JSON.stringify(metrics)}, recentTargetEvents=${traceSummary}`));
+            };
             const timeoutId = setTimeout(() => {
                 if (!resolved) {
+                    const metrics = this.activityTracker.getMetricsSnapshot();
+                    const traces = this.activityTracker.getRecentEventTrace(12);
+                    const lastTargetEventAgeMs = lastTargetEventAt > 0 ? Date.now() - lastTargetEventAt : -1;
+                    const traceSummary = traces.length > 0
+                        ? traces
+                            .map((trace) => `${trace.eventType}${trace.detail ? `(${trace.detail})` : ''}`)
+                            .join(' -> ')
+                        : 'none';
                     resolved = true;
                     abortController.abort();
-                    reject(new OpenCodeError(`Timeout waiting for session ${sessionId} to complete after ${this.timeoutMs}ms`));
+                    reject(new OpenCodeError(`Timeout waiting for session ${sessionId} to complete after ${this.timeoutMs}ms (events: total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceDeadlineMs !== null}, lastTargetEventAgeMs=${lastTargetEventAgeMs}, metrics=${JSON.stringify(metrics)}, recentEvents=${traceSummary})`));
                 }
             }, this.timeoutMs);
             const cleanup = () => {
                 clearTimeout(timeoutId);
-                if (idleGraceTimerId) {
-                    clearTimeout(idleGraceTimerId);
-                    idleGraceTimerId = null;
+                if (activityLogTimerId) {
+                    clearInterval(activityLogTimerId);
+                    activityLogTimerId = null;
                 }
+                idleGraceDeadlineMs = null;
                 abortController.abort();
             };
-            const cancelIdleGrace = () => {
-                if (idleGraceTimerId) {
-                    logger.debug(`Session ${sessionId} became active again, cancelling idle grace period`);
-                    clearTimeout(idleGraceTimerId);
-                    idleGraceTimerId = null;
+            const finishSessionAsCompleted = () => {
+                if (resolved) {
+                    return;
+                }
+                const duration = Date.now() - startTime;
+                logger.info(`Session ${sessionId} completed after ${duration}ms (idle for ${IDLE_GRACE_PERIOD_MS}ms)`);
+                this.activityTracker.logActivitySummary(sessionId, duration);
+                resolved = true;
+                cleanup();
+                resolve();
+            };
+            const formatRecentTargetEvents = () => {
+                const traces = this.activityTracker.getRecentEventTrace(5);
+                if (traces.length === 0) {
+                    return 'none';
+                }
+                return traces
+                    .map((trace) => `${trace.eventType}${trace.detail ? `(${trace.detail})` : ''}`)
+                    .join(' -> ');
+            };
+            const logTargetStallIfNeeded = (source) => {
+                if (resolved || targetEvents === 0 || lastTargetEventAt === 0) {
+                    return;
+                }
+                const now = Date.now();
+                const ageMs = now - lastTargetEventAt;
+                if (ageMs < TARGET_STALL_WARNING_MS) {
+                    return;
+                }
+                if (now - lastTargetStallLogAt < TARGET_STALL_LOG_COOLDOWN_MS) {
+                    return;
+                }
+                lastTargetStallLogAt = now;
+                if (this.debugLogging) {
+                    logger.warning(`Session ${sessionId} target events stalled for ${ageMs}ms while stream is active (source=${source}, totalEvents=${totalEvents}, targetEvents=${targetEvents}, recentTargetEvents=${formatRecentTargetEvents()})`);
+                    void dumpRecentSessionMessages(`target-stall:${source}`);
+                }
+            };
+            const failOnTargetInactivityIfNeeded = (source) => {
+                if (resolved) {
+                    return;
+                }
+                const now = Date.now();
+                const elapsedMs = now - startTime;
+                if (!sawBusy &&
+                    targetEvents <= 1 &&
+                    elapsedMs >= INITIAL_TARGET_ACTIVITY_FAIL_MS) {
+                    if (this.debugLogging) {
+                        logger.error(`Session ${sessionId} did not show target activity within ${INITIAL_TARGET_ACTIVITY_FAIL_MS}ms (source=${source})`);
+                        void dumpRecentSessionMessages(`initial-inactivity:${source}`);
+                    }
+                    rejectForInactivity('no target activity after prompt submission');
+                    return;
+                }
+                if (sawBusy &&
+                    idleGraceDeadlineMs === null &&
+                    lastTargetEventAt > 0 &&
+                    now - lastTargetEventAt >= TARGET_INACTIVITY_FAIL_MS) {
+                    if (this.debugLogging) {
+                        logger.error(`Session ${sessionId} had no target events for ${TARGET_INACTIVITY_FAIL_MS}ms after being busy (source=${source})`);
+                        void dumpRecentSessionMessages(`target-inactivity:${source}`);
+                    }
+                    rejectForInactivity('target session stopped emitting events');
+                }
+            };
+            const tryCompleteFromIdleGrace = () => {
+                if (idleGraceDeadlineMs !== null &&
+                    Date.now() >= idleGraceDeadlineMs &&
+                    !resolved) {
+                    if (this.debugLogging) {
+                        logger.info(`Session ${sessionId} idle grace expired after ${Date.now() - (idleGraceStartedAtMs || Date.now())}ms; completing prompt`);
+                    }
+                    finishSessionAsCompleted();
+                }
+            };
+            activityLogTimerId = setInterval(() => {
+                if (resolved) {
+                    return;
+                }
+                const elapsedMs = Date.now() - startTime;
+                const metrics = this.activityTracker.getMetricsSnapshot();
+                const lastTargetEventAgeMs = lastTargetEventAt > 0 ? Date.now() - lastTargetEventAt : -1;
+                if (this.debugLogging) {
+                    logger.info(`Session ${sessionId} still running (${elapsedMs}ms, events total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceDeadlineMs !== null}, lastTargetEventAgeMs=${lastTargetEventAgeMs}, metrics=${JSON.stringify(metrics)})`);
+                }
+                if (sawBusy && this.debugLogging) {
+                    void dumpRecentSessionMessages('heartbeat');
+                }
+                logTargetStallIfNeeded('heartbeat');
+                failOnTargetInactivityIfNeeded('heartbeat');
+                tryCompleteFromIdleGrace();
+            }, ACTIVITY_LOG_INTERVAL_MS);
+            const cancelIdleGrace = (reason) => {
+                if (idleGraceDeadlineMs !== null) {
+                    const remainingMs = idleGraceDeadlineMs - Date.now();
+                    if (this.debugLogging) {
+                        logger.info(`Session ${sessionId} cancelled idle grace (${reason}, remaining=${remainingMs}ms)`);
+                    }
+                    idleGraceDeadlineMs = null;
+                    idleGraceStartedAtMs = null;
                 }
             };
             const processEvents = async () => {
@@ -37934,10 +38205,22 @@ class OpenCodeClientImpl {
                         if (resolved || abortController.signal.aborted) {
                             break;
                         }
+                        tryCompleteFromIdleGrace();
+                        logTargetStallIfNeeded('event-loop');
+                        failOnTargetInactivityIfNeeded('event-loop');
+                        if (resolved) {
+                            return;
+                        }
+                        totalEvents++;
+                        this.logAgentConversationEvent(event, sessionId);
                         const signal = this.activityTracker.handleEvent(event, sessionId);
                         if (!signal.isTargetSession) {
+                            logTargetStallIfNeeded('non-target-event');
+                            failOnTargetInactivityIfNeeded('non-target-event');
                             continue;
                         }
+                        targetEvents++;
+                        lastTargetEventAt = Date.now();
                         if (signal.loopDetected) {
                             resolved = true;
                             cleanup();
@@ -37945,25 +38228,24 @@ class OpenCodeClientImpl {
                             return;
                         }
                         if (signal.isBusy) {
+                            const becameBusy = !sawBusy;
                             sawBusy = true;
-                            cancelIdleGrace();
-                        }
-                        if (signal.isMessageUpdate) {
-                            cancelIdleGrace();
+                            if (becameBusy) {
+                                if (this.debugLogging) {
+                                    logger.info(`Session ${sessionId} became busy for the first time, dumping transcript snapshot`);
+                                    void dumpRecentSessionMessages('became-busy');
+                                }
+                            }
+                            cancelIdleGrace('target session became busy');
                         }
                         if (signal.isIdle && sawBusy) {
-                            if (!idleGraceTimerId) {
-                                logger.debug(`Session ${sessionId} went idle, waiting ${IDLE_GRACE_PERIOD_MS}ms grace period...`);
-                                idleGraceTimerId = setTimeout(async () => {
-                                    if (!resolved) {
-                                        const duration = Date.now() - startTime;
-                                        logger.info(`Session ${sessionId} completed after ${duration}ms (idle for ${IDLE_GRACE_PERIOD_MS}ms)`);
-                                        this.activityTracker.logActivitySummary(sessionId, duration);
-                                        resolved = true;
-                                        cleanup();
-                                        resolve();
-                                    }
-                                }, IDLE_GRACE_PERIOD_MS);
+                            if (idleGraceDeadlineMs === null) {
+                                idleGraceStartedAtMs = Date.now();
+                                idleGraceDeadlineMs =
+                                    idleGraceStartedAtMs + IDLE_GRACE_PERIOD_MS;
+                                if (this.debugLogging) {
+                                    logger.info(`Session ${sessionId} went idle, starting ${IDLE_GRACE_PERIOD_MS}ms grace period (deadline=${new Date(idleGraceDeadlineMs).toISOString()})`);
+                                }
                             }
                         }
                         if (signal.isRetry) {
@@ -37978,7 +38260,9 @@ class OpenCodeClientImpl {
                             return;
                         }
                     }
+                    tryCompleteFromIdleGrace();
                     if (!resolved) {
+                        logger.warning(`Event stream ended before session ${sessionId} reached completion state`);
                         reject(new OpenCodeError('Event stream ended unexpectedly'));
                     }
                 }
@@ -37991,6 +38275,38 @@ class OpenCodeClientImpl {
             };
             processEvents();
         });
+    }
+    logAgentConversationEvent(event, sessionId) {
+        if (!this.isObjectRecord(event)) {
+            return;
+        }
+        const type = Reflect.get(event, 'type');
+        if (type !== 'message.part.updated') {
+            return;
+        }
+        const properties = Reflect.get(event, 'properties');
+        if (!this.isObjectRecord(properties)) {
+            return;
+        }
+        const part = Reflect.get(properties, 'part');
+        if (!this.isObjectRecord(part)) {
+            return;
+        }
+        const partType = Reflect.get(part, 'type');
+        const partSessionId = Reflect.get(part, 'sessionID');
+        if (partType !== 'text' || partSessionId !== sessionId) {
+            return;
+        }
+        const delta = Reflect.get(properties, 'delta');
+        if (typeof delta !== 'string' || delta.length === 0) {
+            return;
+        }
+        if (this.debugLogging) {
+            logger.info(`[agent] ${delta}`);
+        }
+    }
+    isObjectRecord(value) {
+        return typeof value === 'object' && value !== null && !Array.isArray(value);
     }
     async sendPromptAndGetResponse(sessionId, prompt) {
         try {
@@ -41298,26 +41614,43 @@ class ReviewExecutor {
         const securitySensitivity = await this.detectSecuritySensitivity();
         const prInfo = await this.getCachedPRInfo();
         const prBodyLength = prInfo.body?.length || 0;
-        logger.info(`PR description length before sanitization: ${prBodyLength} chars`);
+        if (this.config.opencode.debugLogging) {
+            logger.info(`PR description length before sanitization: ${prBodyLength} chars`);
+        }
         const prDescription = await this.sanitizeExternalInput(prInfo.body || '', 'PR description');
         const wasBlocked = prDescription.includes('[CONTENT BLOCKED');
-        logger.info(`PR description after sanitization: ${wasBlocked ? 'BLOCKED' : `${prDescription.length} chars`}`);
+        if (this.config.opencode.debugLogging) {
+            logger.info(`PR description after sanitization: ${wasBlocked ? 'BLOCKED' : `${prDescription.length} chars`}`);
+        }
         if (wasBlocked) {
             logger.warning('PR description was blocked by injection detection - this may cause the model to go idle with nothing to review');
         }
         // Log detailed file information for debugging
-        logger.info(`Fetched ${files.length} changed files for review`);
-        logger.info('=== FILES TO BE REVIEWED ===');
-        for (const file of files) {
-            logger.info(`  - ${file}`);
+        if (this.config.opencode.debugLogging) {
+            logger.info(`Fetched ${files.length} changed files for review`);
+            logger.info('=== FILES TO BE REVIEWED ===');
+            for (const file of files) {
+                logger.info(`  - ${file}`);
+            }
+            logger.info('=== END FILES LIST ===');
         }
-        logger.info('=== END FILES LIST ===');
         // Log PR diff range info
-        logger.info(`PR diff range: ${prInfo.base.sha.substring(0, 7)}...${prInfo.head.sha.substring(0, 7)}`);
-        logger.info(`Base branch: ${prInfo.base.ref}, Head branch: ${prInfo.head.ref}`);
+        if (this.config.opencode.debugLogging) {
+            logger.info(`PR diff range: ${prInfo.base.sha.substring(0, 7)}...${prInfo.head.sha.substring(0, 7)}`);
+            logger.info(`Base branch: ${prInfo.base.ref}, Head branch: ${prInfo.head.ref}`);
+        }
         logger.info('Starting 3-pass review in single OpenCode session (context preserved across all passes)');
+        if (this.config.opencode.debugLogging) {
+            logger.info('Dispatching prompt for pass 1');
+        }
         await this.executePass(1, REVIEW_PROMPTS.PASS_1(files, prDescription));
+        if (this.config.opencode.debugLogging) {
+            logger.info('Dispatching prompt for pass 2');
+        }
         await this.executePass(2, REVIEW_PROMPTS.PASS_2(prDescription));
+        if (this.config.opencode.debugLogging) {
+            logger.info('Dispatching prompt for pass 3');
+        }
         await this.executePass(3, REVIEW_PROMPTS.PASS_3(securitySensitivity, prDescription));
         logger.info('All 3 passes completed in single session');
         this.currentPhase = 'idle';
@@ -41423,7 +41756,13 @@ class ReviewExecutor {
                 this.passCompletionResolvers.set(passNumber, resolve);
             });
             // Send the prompt and wait for idle (with grace period)
+            if (this.config.opencode.debugLogging) {
+                logger.info(`Pass ${passNumber}: sending prompt to OpenCode`);
+            }
             await this.sendPromptToOpenCode(prompt);
+            if (this.config.opencode.debugLogging) {
+                logger.info(`Pass ${passNumber}: OpenCode returned control to orchestrator`);
+            }
             // Check if submit_pass_results was already called during execution
             // This is the common case - model calls the tool then goes idle
             if (!this.isPassCompleted(passNumber)) {
@@ -41441,6 +41780,9 @@ class ReviewExecutor {
                 if (result === 'timeout') {
                     logger.warning(`Pass ${passNumber}: timed out waiting for submit_pass_results, proceeding anyway`);
                 }
+            }
+            if (this.config.opencode.debugLogging) {
+                logger.info(`Pass ${passNumber}: completion recorded=${this.isPassCompleted(passNumber)}`);
             }
             // Clean up the resolver
             this.passCompletionResolvers.delete(passNumber);

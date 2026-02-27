@@ -162,6 +162,9 @@ export class OpenCodeClientImpl implements OpenCodeClient {
     const ACTIVITY_LOG_INTERVAL_MS = 30000
     const TARGET_STALL_WARNING_MS = 60000
     const TARGET_STALL_LOG_COOLDOWN_MS = 60000
+    const TARGET_INACTIVITY_FAIL_MS = 180000
+    const INITIAL_TARGET_ACTIVITY_FAIL_MS = 120000
+    const TRANSCRIPT_DUMP_COOLDOWN_MS = 60000
 
     this.activityTracker.reset()
 
@@ -170,6 +173,131 @@ export class OpenCodeClientImpl implements OpenCodeClient {
       let idleGraceDeadlineMs: number | null = null
       let idleGraceStartedAtMs: number | null = null
       let activityLogTimerId: ReturnType<typeof setInterval> | null = null
+      let transcriptDumpInFlight = false
+      let lastTranscriptDumpAt = 0
+
+      const summarizePart = (
+        part: { type: string } & Record<string, unknown>
+      ): string => {
+        if (part.type === 'text') {
+          const text = typeof part.text === 'string' ? part.text : ''
+          const compact = text.replace(/\s+/g, ' ').trim()
+          const clipped =
+            compact.length > 220 ? `${compact.slice(0, 220)}...` : compact
+          return clipped ? `text:${clipped}` : 'text:<empty>'
+        }
+
+        if (part.type === 'tool') {
+          const tool = typeof part.tool === 'string' ? part.tool : 'unknown'
+          const state =
+            typeof part.state === 'object' && part.state !== null
+              ? (part.state as Record<string, unknown>)
+              : null
+          const status =
+            state && typeof state.status === 'string' ? state.status : 'unknown'
+          if (status === 'completed') {
+            const output =
+              typeof state?.output === 'string' ? state.output : 'no output'
+            const compact = output.replace(/\s+/g, ' ').trim()
+            const clipped =
+              compact.length > 160 ? `${compact.slice(0, 160)}...` : compact
+            return `tool:${tool}:${status}:${clipped}`
+          }
+          if (status === 'error') {
+            const error =
+              typeof state?.error === 'string' ? state.error : 'unknown error'
+            return `tool:${tool}:${status}:${error}`
+          }
+          return `tool:${tool}:${status}`
+        }
+
+        if (part.type === 'retry') {
+          const attempt = typeof part.attempt === 'number' ? part.attempt : -1
+          return `retry:attempt=${attempt}`
+        }
+
+        if (part.type === 'step-finish') {
+          const reason =
+            typeof part.reason === 'string' ? part.reason : 'unknown'
+          return `step-finish:${reason}`
+        }
+
+        return part.type
+      }
+
+      const dumpRecentSessionMessages = async (
+        reason: string
+      ): Promise<void> => {
+        const now = Date.now()
+        if (transcriptDumpInFlight) {
+          return
+        }
+        if (now - lastTranscriptDumpAt < TRANSCRIPT_DUMP_COOLDOWN_MS) {
+          return
+        }
+
+        transcriptDumpInFlight = true
+        lastTranscriptDumpAt = now
+
+        try {
+          const response = await this.client.session.messages({
+            path: { id: sessionId },
+            query: { limit: 6 }
+          })
+
+          if (!response.data || response.data.length === 0) {
+            logger.warning(
+              `Session ${sessionId} transcript snapshot (${reason}): no messages returned`
+            )
+            return
+          }
+
+          const formatted = response.data
+            .map((message) => {
+              const role = message.info.role
+              const messageId = message.info.id
+              const partsSummary = message.parts
+                .slice(-3)
+                .map((part) =>
+                  summarizePart(
+                    part as { type: string } & Record<string, unknown>
+                  )
+                )
+                .join(' | ')
+              return `${role}:${messageId} => ${partsSummary || 'no parts'}`
+            })
+            .join(' || ')
+
+          logger.info(
+            `Session ${sessionId} transcript snapshot (${reason}): ${formatted}`
+          )
+        } catch (error) {
+          logger.warning(
+            `Failed to fetch transcript snapshot for session ${sessionId} (${reason}): ${error instanceof Error ? error.message : String(error)}`
+          )
+        } finally {
+          transcriptDumpInFlight = false
+        }
+      }
+
+      const rejectForInactivity = (reason: string): void => {
+        if (resolved) {
+          return
+        }
+
+        const lastTargetEventAgeMs =
+          lastTargetEventAt > 0 ? Date.now() - lastTargetEventAt : -1
+        const metrics = this.activityTracker.getMetricsSnapshot()
+        const traceSummary = formatRecentTargetEvents()
+
+        resolved = true
+        cleanup()
+        reject(
+          new OpenCodeError(
+            `Session ${sessionId} became inactive (${reason}). events: total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceDeadlineMs !== null}, lastTargetEventAgeMs=${lastTargetEventAgeMs}, metrics=${JSON.stringify(metrics)}, recentTargetEvents=${traceSummary}`
+          )
+        )
+      }
 
       const timeoutId = setTimeout(() => {
         if (!resolved) {
@@ -254,6 +382,42 @@ export class OpenCodeClientImpl implements OpenCodeClient {
         logger.warning(
           `Session ${sessionId} target events stalled for ${ageMs}ms while stream is active (source=${source}, totalEvents=${totalEvents}, targetEvents=${targetEvents}, recentTargetEvents=${formatRecentTargetEvents()})`
         )
+        void dumpRecentSessionMessages(`target-stall:${source}`)
+      }
+
+      const failOnTargetInactivityIfNeeded = (source: string): void => {
+        if (resolved) {
+          return
+        }
+
+        const now = Date.now()
+        const elapsedMs = now - startTime
+
+        if (
+          !sawBusy &&
+          targetEvents <= 1 &&
+          elapsedMs >= INITIAL_TARGET_ACTIVITY_FAIL_MS
+        ) {
+          logger.error(
+            `Session ${sessionId} did not show target activity within ${INITIAL_TARGET_ACTIVITY_FAIL_MS}ms (source=${source})`
+          )
+          void dumpRecentSessionMessages(`initial-inactivity:${source}`)
+          rejectForInactivity('no target activity after prompt submission')
+          return
+        }
+
+        if (
+          sawBusy &&
+          idleGraceDeadlineMs === null &&
+          lastTargetEventAt > 0 &&
+          now - lastTargetEventAt >= TARGET_INACTIVITY_FAIL_MS
+        ) {
+          logger.error(
+            `Session ${sessionId} had no target events for ${TARGET_INACTIVITY_FAIL_MS}ms after being busy (source=${source})`
+          )
+          void dumpRecentSessionMessages(`target-inactivity:${source}`)
+          rejectForInactivity('target session stopped emitting events')
+        }
       }
 
       const tryCompleteFromIdleGrace = (): void => {
@@ -279,6 +443,7 @@ export class OpenCodeClientImpl implements OpenCodeClient {
           `Session ${sessionId} still running (${elapsedMs}ms, events total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceDeadlineMs !== null}, metrics=${JSON.stringify(metrics)})`
         )
         logTargetStallIfNeeded('heartbeat')
+        failOnTargetInactivityIfNeeded('heartbeat')
         tryCompleteFromIdleGrace()
       }, ACTIVITY_LOG_INTERVAL_MS)
 
@@ -306,6 +471,7 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
             tryCompleteFromIdleGrace()
             logTargetStallIfNeeded('event-loop')
+            failOnTargetInactivityIfNeeded('event-loop')
             if (resolved) {
               return
             }
@@ -316,6 +482,7 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
             if (!signal.isTargetSession) {
               logTargetStallIfNeeded('non-target-event')
+              failOnTargetInactivityIfNeeded('non-target-event')
               continue
             }
 

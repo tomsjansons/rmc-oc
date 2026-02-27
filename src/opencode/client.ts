@@ -156,15 +156,19 @@ export class OpenCodeClientImpl implements OpenCodeClient {
     let totalEvents = 0
     let targetEvents = 0
     let lastTargetEventAt = 0
+    let lastTargetStallLogAt = 0
 
     const IDLE_GRACE_PERIOD_MS = 10000
     const ACTIVITY_LOG_INTERVAL_MS = 30000
+    const TARGET_STALL_WARNING_MS = 60000
+    const TARGET_STALL_LOG_COOLDOWN_MS = 60000
 
     this.activityTracker.reset()
 
     return new Promise<void>((resolve, reject) => {
       let resolved = false
-      let idleGraceTimerId: ReturnType<typeof setTimeout> | null = null
+      let idleGraceDeadlineMs: number | null = null
+      let idleGraceStartedAtMs: number | null = null
       let activityLogTimerId: ReturnType<typeof setInterval> | null = null
 
       const timeoutId = setTimeout(() => {
@@ -186,7 +190,7 @@ export class OpenCodeClientImpl implements OpenCodeClient {
           abortController.abort()
           reject(
             new OpenCodeError(
-              `Timeout waiting for session ${sessionId} to complete after ${this.timeoutMs}ms (events: total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceTimerId !== null}, lastTargetEventAgeMs=${lastTargetEventAgeMs}, metrics=${JSON.stringify(metrics)}, recentEvents=${traceSummary})`
+              `Timeout waiting for session ${sessionId} to complete after ${this.timeoutMs}ms (events: total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceDeadlineMs !== null}, lastTargetEventAgeMs=${lastTargetEventAgeMs}, metrics=${JSON.stringify(metrics)}, recentEvents=${traceSummary})`
             )
           )
         }
@@ -198,11 +202,71 @@ export class OpenCodeClientImpl implements OpenCodeClient {
           clearInterval(activityLogTimerId)
           activityLogTimerId = null
         }
-        if (idleGraceTimerId) {
-          clearTimeout(idleGraceTimerId)
-          idleGraceTimerId = null
-        }
+        idleGraceDeadlineMs = null
         abortController.abort()
+      }
+
+      const finishSessionAsCompleted = (): void => {
+        if (resolved) {
+          return
+        }
+
+        const duration = Date.now() - startTime
+        logger.info(
+          `Session ${sessionId} completed after ${duration}ms (idle for ${IDLE_GRACE_PERIOD_MS}ms)`
+        )
+        this.activityTracker.logActivitySummary(sessionId, duration)
+        resolved = true
+        cleanup()
+        resolve()
+      }
+
+      const formatRecentTargetEvents = (): string => {
+        const traces = this.activityTracker.getRecentEventTrace(5)
+        if (traces.length === 0) {
+          return 'none'
+        }
+
+        return traces
+          .map(
+            (trace) =>
+              `${trace.eventType}${trace.detail ? `(${trace.detail})` : ''}`
+          )
+          .join(' -> ')
+      }
+
+      const logTargetStallIfNeeded = (source: string): void => {
+        if (resolved || targetEvents === 0 || lastTargetEventAt === 0) {
+          return
+        }
+
+        const now = Date.now()
+        const ageMs = now - lastTargetEventAt
+        if (ageMs < TARGET_STALL_WARNING_MS) {
+          return
+        }
+
+        if (now - lastTargetStallLogAt < TARGET_STALL_LOG_COOLDOWN_MS) {
+          return
+        }
+
+        lastTargetStallLogAt = now
+        logger.warning(
+          `Session ${sessionId} target events stalled for ${ageMs}ms while stream is active (source=${source}, totalEvents=${totalEvents}, targetEvents=${targetEvents}, recentTargetEvents=${formatRecentTargetEvents()})`
+        )
+      }
+
+      const tryCompleteFromIdleGrace = (): void => {
+        if (
+          idleGraceDeadlineMs !== null &&
+          Date.now() >= idleGraceDeadlineMs &&
+          !resolved
+        ) {
+          logger.info(
+            `Session ${sessionId} idle grace expired after ${Date.now() - (idleGraceStartedAtMs || Date.now())}ms; completing prompt`
+          )
+          finishSessionAsCompleted()
+        }
       }
 
       activityLogTimerId = setInterval(() => {
@@ -212,17 +276,20 @@ export class OpenCodeClientImpl implements OpenCodeClient {
         const elapsedMs = Date.now() - startTime
         const metrics = this.activityTracker.getMetricsSnapshot()
         logger.info(
-          `Session ${sessionId} still running (${elapsedMs}ms, events total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceTimerId !== null}, metrics=${JSON.stringify(metrics)})`
+          `Session ${sessionId} still running (${elapsedMs}ms, events total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceDeadlineMs !== null}, metrics=${JSON.stringify(metrics)})`
         )
+        logTargetStallIfNeeded('heartbeat')
+        tryCompleteFromIdleGrace()
       }, ACTIVITY_LOG_INTERVAL_MS)
 
-      const cancelIdleGrace = (): void => {
-        if (idleGraceTimerId) {
-          logger.debug(
-            `Session ${sessionId} became active again, cancelling idle grace period`
+      const cancelIdleGrace = (reason: string): void => {
+        if (idleGraceDeadlineMs !== null) {
+          const remainingMs = idleGraceDeadlineMs - Date.now()
+          logger.info(
+            `Session ${sessionId} cancelled idle grace (${reason}, remaining=${remainingMs}ms)`
           )
-          clearTimeout(idleGraceTimerId)
-          idleGraceTimerId = null
+          idleGraceDeadlineMs = null
+          idleGraceStartedAtMs = null
         }
       }
 
@@ -237,11 +304,18 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               break
             }
 
+            tryCompleteFromIdleGrace()
+            logTargetStallIfNeeded('event-loop')
+            if (resolved) {
+              return
+            }
+
             totalEvents++
 
             const signal = this.activityTracker.handleEvent(event, sessionId)
 
             if (!signal.isTargetSession) {
+              logTargetStallIfNeeded('non-target-event')
               continue
             }
 
@@ -261,30 +335,21 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
             if (signal.isBusy) {
               sawBusy = true
-              cancelIdleGrace()
+              cancelIdleGrace('target session became busy')
             }
 
             if (signal.isMessageUpdate) {
-              cancelIdleGrace()
+              cancelIdleGrace('target session emitted message update')
             }
 
             if (signal.isIdle && sawBusy) {
-              if (!idleGraceTimerId) {
-                logger.debug(
-                  `Session ${sessionId} went idle, waiting ${IDLE_GRACE_PERIOD_MS}ms grace period...`
+              if (idleGraceDeadlineMs === null) {
+                idleGraceStartedAtMs = Date.now()
+                idleGraceDeadlineMs =
+                  idleGraceStartedAtMs + IDLE_GRACE_PERIOD_MS
+                logger.info(
+                  `Session ${sessionId} went idle, starting ${IDLE_GRACE_PERIOD_MS}ms grace period (deadline=${new Date(idleGraceDeadlineMs).toISOString()})`
                 )
-                idleGraceTimerId = setTimeout(async () => {
-                  if (!resolved) {
-                    const duration = Date.now() - startTime
-                    logger.info(
-                      `Session ${sessionId} completed after ${duration}ms (idle for ${IDLE_GRACE_PERIOD_MS}ms)`
-                    )
-                    this.activityTracker.logActivitySummary(sessionId, duration)
-                    resolved = true
-                    cleanup()
-                    resolve()
-                  }
-                }, IDLE_GRACE_PERIOD_MS)
               }
             }
 
@@ -307,6 +372,8 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               return
             }
           }
+
+          tryCompleteFromIdleGrace()
 
           if (!resolved) {
             logger.warning(

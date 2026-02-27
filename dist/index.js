@@ -37537,6 +37537,7 @@ const LOOP_DETECTION_WINDOW = 10;
 class SessionActivityTracker {
     debugLogging;
     recentToolCalls = [];
+    recentTargetEvents = [];
     activityMetrics = {
         toolCalls: 0,
         messageUpdates: 0,
@@ -37549,6 +37550,7 @@ class SessionActivityTracker {
     }
     reset() {
         this.recentToolCalls = [];
+        this.recentTargetEvents = [];
         this.activityMetrics = {
             toolCalls: 0,
             messageUpdates: 0,
@@ -37563,6 +37565,24 @@ class SessionActivityTracker {
         if (m.toolCalls === 0) {
             logger.warning(`Session ${sessionId} completed with NO tool calls - model may not have done any work`);
         }
+        const traces = this.getRecentEventTrace(8);
+        if (traces.length > 0) {
+            logger.info(`Session ${sessionId} recent events: ${traces
+                .map((trace) => `${trace.eventType}${trace.detail ? `(${trace.detail})` : ''}`)
+                .join(' -> ')}`);
+        }
+    }
+    getMetricsSnapshot() {
+        return {
+            toolCalls: this.activityMetrics.toolCalls,
+            messageUpdates: this.activityMetrics.messageUpdates,
+            busyEvents: this.activityMetrics.busyEvents,
+            idleEvents: this.activityMetrics.idleEvents,
+            errors: this.activityMetrics.errors
+        };
+    }
+    getRecentEventTrace(limit = 20) {
+        return this.recentTargetEvents.slice(-limit);
     }
     handleEvent(event, targetSessionId) {
         const props = this.parseEventProperties(event.properties);
@@ -37580,6 +37600,7 @@ class SessionActivityTracker {
                 loopDetected: false
             };
         }
+        this.trackTargetEvent(event, props);
         let loopDetected = false;
         if (event.type === 'message.part.updated' && props.part?.type === 'tool') {
             this.activityMetrics.toolCalls++;
@@ -37618,6 +37639,33 @@ class SessionActivityTracker {
             errorPayload: props.error,
             loopDetected
         };
+    }
+    trackTargetEvent(event, props) {
+        const detail = this.buildEventDetail(event, props);
+        this.recentTargetEvents.push({
+            at: Date.now(),
+            eventType: event.type,
+            detail
+        });
+        if (this.recentTargetEvents.length > 100) {
+            this.recentTargetEvents.shift();
+        }
+    }
+    buildEventDetail(event, props) {
+        if (event.type === 'session.status') {
+            return props.status?.type || '';
+        }
+        if (event.type === 'message.part.updated') {
+            const partType = props.part?.type;
+            if (partType === 'tool') {
+                return `${props.part?.tool || 'unknown'}:${props.part?.state?.status || 'unknown'}`;
+            }
+            if (partType === 'text') {
+                return 'text';
+            }
+            return partType || '';
+        }
+        return '';
     }
     buildToolSignature(part) {
         const toolName = part?.tool || 'unknown';
@@ -37800,7 +37848,6 @@ class SessionActivityTracker {
 class OpenCodeClientImpl {
     currentSessionId = null;
     client;
-    debugLogging;
     timeoutMs;
     activityTracker;
     constructor(serverUrl, debugLogging = false, timeoutMs = 600000) {
@@ -37808,7 +37855,6 @@ class OpenCodeClientImpl {
             baseUrl: serverUrl,
             throwOnError: true
         });
-        this.debugLogging = debugLogging;
         this.timeoutMs = timeoutMs;
         this.activityTracker = new SessionActivityTracker(debugLogging);
     }
@@ -37875,6 +37921,7 @@ class OpenCodeClientImpl {
     async sendPrompt(sessionId, prompt) {
         try {
             logger.debug(`Sending prompt to session ${sessionId} (${prompt.length} chars)`);
+            logger.info(`Waiting for OpenCode session ${sessionId} to finish current prompt`);
             const completionPromise = this.waitForPromptCompletion(sessionId);
             await this.client.session.promptAsync({
                 path: { id: sessionId },
@@ -37898,26 +37945,51 @@ class OpenCodeClientImpl {
         const startTime = Date.now();
         const abortController = new AbortController();
         let sawBusy = false;
+        let totalEvents = 0;
+        let targetEvents = 0;
+        let lastTargetEventAt = 0;
         const IDLE_GRACE_PERIOD_MS = 10000;
+        const ACTIVITY_LOG_INTERVAL_MS = 30000;
         this.activityTracker.reset();
         return new Promise((resolve, reject) => {
             let resolved = false;
             let idleGraceTimerId = null;
+            let activityLogTimerId = null;
             const timeoutId = setTimeout(() => {
                 if (!resolved) {
+                    const metrics = this.activityTracker.getMetricsSnapshot();
+                    const traces = this.activityTracker.getRecentEventTrace(12);
+                    const lastTargetEventAgeMs = lastTargetEventAt > 0 ? Date.now() - lastTargetEventAt : -1;
+                    const traceSummary = traces.length > 0
+                        ? traces
+                            .map((trace) => `${trace.eventType}${trace.detail ? `(${trace.detail})` : ''}`)
+                            .join(' -> ')
+                        : 'none';
                     resolved = true;
                     abortController.abort();
-                    reject(new OpenCodeError(`Timeout waiting for session ${sessionId} to complete after ${this.timeoutMs}ms`));
+                    reject(new OpenCodeError(`Timeout waiting for session ${sessionId} to complete after ${this.timeoutMs}ms (events: total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceTimerId !== null}, lastTargetEventAgeMs=${lastTargetEventAgeMs}, metrics=${JSON.stringify(metrics)}, recentEvents=${traceSummary})`));
                 }
             }, this.timeoutMs);
             const cleanup = () => {
                 clearTimeout(timeoutId);
+                if (activityLogTimerId) {
+                    clearInterval(activityLogTimerId);
+                    activityLogTimerId = null;
+                }
                 if (idleGraceTimerId) {
                     clearTimeout(idleGraceTimerId);
                     idleGraceTimerId = null;
                 }
                 abortController.abort();
             };
+            activityLogTimerId = setInterval(() => {
+                if (resolved) {
+                    return;
+                }
+                const elapsedMs = Date.now() - startTime;
+                const metrics = this.activityTracker.getMetricsSnapshot();
+                logger.info(`Session ${sessionId} still running (${elapsedMs}ms, events total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceTimerId !== null}, metrics=${JSON.stringify(metrics)})`);
+            }, ACTIVITY_LOG_INTERVAL_MS);
             const cancelIdleGrace = () => {
                 if (idleGraceTimerId) {
                     logger.debug(`Session ${sessionId} became active again, cancelling idle grace period`);
@@ -37934,10 +38006,13 @@ class OpenCodeClientImpl {
                         if (resolved || abortController.signal.aborted) {
                             break;
                         }
+                        totalEvents++;
                         const signal = this.activityTracker.handleEvent(event, sessionId);
                         if (!signal.isTargetSession) {
                             continue;
                         }
+                        targetEvents++;
+                        lastTargetEventAt = Date.now();
                         if (signal.loopDetected) {
                             resolved = true;
                             cleanup();
@@ -37979,6 +38054,7 @@ class OpenCodeClientImpl {
                         }
                     }
                     if (!resolved) {
+                        logger.warning(`Event stream ended before session ${sessionId} reached completion state`);
                         reject(new OpenCodeError('Event stream ended unexpectedly'));
                     }
                 }
@@ -41316,8 +41392,11 @@ class ReviewExecutor {
         logger.info(`PR diff range: ${prInfo.base.sha.substring(0, 7)}...${prInfo.head.sha.substring(0, 7)}`);
         logger.info(`Base branch: ${prInfo.base.ref}, Head branch: ${prInfo.head.ref}`);
         logger.info('Starting 3-pass review in single OpenCode session (context preserved across all passes)');
+        logger.info('Dispatching prompt for pass 1');
         await this.executePass(1, REVIEW_PROMPTS.PASS_1(files, prDescription));
+        logger.info('Dispatching prompt for pass 2');
         await this.executePass(2, REVIEW_PROMPTS.PASS_2(prDescription));
+        logger.info('Dispatching prompt for pass 3');
         await this.executePass(3, REVIEW_PROMPTS.PASS_3(securitySensitivity, prDescription));
         logger.info('All 3 passes completed in single session');
         this.currentPhase = 'idle';
@@ -41423,7 +41502,9 @@ class ReviewExecutor {
                 this.passCompletionResolvers.set(passNumber, resolve);
             });
             // Send the prompt and wait for idle (with grace period)
+            logger.info(`Pass ${passNumber}: sending prompt to OpenCode`);
             await this.sendPromptToOpenCode(prompt);
+            logger.info(`Pass ${passNumber}: OpenCode returned control to orchestrator`);
             // Check if submit_pass_results was already called during execution
             // This is the common case - model calls the tool then goes idle
             if (!this.isPassCompleted(passNumber)) {
@@ -41442,6 +41523,7 @@ class ReviewExecutor {
                     logger.warning(`Pass ${passNumber}: timed out waiting for submit_pass_results, proceeding anyway`);
                 }
             }
+            logger.info(`Pass ${passNumber}: completion recorded=${this.isPassCompleted(passNumber)}`);
             // Clean up the resolver
             this.passCompletionResolvers.delete(passNumber);
             const duration = Date.now() - startTime;

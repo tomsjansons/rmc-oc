@@ -165,6 +165,7 @@ export class OpenCodeClientImpl implements OpenCodeClient {
     const TARGET_INACTIVITY_FAIL_MS = 180000
     const INITIAL_TARGET_ACTIVITY_FAIL_MS = 120000
     const TRANSCRIPT_DUMP_COOLDOWN_MS = 60000
+    const TRANSCRIPT_FETCH_TIMEOUT_MS = 5000
 
     this.activityTracker.reset()
 
@@ -238,12 +239,26 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
         transcriptDumpInFlight = true
         lastTranscriptDumpAt = now
+        logger.info(
+          `Session ${sessionId} fetching transcript snapshot (${reason})`
+        )
 
         try {
-          const response = await this.client.session.messages({
-            path: { id: sessionId },
-            query: { limit: 6 }
-          })
+          const response = await Promise.race([
+            this.client.session.messages({
+              path: { id: sessionId },
+              query: { limit: 6 }
+            }),
+            new Promise<never>((_resolve, rejectSnapshot) => {
+              setTimeout(() => {
+                rejectSnapshot(
+                  new Error(
+                    `Transcript fetch timed out after ${TRANSCRIPT_FETCH_TIMEOUT_MS}ms`
+                  )
+                )
+              }, TRANSCRIPT_FETCH_TIMEOUT_MS)
+            })
+          ])
 
           if (!response.data || response.data.length === 0) {
             logger.warning(
@@ -439,8 +454,10 @@ export class OpenCodeClientImpl implements OpenCodeClient {
         }
         const elapsedMs = Date.now() - startTime
         const metrics = this.activityTracker.getMetricsSnapshot()
+        const lastTargetEventAgeMs =
+          lastTargetEventAt > 0 ? Date.now() - lastTargetEventAt : -1
         logger.info(
-          `Session ${sessionId} still running (${elapsedMs}ms, events total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceDeadlineMs !== null}, metrics=${JSON.stringify(metrics)})`
+          `Session ${sessionId} still running (${elapsedMs}ms, events total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceDeadlineMs !== null}, lastTargetEventAgeMs=${lastTargetEventAgeMs}, metrics=${JSON.stringify(metrics)})`
         )
         if (sawBusy) {
           void dumpRecentSessionMessages('heartbeat')

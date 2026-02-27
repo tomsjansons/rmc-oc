@@ -19,6 +19,7 @@ type OpenCodeSDKClient = ReturnType<typeof createOpencodeClient>
 export class OpenCodeClientImpl implements OpenCodeClient {
   private currentSessionId: string | null = null
   private client: OpenCodeSDKClient
+  private debugLogging: boolean
   private timeoutMs: number
   private activityTracker: SessionActivityTracker
 
@@ -31,6 +32,7 @@ export class OpenCodeClientImpl implements OpenCodeClient {
       baseUrl: serverUrl,
       throwOnError: true
     })
+    this.debugLogging = debugLogging
     this.timeoutMs = timeoutMs
     this.activityTracker = new SessionActivityTracker(debugLogging)
   }
@@ -121,9 +123,11 @@ export class OpenCodeClientImpl implements OpenCodeClient {
       logger.debug(
         `Sending prompt to session ${sessionId} (${prompt.length} chars)`
       )
-      logger.info(
-        `Waiting for OpenCode session ${sessionId} to finish current prompt`
-      )
+      if (this.debugLogging) {
+        logger.info(
+          `Waiting for OpenCode session ${sessionId} to finish current prompt`
+        )
+      }
 
       const completionPromise = this.waitForPromptCompletion(sessionId)
 
@@ -239,9 +243,11 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
         transcriptDumpInFlight = true
         lastTranscriptDumpAt = now
-        logger.info(
-          `Session ${sessionId} fetching transcript snapshot (${reason})`
-        )
+        if (this.debugLogging) {
+          logger.info(
+            `Session ${sessionId} fetching transcript snapshot (${reason})`
+          )
+        }
 
         try {
           const response = await Promise.race([
@@ -261,9 +267,11 @@ export class OpenCodeClientImpl implements OpenCodeClient {
           ])
 
           if (!response.data || response.data.length === 0) {
-            logger.warning(
-              `Session ${sessionId} transcript snapshot (${reason}): no messages returned`
-            )
+            if (this.debugLogging) {
+              logger.warning(
+                `Session ${sessionId} transcript snapshot (${reason}): no messages returned`
+              )
+            }
             return
           }
 
@@ -283,13 +291,17 @@ export class OpenCodeClientImpl implements OpenCodeClient {
             })
             .join(' || ')
 
-          logger.info(
-            `Session ${sessionId} transcript snapshot (${reason}): ${formatted}`
-          )
+          if (this.debugLogging) {
+            logger.info(
+              `Session ${sessionId} transcript snapshot (${reason}): ${formatted}`
+            )
+          }
         } catch (error) {
-          logger.warning(
-            `Failed to fetch transcript snapshot for session ${sessionId} (${reason}): ${error instanceof Error ? error.message : String(error)}`
-          )
+          if (this.debugLogging) {
+            logger.warning(
+              `Failed to fetch transcript snapshot for session ${sessionId} (${reason}): ${error instanceof Error ? error.message : String(error)}`
+            )
+          }
         } finally {
           transcriptDumpInFlight = false
         }
@@ -394,10 +406,12 @@ export class OpenCodeClientImpl implements OpenCodeClient {
         }
 
         lastTargetStallLogAt = now
-        logger.warning(
-          `Session ${sessionId} target events stalled for ${ageMs}ms while stream is active (source=${source}, totalEvents=${totalEvents}, targetEvents=${targetEvents}, recentTargetEvents=${formatRecentTargetEvents()})`
-        )
-        void dumpRecentSessionMessages(`target-stall:${source}`)
+        if (this.debugLogging) {
+          logger.warning(
+            `Session ${sessionId} target events stalled for ${ageMs}ms while stream is active (source=${source}, totalEvents=${totalEvents}, targetEvents=${targetEvents}, recentTargetEvents=${formatRecentTargetEvents()})`
+          )
+          void dumpRecentSessionMessages(`target-stall:${source}`)
+        }
       }
 
       const failOnTargetInactivityIfNeeded = (source: string): void => {
@@ -413,10 +427,12 @@ export class OpenCodeClientImpl implements OpenCodeClient {
           targetEvents <= 1 &&
           elapsedMs >= INITIAL_TARGET_ACTIVITY_FAIL_MS
         ) {
-          logger.error(
-            `Session ${sessionId} did not show target activity within ${INITIAL_TARGET_ACTIVITY_FAIL_MS}ms (source=${source})`
-          )
-          void dumpRecentSessionMessages(`initial-inactivity:${source}`)
+          if (this.debugLogging) {
+            logger.error(
+              `Session ${sessionId} did not show target activity within ${INITIAL_TARGET_ACTIVITY_FAIL_MS}ms (source=${source})`
+            )
+            void dumpRecentSessionMessages(`initial-inactivity:${source}`)
+          }
           rejectForInactivity('no target activity after prompt submission')
           return
         }
@@ -427,10 +443,12 @@ export class OpenCodeClientImpl implements OpenCodeClient {
           lastTargetEventAt > 0 &&
           now - lastTargetEventAt >= TARGET_INACTIVITY_FAIL_MS
         ) {
-          logger.error(
-            `Session ${sessionId} had no target events for ${TARGET_INACTIVITY_FAIL_MS}ms after being busy (source=${source})`
-          )
-          void dumpRecentSessionMessages(`target-inactivity:${source}`)
+          if (this.debugLogging) {
+            logger.error(
+              `Session ${sessionId} had no target events for ${TARGET_INACTIVITY_FAIL_MS}ms after being busy (source=${source})`
+            )
+            void dumpRecentSessionMessages(`target-inactivity:${source}`)
+          }
           rejectForInactivity('target session stopped emitting events')
         }
       }
@@ -441,9 +459,11 @@ export class OpenCodeClientImpl implements OpenCodeClient {
           Date.now() >= idleGraceDeadlineMs &&
           !resolved
         ) {
-          logger.info(
-            `Session ${sessionId} idle grace expired after ${Date.now() - (idleGraceStartedAtMs || Date.now())}ms; completing prompt`
-          )
+          if (this.debugLogging) {
+            logger.info(
+              `Session ${sessionId} idle grace expired after ${Date.now() - (idleGraceStartedAtMs || Date.now())}ms; completing prompt`
+            )
+          }
           finishSessionAsCompleted()
         }
       }
@@ -456,10 +476,12 @@ export class OpenCodeClientImpl implements OpenCodeClient {
         const metrics = this.activityTracker.getMetricsSnapshot()
         const lastTargetEventAgeMs =
           lastTargetEventAt > 0 ? Date.now() - lastTargetEventAt : -1
-        logger.info(
-          `Session ${sessionId} still running (${elapsedMs}ms, events total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceDeadlineMs !== null}, lastTargetEventAgeMs=${lastTargetEventAgeMs}, metrics=${JSON.stringify(metrics)})`
-        )
-        if (sawBusy) {
+        if (this.debugLogging) {
+          logger.info(
+            `Session ${sessionId} still running (${elapsedMs}ms, events total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceDeadlineMs !== null}, lastTargetEventAgeMs=${lastTargetEventAgeMs}, metrics=${JSON.stringify(metrics)})`
+          )
+        }
+        if (sawBusy && this.debugLogging) {
           void dumpRecentSessionMessages('heartbeat')
         }
         logTargetStallIfNeeded('heartbeat')
@@ -470,9 +492,11 @@ export class OpenCodeClientImpl implements OpenCodeClient {
       const cancelIdleGrace = (reason: string): void => {
         if (idleGraceDeadlineMs !== null) {
           const remainingMs = idleGraceDeadlineMs - Date.now()
-          logger.info(
-            `Session ${sessionId} cancelled idle grace (${reason}, remaining=${remainingMs}ms)`
-          )
+          if (this.debugLogging) {
+            logger.info(
+              `Session ${sessionId} cancelled idle grace (${reason}, remaining=${remainingMs}ms)`
+            )
+          }
           idleGraceDeadlineMs = null
           idleGraceStartedAtMs = null
         }
@@ -526,10 +550,12 @@ export class OpenCodeClientImpl implements OpenCodeClient {
               const becameBusy = !sawBusy
               sawBusy = true
               if (becameBusy) {
-                logger.info(
-                  `Session ${sessionId} became busy for the first time, dumping transcript snapshot`
-                )
-                void dumpRecentSessionMessages('became-busy')
+                if (this.debugLogging) {
+                  logger.info(
+                    `Session ${sessionId} became busy for the first time, dumping transcript snapshot`
+                  )
+                  void dumpRecentSessionMessages('became-busy')
+                }
               }
               cancelIdleGrace('target session became busy')
             }
@@ -539,9 +565,11 @@ export class OpenCodeClientImpl implements OpenCodeClient {
                 idleGraceStartedAtMs = Date.now()
                 idleGraceDeadlineMs =
                   idleGraceStartedAtMs + IDLE_GRACE_PERIOD_MS
-                logger.info(
-                  `Session ${sessionId} went idle, starting ${IDLE_GRACE_PERIOD_MS}ms grace period (deadline=${new Date(idleGraceDeadlineMs).toISOString()})`
-                )
+                if (this.debugLogging) {
+                  logger.info(
+                    `Session ${sessionId} went idle, starting ${IDLE_GRACE_PERIOD_MS}ms grace period (deadline=${new Date(idleGraceDeadlineMs).toISOString()})`
+                  )
+                }
               }
             }
 
@@ -620,7 +648,9 @@ export class OpenCodeClientImpl implements OpenCodeClient {
       return
     }
 
-    logger.info(`[agent] ${delta}`)
+    if (this.debugLogging) {
+      logger.info(`[agent] ${delta}`)
+    }
   }
 
   private isObjectRecord(value: unknown): value is Record<string, unknown> {

@@ -88,7 +88,7 @@ export class SessionActivityTracker {
     }
 
     const traces = this.getRecentEventTrace(8)
-    if (traces.length > 0) {
+    if (this.debugLogging && traces.length > 0) {
       logger.info(
         `Session ${sessionId} recent events: ${traces
           .map(

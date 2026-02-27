@@ -37566,7 +37566,7 @@ class SessionActivityTracker {
             logger.warning(`Session ${sessionId} completed with NO tool calls - model may not have done any work`);
         }
         const traces = this.getRecentEventTrace(8);
-        if (traces.length > 0) {
+        if (this.debugLogging && traces.length > 0) {
             logger.info(`Session ${sessionId} recent events: ${traces
                 .map((trace) => `${trace.eventType}${trace.detail ? `(${trace.detail})` : ''}`)
                 .join(' -> ')}`);
@@ -37848,6 +37848,7 @@ class SessionActivityTracker {
 class OpenCodeClientImpl {
     currentSessionId = null;
     client;
+    debugLogging;
     timeoutMs;
     activityTracker;
     constructor(serverUrl, debugLogging = false, timeoutMs = 600000) {
@@ -37855,6 +37856,7 @@ class OpenCodeClientImpl {
             baseUrl: serverUrl,
             throwOnError: true
         });
+        this.debugLogging = debugLogging;
         this.timeoutMs = timeoutMs;
         this.activityTracker = new SessionActivityTracker(debugLogging);
     }
@@ -37921,7 +37923,9 @@ class OpenCodeClientImpl {
     async sendPrompt(sessionId, prompt) {
         try {
             logger.debug(`Sending prompt to session ${sessionId} (${prompt.length} chars)`);
-            logger.info(`Waiting for OpenCode session ${sessionId} to finish current prompt`);
+            if (this.debugLogging) {
+                logger.info(`Waiting for OpenCode session ${sessionId} to finish current prompt`);
+            }
             const completionPromise = this.waitForPromptCompletion(sessionId);
             await this.client.session.promptAsync({
                 path: { id: sessionId },
@@ -38010,7 +38014,9 @@ class OpenCodeClientImpl {
                 }
                 transcriptDumpInFlight = true;
                 lastTranscriptDumpAt = now;
-                logger.info(`Session ${sessionId} fetching transcript snapshot (${reason})`);
+                if (this.debugLogging) {
+                    logger.info(`Session ${sessionId} fetching transcript snapshot (${reason})`);
+                }
                 try {
                     const response = await Promise.race([
                         this.client.session.messages({
@@ -38024,7 +38030,9 @@ class OpenCodeClientImpl {
                         })
                     ]);
                     if (!response.data || response.data.length === 0) {
-                        logger.warning(`Session ${sessionId} transcript snapshot (${reason}): no messages returned`);
+                        if (this.debugLogging) {
+                            logger.warning(`Session ${sessionId} transcript snapshot (${reason}): no messages returned`);
+                        }
                         return;
                     }
                     const formatted = response.data
@@ -38038,10 +38046,14 @@ class OpenCodeClientImpl {
                         return `${role}:${messageId} => ${partsSummary || 'no parts'}`;
                     })
                         .join(' || ');
-                    logger.info(`Session ${sessionId} transcript snapshot (${reason}): ${formatted}`);
+                    if (this.debugLogging) {
+                        logger.info(`Session ${sessionId} transcript snapshot (${reason}): ${formatted}`);
+                    }
                 }
                 catch (error) {
-                    logger.warning(`Failed to fetch transcript snapshot for session ${sessionId} (${reason}): ${error instanceof Error ? error.message : String(error)}`);
+                    if (this.debugLogging) {
+                        logger.warning(`Failed to fetch transcript snapshot for session ${sessionId} (${reason}): ${error instanceof Error ? error.message : String(error)}`);
+                    }
                 }
                 finally {
                     transcriptDumpInFlight = false;
@@ -38115,8 +38127,10 @@ class OpenCodeClientImpl {
                     return;
                 }
                 lastTargetStallLogAt = now;
-                logger.warning(`Session ${sessionId} target events stalled for ${ageMs}ms while stream is active (source=${source}, totalEvents=${totalEvents}, targetEvents=${targetEvents}, recentTargetEvents=${formatRecentTargetEvents()})`);
-                void dumpRecentSessionMessages(`target-stall:${source}`);
+                if (this.debugLogging) {
+                    logger.warning(`Session ${sessionId} target events stalled for ${ageMs}ms while stream is active (source=${source}, totalEvents=${totalEvents}, targetEvents=${targetEvents}, recentTargetEvents=${formatRecentTargetEvents()})`);
+                    void dumpRecentSessionMessages(`target-stall:${source}`);
+                }
             };
             const failOnTargetInactivityIfNeeded = (source) => {
                 if (resolved) {
@@ -38127,8 +38141,10 @@ class OpenCodeClientImpl {
                 if (!sawBusy &&
                     targetEvents <= 1 &&
                     elapsedMs >= INITIAL_TARGET_ACTIVITY_FAIL_MS) {
-                    logger.error(`Session ${sessionId} did not show target activity within ${INITIAL_TARGET_ACTIVITY_FAIL_MS}ms (source=${source})`);
-                    void dumpRecentSessionMessages(`initial-inactivity:${source}`);
+                    if (this.debugLogging) {
+                        logger.error(`Session ${sessionId} did not show target activity within ${INITIAL_TARGET_ACTIVITY_FAIL_MS}ms (source=${source})`);
+                        void dumpRecentSessionMessages(`initial-inactivity:${source}`);
+                    }
                     rejectForInactivity('no target activity after prompt submission');
                     return;
                 }
@@ -38136,8 +38152,10 @@ class OpenCodeClientImpl {
                     idleGraceDeadlineMs === null &&
                     lastTargetEventAt > 0 &&
                     now - lastTargetEventAt >= TARGET_INACTIVITY_FAIL_MS) {
-                    logger.error(`Session ${sessionId} had no target events for ${TARGET_INACTIVITY_FAIL_MS}ms after being busy (source=${source})`);
-                    void dumpRecentSessionMessages(`target-inactivity:${source}`);
+                    if (this.debugLogging) {
+                        logger.error(`Session ${sessionId} had no target events for ${TARGET_INACTIVITY_FAIL_MS}ms after being busy (source=${source})`);
+                        void dumpRecentSessionMessages(`target-inactivity:${source}`);
+                    }
                     rejectForInactivity('target session stopped emitting events');
                 }
             };
@@ -38145,7 +38163,9 @@ class OpenCodeClientImpl {
                 if (idleGraceDeadlineMs !== null &&
                     Date.now() >= idleGraceDeadlineMs &&
                     !resolved) {
-                    logger.info(`Session ${sessionId} idle grace expired after ${Date.now() - (idleGraceStartedAtMs || Date.now())}ms; completing prompt`);
+                    if (this.debugLogging) {
+                        logger.info(`Session ${sessionId} idle grace expired after ${Date.now() - (idleGraceStartedAtMs || Date.now())}ms; completing prompt`);
+                    }
                     finishSessionAsCompleted();
                 }
             };
@@ -38156,8 +38176,10 @@ class OpenCodeClientImpl {
                 const elapsedMs = Date.now() - startTime;
                 const metrics = this.activityTracker.getMetricsSnapshot();
                 const lastTargetEventAgeMs = lastTargetEventAt > 0 ? Date.now() - lastTargetEventAt : -1;
-                logger.info(`Session ${sessionId} still running (${elapsedMs}ms, events total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceDeadlineMs !== null}, lastTargetEventAgeMs=${lastTargetEventAgeMs}, metrics=${JSON.stringify(metrics)})`);
-                if (sawBusy) {
+                if (this.debugLogging) {
+                    logger.info(`Session ${sessionId} still running (${elapsedMs}ms, events total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceDeadlineMs !== null}, lastTargetEventAgeMs=${lastTargetEventAgeMs}, metrics=${JSON.stringify(metrics)})`);
+                }
+                if (sawBusy && this.debugLogging) {
                     void dumpRecentSessionMessages('heartbeat');
                 }
                 logTargetStallIfNeeded('heartbeat');
@@ -38167,7 +38189,9 @@ class OpenCodeClientImpl {
             const cancelIdleGrace = (reason) => {
                 if (idleGraceDeadlineMs !== null) {
                     const remainingMs = idleGraceDeadlineMs - Date.now();
-                    logger.info(`Session ${sessionId} cancelled idle grace (${reason}, remaining=${remainingMs}ms)`);
+                    if (this.debugLogging) {
+                        logger.info(`Session ${sessionId} cancelled idle grace (${reason}, remaining=${remainingMs}ms)`);
+                    }
                     idleGraceDeadlineMs = null;
                     idleGraceStartedAtMs = null;
                 }
@@ -38207,8 +38231,10 @@ class OpenCodeClientImpl {
                             const becameBusy = !sawBusy;
                             sawBusy = true;
                             if (becameBusy) {
-                                logger.info(`Session ${sessionId} became busy for the first time, dumping transcript snapshot`);
-                                void dumpRecentSessionMessages('became-busy');
+                                if (this.debugLogging) {
+                                    logger.info(`Session ${sessionId} became busy for the first time, dumping transcript snapshot`);
+                                    void dumpRecentSessionMessages('became-busy');
+                                }
                             }
                             cancelIdleGrace('target session became busy');
                         }
@@ -38217,7 +38243,9 @@ class OpenCodeClientImpl {
                                 idleGraceStartedAtMs = Date.now();
                                 idleGraceDeadlineMs =
                                     idleGraceStartedAtMs + IDLE_GRACE_PERIOD_MS;
-                                logger.info(`Session ${sessionId} went idle, starting ${IDLE_GRACE_PERIOD_MS}ms grace period (deadline=${new Date(idleGraceDeadlineMs).toISOString()})`);
+                                if (this.debugLogging) {
+                                    logger.info(`Session ${sessionId} went idle, starting ${IDLE_GRACE_PERIOD_MS}ms grace period (deadline=${new Date(idleGraceDeadlineMs).toISOString()})`);
+                                }
                             }
                         }
                         if (signal.isRetry) {
@@ -38273,7 +38301,9 @@ class OpenCodeClientImpl {
         if (typeof delta !== 'string' || delta.length === 0) {
             return;
         }
-        logger.info(`[agent] ${delta}`);
+        if (this.debugLogging) {
+            logger.info(`[agent] ${delta}`);
+        }
     }
     isObjectRecord(value) {
         return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -41584,29 +41614,43 @@ class ReviewExecutor {
         const securitySensitivity = await this.detectSecuritySensitivity();
         const prInfo = await this.getCachedPRInfo();
         const prBodyLength = prInfo.body?.length || 0;
-        logger.info(`PR description length before sanitization: ${prBodyLength} chars`);
+        if (this.config.opencode.debugLogging) {
+            logger.info(`PR description length before sanitization: ${prBodyLength} chars`);
+        }
         const prDescription = await this.sanitizeExternalInput(prInfo.body || '', 'PR description');
         const wasBlocked = prDescription.includes('[CONTENT BLOCKED');
-        logger.info(`PR description after sanitization: ${wasBlocked ? 'BLOCKED' : `${prDescription.length} chars`}`);
+        if (this.config.opencode.debugLogging) {
+            logger.info(`PR description after sanitization: ${wasBlocked ? 'BLOCKED' : `${prDescription.length} chars`}`);
+        }
         if (wasBlocked) {
             logger.warning('PR description was blocked by injection detection - this may cause the model to go idle with nothing to review');
         }
         // Log detailed file information for debugging
-        logger.info(`Fetched ${files.length} changed files for review`);
-        logger.info('=== FILES TO BE REVIEWED ===');
-        for (const file of files) {
-            logger.info(`  - ${file}`);
+        if (this.config.opencode.debugLogging) {
+            logger.info(`Fetched ${files.length} changed files for review`);
+            logger.info('=== FILES TO BE REVIEWED ===');
+            for (const file of files) {
+                logger.info(`  - ${file}`);
+            }
+            logger.info('=== END FILES LIST ===');
         }
-        logger.info('=== END FILES LIST ===');
         // Log PR diff range info
-        logger.info(`PR diff range: ${prInfo.base.sha.substring(0, 7)}...${prInfo.head.sha.substring(0, 7)}`);
-        logger.info(`Base branch: ${prInfo.base.ref}, Head branch: ${prInfo.head.ref}`);
+        if (this.config.opencode.debugLogging) {
+            logger.info(`PR diff range: ${prInfo.base.sha.substring(0, 7)}...${prInfo.head.sha.substring(0, 7)}`);
+            logger.info(`Base branch: ${prInfo.base.ref}, Head branch: ${prInfo.head.ref}`);
+        }
         logger.info('Starting 3-pass review in single OpenCode session (context preserved across all passes)');
-        logger.info('Dispatching prompt for pass 1');
+        if (this.config.opencode.debugLogging) {
+            logger.info('Dispatching prompt for pass 1');
+        }
         await this.executePass(1, REVIEW_PROMPTS.PASS_1(files, prDescription));
-        logger.info('Dispatching prompt for pass 2');
+        if (this.config.opencode.debugLogging) {
+            logger.info('Dispatching prompt for pass 2');
+        }
         await this.executePass(2, REVIEW_PROMPTS.PASS_2(prDescription));
-        logger.info('Dispatching prompt for pass 3');
+        if (this.config.opencode.debugLogging) {
+            logger.info('Dispatching prompt for pass 3');
+        }
         await this.executePass(3, REVIEW_PROMPTS.PASS_3(securitySensitivity, prDescription));
         logger.info('All 3 passes completed in single session');
         this.currentPhase = 'idle';
@@ -41712,9 +41756,13 @@ class ReviewExecutor {
                 this.passCompletionResolvers.set(passNumber, resolve);
             });
             // Send the prompt and wait for idle (with grace period)
-            logger.info(`Pass ${passNumber}: sending prompt to OpenCode`);
+            if (this.config.opencode.debugLogging) {
+                logger.info(`Pass ${passNumber}: sending prompt to OpenCode`);
+            }
             await this.sendPromptToOpenCode(prompt);
-            logger.info(`Pass ${passNumber}: OpenCode returned control to orchestrator`);
+            if (this.config.opencode.debugLogging) {
+                logger.info(`Pass ${passNumber}: OpenCode returned control to orchestrator`);
+            }
             // Check if submit_pass_results was already called during execution
             // This is the common case - model calls the tool then goes idle
             if (!this.isPassCompleted(passNumber)) {
@@ -41733,7 +41781,9 @@ class ReviewExecutor {
                     logger.warning(`Pass ${passNumber}: timed out waiting for submit_pass_results, proceeding anyway`);
                 }
             }
-            logger.info(`Pass ${passNumber}: completion recorded=${this.isPassCompleted(passNumber)}`);
+            if (this.config.opencode.debugLogging) {
+                logger.info(`Pass ${passNumber}: completion recorded=${this.isPassCompleted(passNumber)}`);
+            }
             // Clean up the resolver
             this.passCompletionResolvers.delete(passNumber);
             const duration = Date.now() - startTime;

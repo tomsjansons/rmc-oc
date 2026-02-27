@@ -38212,9 +38212,6 @@ class OpenCodeClientImpl {
                             }
                             cancelIdleGrace('target session became busy');
                         }
-                        if (signal.isMessageUpdate) {
-                            cancelIdleGrace('target session emitted message update');
-                        }
                         if (signal.isIdle && sawBusy) {
                             if (idleGraceDeadlineMs === null) {
                                 idleGraceStartedAtMs = Date.now();

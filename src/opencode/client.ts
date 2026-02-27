@@ -442,6 +442,9 @@ export class OpenCodeClientImpl implements OpenCodeClient {
         logger.info(
           `Session ${sessionId} still running (${elapsedMs}ms, events total=${totalEvents}, target=${targetEvents}, busySeen=${sawBusy}, idleGraceActive=${idleGraceDeadlineMs !== null}, metrics=${JSON.stringify(metrics)})`
         )
+        if (sawBusy) {
+          void dumpRecentSessionMessages('heartbeat')
+        }
         logTargetStallIfNeeded('heartbeat')
         failOnTargetInactivityIfNeeded('heartbeat')
         tryCompleteFromIdleGrace()
@@ -501,7 +504,14 @@ export class OpenCodeClientImpl implements OpenCodeClient {
             }
 
             if (signal.isBusy) {
+              const becameBusy = !sawBusy
               sawBusy = true
+              if (becameBusy) {
+                logger.info(
+                  `Session ${sessionId} became busy for the first time, dumping transcript snapshot`
+                )
+                void dumpRecentSessionMessages('became-busy')
+              }
               cancelIdleGrace('target session became busy')
             }
 

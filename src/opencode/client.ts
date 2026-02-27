@@ -498,6 +498,8 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
             totalEvents++
 
+            this.logAgentConversationEvent(event, sessionId)
+
             const signal = this.activityTracker.handleEvent(event, sessionId)
 
             if (!signal.isTargetSession) {
@@ -589,6 +591,44 @@ export class OpenCodeClientImpl implements OpenCodeClient {
 
       processEvents()
     })
+  }
+
+  private logAgentConversationEvent(event: unknown, sessionId: string): void {
+    if (!this.isObjectRecord(event)) {
+      return
+    }
+
+    const type = Reflect.get(event, 'type')
+    if (type !== 'message.part.updated') {
+      return
+    }
+
+    const properties = Reflect.get(event, 'properties')
+    if (!this.isObjectRecord(properties)) {
+      return
+    }
+
+    const part = Reflect.get(properties, 'part')
+    if (!this.isObjectRecord(part)) {
+      return
+    }
+
+    const partType = Reflect.get(part, 'type')
+    const partSessionId = Reflect.get(part, 'sessionID')
+    if (partType !== 'text' || partSessionId !== sessionId) {
+      return
+    }
+
+    const delta = Reflect.get(properties, 'delta')
+    if (typeof delta !== 'string' || delta.length === 0) {
+      return
+    }
+
+    logger.info(`[agent] ${delta}`)
+  }
+
+  private isObjectRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
   }
 
   async sendPromptAndGetResponse(

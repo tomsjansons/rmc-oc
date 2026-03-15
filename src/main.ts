@@ -1,6 +1,6 @@
 import * as core from '@actions/core'
 
-import { OPENCODE_SERVER_URL, OPENROUTER_API_URL } from './config/constants.js'
+import { OPENROUTER_API_URL } from './config/constants.js'
 import { parseInputs, validateConfig } from './config/inputs.js'
 import { GitHubAPI } from './github/api.js'
 import { OpenCodeClientImpl } from './opencode/client.js'
@@ -47,7 +47,7 @@ export async function run(): Promise<void> {
 
     const github = new GitHubAPI(config)
     const opencode = new OpenCodeClientImpl(
-      OPENCODE_SERVER_URL,
+      openCodeServer.getUrl(),
       config.opencode.debugLogging,
       config.review.timeoutMs
     )

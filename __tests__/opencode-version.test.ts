@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@jest/globals'
 import packageMetadata from '../package.json' with { type: 'json' }
 
+import { createOpenCodeServerUrl } from '../src/config/constants.js'
 import {
   OPENCODE_PACKAGE_SPECIFIER,
   OPENCODE_VERSION
@@ -15,5 +16,9 @@ describe('OpenCode version pinning', () => {
     )
     expect(OPENCODE_VERSION).toBe(sdkVersion)
     expect(OPENCODE_PACKAGE_SPECIFIER).toBe(`opencode-ai@${sdkVersion}`)
+  })
+
+  it('builds the runtime server URL from the chosen port', () => {
+    expect(createOpenCodeServerUrl(4096)).toBe('http://127.0.0.1:4096')
   })
 })

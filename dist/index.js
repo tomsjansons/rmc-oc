@@ -30,6 +30,7 @@ import require$$6$1 from 'timers';
 import { spawn } from 'node:child_process';
 import { readFileSync, existsSync, mkdirSync, writeFileSync, chmodSync, unlinkSync, statSync } from 'node:fs';
 import { readdir, readFile, mkdir, copyFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27286,9 +27287,10 @@ function requireCore () {
 
 var coreExports = requireCore();
 
-const OPENCODE_SERVER_PORT = 4096;
 const OPENCODE_SERVER_HOST = '127.0.0.1';
-const OPENCODE_SERVER_URL = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SERVER_PORT}`;
+function createOpenCodeServerUrl(port) {
+    return `http://${OPENCODE_SERVER_HOST}:${port}`;
+}
 const TRPC_SERVER_PORT = 38291;
 const TRPC_SERVER_HOST = '127.0.0.1';
 const TRPC_SERVER_URL = `http://${TRPC_SERVER_HOST}:${TRPC_SERVER_PORT}`;
@@ -38341,6 +38343,12 @@ class OpenCodeClientImpl {
     }
 }
 
+function delay(ms) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
+}
+
 function isRecord(value) {
     return typeof value === 'object' && value !== null;
 }
@@ -38382,12 +38390,6 @@ function getPinnedSdkVersion() {
 const OPENCODE_VERSION = getPinnedSdkVersion();
 const OPENCODE_PACKAGE_SPECIFIER = `opencode-ai@${OPENCODE_VERSION}`;
 
-function delay(ms) {
-    return new Promise((resolve) => {
-        setTimeout(resolve, ms);
-    });
-}
-
 function getOpenCodeCLICommand() {
     return {
         command: 'npx',
@@ -38398,7 +38400,7 @@ class OpenCodeServer {
     config;
     serverProcess = null;
     status = 'stopped';
-    healthCheckUrl;
+    port = null;
     maxStartupAttempts = 3;
     healthCheckIntervalMs = 1000;
     healthCheckTimeoutMs = 30000;
@@ -38408,7 +38410,6 @@ class OpenCodeServer {
     workspaceConfigPath = null;
     constructor(config) {
         this.config = config;
-        this.healthCheckUrl = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SERVER_PORT}`;
     }
     async start() {
         if (this.status === 'running') {
@@ -38432,6 +38433,9 @@ class OpenCodeServer {
                     await this.logOpenCodeLogFiles(); // Log errors on failure
                     if (this.serverProcess) {
                         await this.killServerProcess();
+                    }
+                    else {
+                        this.resetServerProcess();
                     }
                     if (attempt === this.maxStartupAttempts) {
                         this.status = 'error';
@@ -38462,8 +38466,7 @@ class OpenCodeServer {
                 throw new OpenCodeError(`Failed to stop OpenCode server: ${error instanceof Error ? error.message : String(error)}`);
             }
             finally {
-                this.status = 'stopped';
-                this.serverProcess = null;
+                this.resetServerProcess();
             }
         });
     }
@@ -38473,24 +38476,32 @@ class OpenCodeServer {
     getStatus() {
         return this.status;
     }
+    getUrl() {
+        if (this.port === null) {
+            throw new OpenCodeError('OpenCode server URL is unavailable before startup');
+        }
+        return createOpenCodeServerUrl(this.port);
+    }
     async dumpLogs() {
         await this.logOpenCodeLogFiles();
     }
     async startServerProcess() {
         this.status = 'starting';
+        this.port = await this.findAvailablePort();
         this.configFilePath = this.createConfigFile();
         const { command, args } = getOpenCodeCLICommand();
         const serveArgs = [
             ...args,
             'serve',
             '--port',
-            String(OPENCODE_SERVER_PORT),
+            String(this.port),
             '--hostname',
             OPENCODE_SERVER_HOST
         ];
-        logger.debug(`Starting OpenCode server on port ${OPENCODE_SERVER_PORT} with model ${this.config.opencode.model}`);
+        logger.debug(`Starting OpenCode server on port ${this.port} with model ${this.config.opencode.model}`);
         logger.debug(`Running: ${command} ${serveArgs.join(' ')}`);
         logger.debug(`Using config file: ${this.configFilePath}`);
+        logger.info(`OpenCode server URL: ${this.getUrl()}`);
         const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd();
         const env = {
             OPENCODE_CONFIG: this.configFilePath || '',
@@ -38516,6 +38527,31 @@ class OpenCodeServer {
             detached: false
         });
         this.attachProcessHandlers();
+    }
+    async findAvailablePort() {
+        return await new Promise((resolve, reject) => {
+            const probeServer = createServer();
+            probeServer.once('error', (error) => {
+                reject(new OpenCodeError(`Failed to find available OpenCode port: ${error.message}`));
+            });
+            probeServer.listen(0, OPENCODE_SERVER_HOST, () => {
+                const address = probeServer.address();
+                if (!address || typeof address === 'string') {
+                    probeServer.close(() => {
+                        reject(new OpenCodeError('Failed to determine available OpenCode port from probe server'));
+                    });
+                    return;
+                }
+                const { port } = address;
+                probeServer.close((error) => {
+                    if (error) {
+                        reject(new OpenCodeError(`Failed to release probed OpenCode port ${port}: ${error.message}`));
+                        return;
+                    }
+                    resolve(port);
+                });
+            });
+        });
     }
     createConfigFile() {
         const secureConfigDir = '/tmp/opencode-secure-config';
@@ -38661,15 +38697,21 @@ class OpenCodeServer {
             this.workspaceConfigPath = null;
         }
     }
+    resetServerProcess() {
+        this.serverProcess = null;
+        this.port = null;
+    }
     attachProcessHandlers() {
         if (!this.serverProcess) {
             return;
         }
         this.serverProcess.on('error', (error) => {
             logger.error(`OpenCode server process error: ${error.message}`);
+            this.resetServerProcess();
             this.status = 'error';
         });
         this.serverProcess.on('exit', (code, signal) => {
+            this.resetServerProcess();
             if (this.status !== 'stopping') {
                 logger.error(`OpenCode server exited unexpectedly (code: ${code}, signal: ${signal})`);
                 this.status = 'error';
@@ -38718,7 +38760,7 @@ class OpenCodeServer {
         try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 5000);
-            const response = await fetch(`${this.healthCheckUrl}/config`, {
+            const response = await fetch(`${this.getUrl()}/config`, {
                 method: 'GET',
                 signal: controller.signal
             });
@@ -38733,18 +38775,20 @@ class OpenCodeServer {
         logger.debug('killServerProcess: Starting');
         if (!this.serverProcess) {
             logger.debug('killServerProcess: No server process to kill');
+            this.resetServerProcess();
             return;
         }
         return new Promise((resolve) => {
             if (!this.serverProcess) {
                 logger.debug('killServerProcess: Server process is null in promise');
+                this.resetServerProcess();
                 resolve();
                 return;
             }
             const pid = this.serverProcess.pid;
             if (!pid) {
                 logger.debug('killServerProcess: No PID found');
-                this.serverProcess = null;
+                this.resetServerProcess();
                 resolve();
                 return;
             }
@@ -38760,14 +38804,14 @@ class OpenCodeServer {
                         logger.debug('killServerProcess: SIGKILL failed (process may be dead)');
                     }
                 }
-                this.serverProcess = null;
+                this.resetServerProcess();
                 logger.debug('killServerProcess: Resolving after force kill');
                 resolve();
             }, this.shutdownTimeoutMs);
             this.serverProcess.once('exit', (code, signal) => {
                 logger.debug(`killServerProcess: Process exited with code=${code}, signal=${signal}`);
                 clearTimeout(forceKillTimeout);
-                this.serverProcess = null;
+                this.resetServerProcess();
                 logger.debug('killServerProcess: Resolving after exit event');
                 resolve();
             });
@@ -38789,7 +38833,7 @@ class OpenCodeServer {
             catch {
                 logger.debug('killServerProcess: SIGTERM failed (process may be dead)');
                 clearTimeout(forceKillTimeout);
-                this.serverProcess = null;
+                this.resetServerProcess();
                 resolve();
             }
         });
@@ -51903,7 +51947,7 @@ async function run() {
         openCodeServer = new OpenCodeServer(config);
         await openCodeServer.start();
         const github = new GitHubAPI(config);
-        const opencode = new OpenCodeClientImpl(OPENCODE_SERVER_URL, config.opencode.debugLogging, config.review.timeoutMs);
+        const opencode = new OpenCodeClientImpl(openCodeServer.getUrl(), config.opencode.debugLogging, config.review.timeoutMs);
         // LLM client for classification and sentiment analysis tasks
         // Uses injection_verification_model which is faster and doesn't have
         // reasoning token issues that can cause empty responses with reasoning models

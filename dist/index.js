@@ -28,10 +28,10 @@ import require$$0$9 from 'diagnostics_channel';
 import require$$2$3 from 'child_process';
 import require$$6$1 from 'timers';
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync, chmodSync, unlinkSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, chmodSync, unlinkSync, statSync } from 'node:fs';
 import { readdir, readFile, mkdir, copyFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { IncomingMessage } from 'node:http';
 
@@ -38341,6 +38341,47 @@ class OpenCodeClientImpl {
     }
 }
 
+function isRecord(value) {
+    return typeof value === 'object' && value !== null;
+}
+function findPackageJsonPath(startDir) {
+    let currentDir = startDir;
+    while (true) {
+        const candidatePath = join(currentDir, 'package.json');
+        if (existsSync(candidatePath)) {
+            return candidatePath;
+        }
+        const parentDir = dirname(currentDir);
+        if (parentDir === currentDir) {
+            throw new Error('Could not locate package.json for OpenCode version pinning');
+        }
+        currentDir = parentDir;
+    }
+}
+function getPinnedSdkVersion() {
+    const moduleDir = dirname(fileURLToPath(import.meta.url));
+    const packageJsonPath = findPackageJsonPath(moduleDir);
+    const packageJsonContent = readFileSync(packageJsonPath, 'utf8');
+    const packageMetadata = JSON.parse(packageJsonContent);
+    if (!isRecord(packageMetadata)) {
+        throw new Error('package.json must contain a top-level object');
+    }
+    const dependencies = packageMetadata.dependencies;
+    if (!isRecord(dependencies)) {
+        throw new Error('package.json must contain a dependencies object');
+    }
+    const version = dependencies['@opencode-ai/sdk'];
+    if (typeof version !== 'string') {
+        throw new Error('package.json must declare @opencode-ai/sdk as a dependency');
+    }
+    if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+        throw new Error(`Expected @opencode-ai/sdk to be pinned to an exact version, received ${version}`);
+    }
+    return version;
+}
+const OPENCODE_VERSION = getPinnedSdkVersion();
+const OPENCODE_PACKAGE_SPECIFIER = `opencode-ai@${OPENCODE_VERSION}`;
+
 function delay(ms) {
     return new Promise((resolve) => {
         setTimeout(resolve, ms);
@@ -38348,11 +38389,9 @@ function delay(ms) {
 }
 
 function getOpenCodeCLICommand() {
-    // Use npx to run opencode-ai CLI - this works in GitHub Actions
-    // without needing node_modules to be present
     return {
         command: 'npx',
-        args: ['opencode-ai']
+        args: ['--yes', OPENCODE_PACKAGE_SPECIFIER]
     };
 }
 class OpenCodeServer {

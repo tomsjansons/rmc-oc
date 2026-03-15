@@ -10,6 +10,7 @@ import { readFile, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+import { OPENCODE_PACKAGE_SPECIFIER } from './version.js'
 import {
   OPENCODE_SERVER_HOST,
   OPENCODE_SERVER_PORT
@@ -20,11 +21,9 @@ import { OpenCodeError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
 
 function getOpenCodeCLICommand(): { command: string; args: string[] } {
-  // Use npx to run opencode-ai CLI - this works in GitHub Actions
-  // without needing node_modules to be present
   return {
     command: 'npx',
-    args: ['opencode-ai']
+    args: ['--yes', OPENCODE_PACKAGE_SPECIFIER]
   }
 }
 

@@ -14,7 +14,7 @@ const input = Object.fromEntries(
 const config = {
   input,
   output: {
-    dir: 'dist/.opencode/tool',
+    dir: 'dist/.opencode/tools',
     format: 'es',
     entryFileNames: '[name].js',
     sourcemap: false
@@ -22,7 +22,7 @@ const config = {
   plugins: [
     typescript({
       compilerOptions: {
-        outDir: 'dist/.opencode/tool',
+        outDir: 'dist/.opencode/tools',
         rootDir: undefined
       }
     }),

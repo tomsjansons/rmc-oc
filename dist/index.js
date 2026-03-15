@@ -42093,10 +42093,10 @@ async function setupToolsInWorkspace() {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = dirname(__filename);
     // When bundled, dist/index.js runs and __dirname is 'dist/'
-    // Tools are at 'dist/.opencode/tool/', so we go down from __dirname
-    const actionToolsDir = join(__dirname, '.opencode', 'tool');
+    // Tools are at 'dist/.opencode/tools/', so we go down from __dirname
+    const actionToolsDir = join(__dirname, '.opencode', 'tools');
     const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd();
-    const workspaceToolsDir = join(workspaceDir, '.opencode', 'tool');
+    const workspaceToolsDir = join(workspaceDir, '.opencode', 'tools');
     logger.info('Setting up OpenCode tools in workspace');
     logger.debug(`Action tools dir: ${actionToolsDir}`);
     logger.debug(`Workspace tools dir: ${workspaceToolsDir}`);

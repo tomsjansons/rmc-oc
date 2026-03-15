@@ -7,7 +7,6 @@ import { OpenCodeClientImpl } from './opencode/client.js'
 import { LLMClientImpl } from './opencode/llm-client.js'
 import { OpenCodeServer } from './opencode/server.js'
 import { ReviewExecutor } from './execution/orchestrator.js'
-import { setupToolsInWorkspace } from './setup/tools.js'
 import { StateManager } from './state/manager.js'
 import { TaskOrchestrator } from './task/orchestrator.js'
 import { TRPCServer } from './trpc/server.js'
@@ -38,9 +37,6 @@ export async function run(): Promise<void> {
       config.opencode.apiKey,
       config.opencode.model
     )
-
-    logger.info('Setting up OpenCode tools...')
-    await setupToolsInWorkspace()
 
     openCodeServer = new OpenCodeServer(config)
     await openCodeServer.start()

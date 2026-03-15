@@ -4,33 +4,35 @@ import { fileURLToPath } from 'node:url'
 
 import { logger } from '../utils/logger.js'
 
-export async function setupToolsInWorkspace(): Promise<void> {
+function getBundledToolsDir(): string {
   const __filename = fileURLToPath(import.meta.url)
   const __dirname = dirname(__filename)
 
-  // When bundled, dist/index.js runs and __dirname is 'dist/'
-  // Tools are at 'dist/.opencode/tool/', so we go down from __dirname
-  const actionToolsDir = join(__dirname, '.opencode', 'tool')
+  return join(__dirname, '.opencode', 'tools')
+}
 
-  const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd()
-  const workspaceToolsDir = join(workspaceDir, '.opencode', 'tool')
+export async function setupToolsInConfigDir(configDir: string): Promise<void> {
+  const bundledToolsDir = getBundledToolsDir()
+  const configToolsDir = join(configDir, 'tools')
 
-  logger.info('Setting up OpenCode tools in workspace')
-  logger.debug(`Action tools dir: ${actionToolsDir}`)
-  logger.debug(`Workspace tool dir: ${workspaceToolsDir}`)
+  logger.info('Setting up OpenCode tools in config directory')
+  logger.debug(`Bundled OpenCode tools dir: ${bundledToolsDir}`)
+  logger.debug(`OpenCode config tools dir: ${configToolsDir}`)
 
-  await mkdir(workspaceToolsDir, { recursive: true })
+  await mkdir(configToolsDir, { recursive: true })
 
-  const files = await readdir(actionToolsDir)
-  const toolFiles = files.filter((f) => f.endsWith('.js'))
+  const files = await readdir(bundledToolsDir)
+  const toolFiles = files.filter((file) => file.endsWith('.js'))
 
   for (const file of toolFiles) {
-    const source = join(actionToolsDir, file)
-    const dest = join(workspaceToolsDir, file)
+    const source = join(bundledToolsDir, file)
+    const dest = join(configToolsDir, file)
 
     await copyFile(source, dest)
     logger.debug(`Copied tool: ${file}`)
   }
 
-  logger.info(`Successfully copied ${toolFiles.length} tools to workspace`)
+  logger.info(
+    `Successfully copied ${toolFiles.length} tools to config directory`
+  )
 }

@@ -1,14 +1,14 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import {
-  chmodSync,
   mkdirSync,
+  mkdtempSync,
+  rmSync,
   statSync,
-  unlinkSync,
   writeFileSync
 } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 import { createServer } from 'node:net'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
@@ -16,6 +16,7 @@ import {
   OPENCODE_SERVER_HOST
 } from '../config/constants.js'
 import type { ReviewConfig } from '../execution/types.js'
+import { setupToolsInConfigDir } from '../setup/tools.js'
 import { delay } from '../utils/async.js'
 import { OpenCodeError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
@@ -30,11 +31,9 @@ function getOpenCodeCLICommand(): { command: string; args: string[] } {
 
 type ServerStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
 
-type BashPermission =
-  | 'allow'
-  | 'ask'
-  | 'deny'
-  | Record<string, 'allow' | 'ask' | 'deny'>
+type PermissionAction = 'allow' | 'ask' | 'deny'
+
+type BashPermission = PermissionAction | Record<string, PermissionAction>
 
 type OpenCodeModelConfig = {
   id?: string
@@ -52,23 +51,7 @@ type OpenCodeConfig = {
       models: Record<string, OpenCodeModelConfig>
     }
   }
-  tools: {
-    write: boolean
-    bash: boolean
-    webfetch: boolean
-  }
-  permission: {
-    edit: 'deny'
-    bash: BashPermission
-    external_directory: 'deny'
-  }
-}
-
-type OpenCodeAuth = {
-  openrouter: {
-    type: 'api'
-    key: string
-  }
+  permission: Record<string, PermissionAction | BashPermission>
 }
 
 export class OpenCodeServer {
@@ -79,9 +62,8 @@ export class OpenCodeServer {
   private readonly healthCheckIntervalMs = 1000
   private readonly healthCheckTimeoutMs = 30000
   private readonly shutdownTimeoutMs = 10000
+  private configDirPath: string | null = null
   private configFilePath: string | null = null
-  private authFilePath: string | null = null
-  private workspaceConfigPath: string | null = null
 
   constructor(private config: ReviewConfig) {}
 
@@ -116,6 +98,7 @@ export class OpenCodeServer {
           } else {
             this.resetServerProcess()
           }
+          this.cleanupConfigDirectory()
 
           if (attempt === this.maxStartupAttempts) {
             this.status = 'error'
@@ -145,7 +128,7 @@ export class OpenCodeServer {
 
       try {
         await this.killServerProcess()
-        this.cleanupConfigFile()
+        this.cleanupConfigDirectory()
         logger.info('OpenCode server stopped successfully')
       } catch (error) {
         logger.error(
@@ -155,6 +138,7 @@ export class OpenCodeServer {
           `Failed to stop OpenCode server: ${error instanceof Error ? error.message : String(error)}`
         )
       } finally {
+        this.cleanupConfigDirectory()
         this.resetServerProcess()
       }
     })
@@ -185,7 +169,9 @@ export class OpenCodeServer {
   private async startServerProcess(): Promise<void> {
     this.status = 'starting'
     this.port = await this.findAvailablePort()
-    this.configFilePath = this.createConfigFile()
+    this.configDirPath = this.createConfigDirectory()
+    await setupToolsInConfigDir(this.configDirPath)
+    this.configFilePath = this.createConfigFile(this.configDirPath)
 
     const { command, args } = getOpenCodeCLICommand()
     const serveArgs = [
@@ -207,7 +193,10 @@ export class OpenCodeServer {
     const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd()
 
     const env: Record<string, string> = {
-      OPENCODE_CONFIG: this.configFilePath || '',
+      OPENCODE_CLIENT: 'server',
+      OPENCODE_ENABLE_QUESTION_TOOL: '0',
+      OPENCODE_CONFIG_DIR: this.configDirPath,
+      OPENCODE_DISABLE_PROJECT_CONFIG: 'true',
       OPENROUTER_API_KEY: this.config.opencode.apiKey,
       PATH: process.env.PATH || '',
       HOME: process.env.HOME || '',
@@ -220,11 +209,13 @@ export class OpenCodeServer {
       env.OPENCODE_DEBUG = 'true'
     }
 
-    logger.info(`OpenCode environment: OPENCODE_CONFIG=${env.OPENCODE_CONFIG}`)
+    logger.info(
+      `OpenCode environment: OPENCODE_CONFIG_DIR=${env.OPENCODE_CONFIG_DIR}, OPENCODE_DISABLE_PROJECT_CONFIG=${env.OPENCODE_DISABLE_PROJECT_CONFIG}`
+    )
     logger.debug('OPENROUTER_API_KEY passed via environment variable')
     logger.debug(
       `Minimal environment: ${Object.keys(env)
-        .filter((k) => k !== 'OPENROUTER_API_KEY')
+        .filter((key) => key !== 'OPENROUTER_API_KEY')
         .join(', ')}`
     )
 
@@ -282,61 +273,63 @@ export class OpenCodeServer {
     })
   }
 
-  private createConfigFile(): string {
-    const secureConfigDir = '/tmp/opencode-secure-config'
+  private createConfigDirectory(): string {
+    const configDirPath = mkdtempSync(join(tmpdir(), 'rmc-opencode-'))
+    logger.info(`Created OpenCode config directory: ${configDirPath}`)
+
+    return configDirPath
+  }
+
+  private createConfigFile(configDirPath: string): string {
+    mkdirSync(configDirPath, { recursive: true, mode: 0o700 })
+
+    const configPath = join(configDirPath, 'opencode.json')
+    const config = this.buildConfig()
 
     try {
-      mkdirSync(secureConfigDir, { recursive: true, mode: 0o700 })
+      writeFileSync(configPath, JSON.stringify(config, null, 2), {
+        encoding: 'utf8',
+        mode: 0o600
+      })
+      logger.info(`Created OpenCode config file: ${configPath}`)
+      logger.info(`Config model: ${config.model}`)
+      logger.info(`Config contents: ${JSON.stringify(config, null, 2)}`)
+
+      return configPath
     } catch (error) {
       throw new OpenCodeError(
-        `Failed to create secure config directory: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to write config file: ${error instanceof Error ? error.message : String(error)}`
       )
     }
+  }
 
-    // Also create config in workspace's .opencode directory so it takes precedence
-    // (OpenCode loads workspace configs AFTER the OPENCODE_CONFIG file)
-    const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd()
-    const workspaceConfigDir = join(workspaceDir, '.opencode')
-    try {
-      mkdirSync(workspaceConfigDir, { recursive: true })
-    } catch (error) {
-      logger.warning(
-        `Failed to create workspace .opencode directory: ${error instanceof Error ? error.message : String(error)}`
-      )
-    }
-
-    const configPath = join(secureConfigDir, 'opencode.json')
+  private buildConfig(): OpenCodeConfig {
     const model = this.config.opencode.model
-
     const openrouterModel = `openrouter/${model}`
-    const models: Record<string, OpenCodeModelConfig> = Object.create(null)
-    models[model] = {
-      id: model,
-      name: model
-    }
+    const webPermission: PermissionAction = this.config.opencode.enableWeb
+      ? 'allow'
+      : 'deny'
 
-    const config: OpenCodeConfig = {
+    return {
       $schema: 'https://opencode.ai/config.json',
       model: openrouterModel,
       enabled_providers: ['openrouter'],
       disabled_providers: ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'],
       provider: {
         openrouter: {
-          // Explicitly register the model with id field so OpenCode recognizes it
-          models
+          models: {
+            [model]: {
+              id: model,
+              name: model
+            }
+          }
         }
       },
-      tools: {
-        write: false,
-        bash: true,
-        webfetch: this.config.opencode.enableWeb
-      },
       permission: {
+        '*': 'allow',
         edit: 'deny',
         bash: {
-          // Deny all commands by default
           '*': 'deny',
-          // Allow read-only git commands for code analysis
           'git status': 'allow',
           'git diff *': 'allow',
           'git log *': 'allow',
@@ -349,110 +342,31 @@ export class OpenCodeServer {
           'git ls-files *': 'allow',
           'git blame *': 'allow'
         },
-        external_directory: 'deny'
+        webfetch: webPermission,
+        websearch: webPermission,
+        question: 'deny',
+        external_directory: 'deny',
+        doom_loop: 'deny'
       }
     }
+  }
 
-    try {
-      writeFileSync(configPath, JSON.stringify(config, null, 2), {
-        encoding: 'utf8',
-        mode: 0o600
-      })
-      logger.info(`Created OpenCode config file: ${configPath}`)
-      logger.info(`Config model: ${openrouterModel}`)
-      logger.info(`Config contents: ${JSON.stringify(config, null, 2)}`)
-    } catch (error) {
-      throw new OpenCodeError(
-        `Failed to write config file: ${error instanceof Error ? error.message : String(error)}`
-      )
+  private cleanupConfigDirectory(): void {
+    if (!this.configDirPath) {
+      this.configFilePath = null
+      return
     }
 
-    // Also write config to workspace's .opencode/opencode.json
-    // This ensures our config takes precedence over any repo-specific configs
-    // since OpenCode loads workspace configs AFTER OPENCODE_CONFIG
-    this.workspaceConfigPath = join(workspaceConfigDir, 'opencode.json')
     try {
-      writeFileSync(this.workspaceConfigPath, JSON.stringify(config, null, 2), {
-        encoding: 'utf8',
-        mode: 0o600
-      })
-      logger.info(
-        `Created workspace OpenCode config: ${this.workspaceConfigPath}`
-      )
+      rmSync(this.configDirPath, { recursive: true, force: true })
+      logger.debug(`Removed OpenCode config directory: ${this.configDirPath}`)
     } catch (error) {
       logger.warning(
-        `Failed to write workspace config (non-fatal): ${error instanceof Error ? error.message : String(error)}`
+        `Failed to remove OpenCode config directory: ${error instanceof Error ? error.message : String(error)}`
       )
-      this.workspaceConfigPath = null
-    }
-
-    this.createAuthFile(secureConfigDir)
-
-    return configPath
-  }
-
-  private createAuthFile(secureConfigDir: string): void {
-    const authPath = join(secureConfigDir, 'auth.json')
-    this.authFilePath = authPath
-
-    const auth: OpenCodeAuth = {
-      openrouter: { type: 'api', key: this.config.opencode.apiKey }
-    }
-
-    try {
-      writeFileSync(authPath, JSON.stringify(auth, null, 2), {
-        encoding: 'utf8',
-        mode: 0o600
-      })
-      chmodSync(authPath, 0o600)
-      logger.debug(`Created OpenCode auth file: ${authPath}`)
-      logger.debug(
-        'Note: Auth is also passed via OPENROUTER_API_KEY env var as backup'
-      )
-    } catch (error) {
-      throw new OpenCodeError(
-        `Failed to write auth file: ${error instanceof Error ? error.message : String(error)}`
-      )
-    }
-  }
-
-  private cleanupConfigFile(): void {
-    if (this.configFilePath) {
-      try {
-        unlinkSync(this.configFilePath)
-        logger.debug(`Removed config file: ${this.configFilePath}`)
-      } catch (error) {
-        logger.warning(
-          `Failed to remove config file: ${error instanceof Error ? error.message : String(error)}`
-        )
-      }
+    } finally {
+      this.configDirPath = null
       this.configFilePath = null
-    }
-
-    if (this.authFilePath) {
-      try {
-        unlinkSync(this.authFilePath)
-        logger.debug(`Removed auth file: ${this.authFilePath}`)
-      } catch (error) {
-        logger.warning(
-          `Failed to remove auth file: ${error instanceof Error ? error.message : String(error)}`
-        )
-      }
-      this.authFilePath = null
-    }
-
-    if (this.workspaceConfigPath) {
-      try {
-        unlinkSync(this.workspaceConfigPath)
-        logger.debug(
-          `Removed workspace config file: ${this.workspaceConfigPath}`
-        )
-      } catch (error) {
-        logger.warning(
-          `Failed to remove workspace config file: ${error instanceof Error ? error.message : String(error)}`
-        )
-      }
-      this.workspaceConfigPath = null
     }
   }
 
@@ -540,7 +454,7 @@ export class OpenCodeServer {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 5000)
 
-      const response = await fetch(`${this.getUrl()}/config`, {
+      const response = await fetch(`${this.getUrl()}/global/health`, {
         method: 'GET',
         signal: controller.signal
       })

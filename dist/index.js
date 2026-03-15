@@ -28,11 +28,11 @@ import require$$0$9 from 'diagnostics_channel';
 import require$$2$3 from 'child_process';
 import require$$6$1 from 'timers';
 import { spawn } from 'node:child_process';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, chmodSync, unlinkSync, statSync } from 'node:fs';
-import { readdir, readFile, mkdir, copyFile } from 'node:fs/promises';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync } from 'node:fs';
+import { mkdir, readdir, copyFile, readFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { tmpdir, homedir } from 'node:os';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { IncomingMessage } from 'node:http';
 
@@ -37527,7 +37527,7 @@ function createOpencodeClient(config) {
     if (config?.directory) {
         config.headers = {
             ...config.headers,
-            "x-opencode-directory": config.directory,
+            "x-opencode-directory": encodeURIComponent(config.directory),
         };
     }
     const client = createClient(config);
@@ -38343,6 +38343,29 @@ class OpenCodeClientImpl {
     }
 }
 
+function getBundledToolsDir() {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    return join(__dirname, '.opencode', 'tools');
+}
+async function setupToolsInConfigDir(configDir) {
+    const bundledToolsDir = getBundledToolsDir();
+    const configToolsDir = join(configDir, 'tools');
+    logger.info('Setting up OpenCode tools in config directory');
+    logger.debug(`Bundled OpenCode tools dir: ${bundledToolsDir}`);
+    logger.debug(`OpenCode config tools dir: ${configToolsDir}`);
+    await mkdir(configToolsDir, { recursive: true });
+    const files = await readdir(bundledToolsDir);
+    const toolFiles = files.filter((file) => file.endsWith('.js'));
+    for (const file of toolFiles) {
+        const source = join(bundledToolsDir, file);
+        const dest = join(configToolsDir, file);
+        await copyFile(source, dest);
+        logger.debug(`Copied tool: ${file}`);
+    }
+    logger.info(`Successfully copied ${toolFiles.length} tools to config directory`);
+}
+
 function delay(ms) {
     return new Promise((resolve) => {
         setTimeout(resolve, ms);
@@ -38405,9 +38428,8 @@ class OpenCodeServer {
     healthCheckIntervalMs = 1000;
     healthCheckTimeoutMs = 30000;
     shutdownTimeoutMs = 10000;
+    configDirPath = null;
     configFilePath = null;
-    authFilePath = null;
-    workspaceConfigPath = null;
     constructor(config) {
         this.config = config;
     }
@@ -38437,6 +38459,7 @@ class OpenCodeServer {
                     else {
                         this.resetServerProcess();
                     }
+                    this.cleanupConfigDirectory();
                     if (attempt === this.maxStartupAttempts) {
                         this.status = 'error';
                         throw new OpenCodeError(`Failed to start OpenCode server after ${this.maxStartupAttempts} attempts: ${error instanceof Error ? error.message : String(error)}`);
@@ -38458,7 +38481,7 @@ class OpenCodeServer {
             this.status = 'stopping';
             try {
                 await this.killServerProcess();
-                this.cleanupConfigFile();
+                this.cleanupConfigDirectory();
                 logger.info('OpenCode server stopped successfully');
             }
             catch (error) {
@@ -38466,6 +38489,7 @@ class OpenCodeServer {
                 throw new OpenCodeError(`Failed to stop OpenCode server: ${error instanceof Error ? error.message : String(error)}`);
             }
             finally {
+                this.cleanupConfigDirectory();
                 this.resetServerProcess();
             }
         });
@@ -38488,7 +38512,9 @@ class OpenCodeServer {
     async startServerProcess() {
         this.status = 'starting';
         this.port = await this.findAvailablePort();
-        this.configFilePath = this.createConfigFile();
+        this.configDirPath = this.createConfigDirectory();
+        await setupToolsInConfigDir(this.configDirPath);
+        this.configFilePath = this.createConfigFile(this.configDirPath);
         const { command, args } = getOpenCodeCLICommand();
         const serveArgs = [
             ...args,
@@ -38504,7 +38530,10 @@ class OpenCodeServer {
         logger.info(`OpenCode server URL: ${this.getUrl()}`);
         const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd();
         const env = {
-            OPENCODE_CONFIG: this.configFilePath || '',
+            OPENCODE_CLIENT: 'server',
+            OPENCODE_ENABLE_QUESTION_TOOL: '0',
+            OPENCODE_CONFIG_DIR: this.configDirPath,
+            OPENCODE_DISABLE_PROJECT_CONFIG: 'true',
             OPENROUTER_API_KEY: this.config.opencode.apiKey,
             PATH: process.env.PATH || '',
             HOME: process.env.HOME || '',
@@ -38515,10 +38544,10 @@ class OpenCodeServer {
             env.DEBUG = process.env.DEBUG || '*';
             env.OPENCODE_DEBUG = 'true';
         }
-        logger.info(`OpenCode environment: OPENCODE_CONFIG=${env.OPENCODE_CONFIG}`);
+        logger.info(`OpenCode environment: OPENCODE_CONFIG_DIR=${env.OPENCODE_CONFIG_DIR}, OPENCODE_DISABLE_PROJECT_CONFIG=${env.OPENCODE_DISABLE_PROJECT_CONFIG}`);
         logger.debug('OPENROUTER_API_KEY passed via environment variable');
         logger.debug(`Minimal environment: ${Object.keys(env)
-            .filter((k) => k !== 'OPENROUTER_API_KEY')
+            .filter((key) => key !== 'OPENROUTER_API_KEY')
             .join(', ')}`);
         this.serverProcess = spawn(command, serveArgs, {
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -38553,54 +38582,55 @@ class OpenCodeServer {
             });
         });
     }
-    createConfigFile() {
-        const secureConfigDir = '/tmp/opencode-secure-config';
+    createConfigDirectory() {
+        const configDirPath = mkdtempSync(join(tmpdir(), 'rmc-opencode-'));
+        logger.info(`Created OpenCode config directory: ${configDirPath}`);
+        return configDirPath;
+    }
+    createConfigFile(configDirPath) {
+        mkdirSync(configDirPath, { recursive: true, mode: 0o700 });
+        const configPath = join(configDirPath, 'opencode.json');
+        const config = this.buildConfig();
         try {
-            mkdirSync(secureConfigDir, { recursive: true, mode: 0o700 });
+            writeFileSync(configPath, JSON.stringify(config, null, 2), {
+                encoding: 'utf8',
+                mode: 0o600
+            });
+            logger.info(`Created OpenCode config file: ${configPath}`);
+            logger.info(`Config model: ${config.model}`);
+            logger.info(`Config contents: ${JSON.stringify(config, null, 2)}`);
+            return configPath;
         }
         catch (error) {
-            throw new OpenCodeError(`Failed to create secure config directory: ${error instanceof Error ? error.message : String(error)}`);
+            throw new OpenCodeError(`Failed to write config file: ${error instanceof Error ? error.message : String(error)}`);
         }
-        // Also create config in workspace's .opencode directory so it takes precedence
-        // (OpenCode loads workspace configs AFTER the OPENCODE_CONFIG file)
-        const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd();
-        const workspaceConfigDir = join(workspaceDir, '.opencode');
-        try {
-            mkdirSync(workspaceConfigDir, { recursive: true });
-        }
-        catch (error) {
-            logger.warning(`Failed to create workspace .opencode directory: ${error instanceof Error ? error.message : String(error)}`);
-        }
-        const configPath = join(secureConfigDir, 'opencode.json');
+    }
+    buildConfig() {
         const model = this.config.opencode.model;
         const openrouterModel = `openrouter/${model}`;
-        const models = Object.create(null);
-        models[model] = {
-            id: model,
-            name: model
-        };
-        const config = {
+        const webPermission = this.config.opencode.enableWeb
+            ? 'allow'
+            : 'deny';
+        return {
             $schema: 'https://opencode.ai/config.json',
             model: openrouterModel,
             enabled_providers: ['openrouter'],
             disabled_providers: ['gemini', 'anthropic', 'openai', 'azure', 'bedrock'],
             provider: {
                 openrouter: {
-                    // Explicitly register the model with id field so OpenCode recognizes it
-                    models
+                    models: {
+                        [model]: {
+                            id: model,
+                            name: model
+                        }
+                    }
                 }
             },
-            tools: {
-                write: false,
-                bash: true,
-                webfetch: this.config.opencode.enableWeb
-            },
             permission: {
+                '*': 'allow',
                 edit: 'deny',
                 bash: {
-                    // Deny all commands by default
                     '*': 'deny',
-                    // Allow read-only git commands for code analysis
                     'git status': 'allow',
                     'git diff *': 'allow',
                     'git log *': 'allow',
@@ -38613,88 +38643,29 @@ class OpenCodeServer {
                     'git ls-files *': 'allow',
                     'git blame *': 'allow'
                 },
-                external_directory: 'deny'
+                webfetch: webPermission,
+                websearch: webPermission,
+                question: 'deny',
+                external_directory: 'deny',
+                doom_loop: 'deny'
             }
         };
-        try {
-            writeFileSync(configPath, JSON.stringify(config, null, 2), {
-                encoding: 'utf8',
-                mode: 0o600
-            });
-            logger.info(`Created OpenCode config file: ${configPath}`);
-            logger.info(`Config model: ${openrouterModel}`);
-            logger.info(`Config contents: ${JSON.stringify(config, null, 2)}`);
-        }
-        catch (error) {
-            throw new OpenCodeError(`Failed to write config file: ${error instanceof Error ? error.message : String(error)}`);
-        }
-        // Also write config to workspace's .opencode/opencode.json
-        // This ensures our config takes precedence over any repo-specific configs
-        // since OpenCode loads workspace configs AFTER OPENCODE_CONFIG
-        this.workspaceConfigPath = join(workspaceConfigDir, 'opencode.json');
-        try {
-            writeFileSync(this.workspaceConfigPath, JSON.stringify(config, null, 2), {
-                encoding: 'utf8',
-                mode: 0o600
-            });
-            logger.info(`Created workspace OpenCode config: ${this.workspaceConfigPath}`);
-        }
-        catch (error) {
-            logger.warning(`Failed to write workspace config (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
-            this.workspaceConfigPath = null;
-        }
-        this.createAuthFile(secureConfigDir);
-        return configPath;
     }
-    createAuthFile(secureConfigDir) {
-        const authPath = join(secureConfigDir, 'auth.json');
-        this.authFilePath = authPath;
-        const auth = {
-            openrouter: { type: 'api', key: this.config.opencode.apiKey }
-        };
-        try {
-            writeFileSync(authPath, JSON.stringify(auth, null, 2), {
-                encoding: 'utf8',
-                mode: 0o600
-            });
-            chmodSync(authPath, 0o600);
-            logger.debug(`Created OpenCode auth file: ${authPath}`);
-            logger.debug('Note: Auth is also passed via OPENROUTER_API_KEY env var as backup');
-        }
-        catch (error) {
-            throw new OpenCodeError(`Failed to write auth file: ${error instanceof Error ? error.message : String(error)}`);
-        }
-    }
-    cleanupConfigFile() {
-        if (this.configFilePath) {
-            try {
-                unlinkSync(this.configFilePath);
-                logger.debug(`Removed config file: ${this.configFilePath}`);
-            }
-            catch (error) {
-                logger.warning(`Failed to remove config file: ${error instanceof Error ? error.message : String(error)}`);
-            }
+    cleanupConfigDirectory() {
+        if (!this.configDirPath) {
             this.configFilePath = null;
+            return;
         }
-        if (this.authFilePath) {
-            try {
-                unlinkSync(this.authFilePath);
-                logger.debug(`Removed auth file: ${this.authFilePath}`);
-            }
-            catch (error) {
-                logger.warning(`Failed to remove auth file: ${error instanceof Error ? error.message : String(error)}`);
-            }
-            this.authFilePath = null;
+        try {
+            rmSync(this.configDirPath, { recursive: true, force: true });
+            logger.debug(`Removed OpenCode config directory: ${this.configDirPath}`);
         }
-        if (this.workspaceConfigPath) {
-            try {
-                unlinkSync(this.workspaceConfigPath);
-                logger.debug(`Removed workspace config file: ${this.workspaceConfigPath}`);
-            }
-            catch (error) {
-                logger.warning(`Failed to remove workspace config file: ${error instanceof Error ? error.message : String(error)}`);
-            }
-            this.workspaceConfigPath = null;
+        catch (error) {
+            logger.warning(`Failed to remove OpenCode config directory: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        finally {
+            this.configDirPath = null;
+            this.configFilePath = null;
         }
     }
     resetServerProcess() {
@@ -38760,7 +38731,7 @@ class OpenCodeServer {
         try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 5000);
-            const response = await fetch(`${this.getUrl()}/config`, {
+            const response = await fetch(`${this.getUrl()}/global/health`, {
                 method: 'GET',
                 signal: controller.signal
             });
@@ -42131,29 +42102,6 @@ Use the \`read\` tool to examine the changed files and verify if issues have bee
             return response;
         });
     }
-}
-
-async function setupToolsInWorkspace() {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    // When bundled, dist/index.js runs and __dirname is 'dist/'
-    // Tools are at 'dist/.opencode/tool/', so we go down from __dirname
-    const actionToolsDir = join(__dirname, '.opencode', 'tool');
-    const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd();
-    const workspaceToolsDir = join(workspaceDir, '.opencode', 'tool');
-    logger.info('Setting up OpenCode tools in workspace');
-    logger.debug(`Action tools dir: ${actionToolsDir}`);
-    logger.debug(`Workspace tool dir: ${workspaceToolsDir}`);
-    await mkdir(workspaceToolsDir, { recursive: true });
-    const files = await readdir(actionToolsDir);
-    const toolFiles = files.filter((f) => f.endsWith('.js'));
-    for (const file of toolFiles) {
-        const source = join(actionToolsDir, file);
-        const dest = join(workspaceToolsDir, file);
-        await copyFile(source, dest);
-        logger.debug(`Copied tool: ${file}`);
-    }
-    logger.info(`Successfully copied ${toolFiles.length} tools to workspace`);
 }
 
 const STATE_SCHEMA_VERSION = 1;
@@ -51942,8 +51890,6 @@ async function run() {
         // Test direct OpenRouter API call to verify model/API key work
         logger.info('Testing OpenRouter API connection...');
         await testOpenRouterConnection(config.opencode.apiKey, config.opencode.model);
-        logger.info('Setting up OpenCode tools...');
-        await setupToolsInWorkspace();
         openCodeServer = new OpenCodeServer(config);
         await openCodeServer.start();
         const github = new GitHubAPI(config);

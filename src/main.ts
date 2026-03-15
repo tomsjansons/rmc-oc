@@ -1,13 +1,12 @@
 import * as core from '@actions/core'
 
-import { OPENCODE_SERVER_URL, OPENROUTER_API_URL } from './config/constants.js'
+import { OPENROUTER_API_URL } from './config/constants.js'
 import { parseInputs, validateConfig } from './config/inputs.js'
 import { GitHubAPI } from './github/api.js'
 import { OpenCodeClientImpl } from './opencode/client.js'
 import { LLMClientImpl } from './opencode/llm-client.js'
 import { OpenCodeServer } from './opencode/server.js'
 import { ReviewExecutor } from './execution/orchestrator.js'
-import { setupToolsInWorkspace } from './setup/tools.js'
 import { StateManager } from './state/manager.js'
 import { TaskOrchestrator } from './task/orchestrator.js'
 import { TRPCServer } from './trpc/server.js'
@@ -39,15 +38,12 @@ export async function run(): Promise<void> {
       config.opencode.model
     )
 
-    logger.info('Setting up OpenCode tools...')
-    await setupToolsInWorkspace()
-
     openCodeServer = new OpenCodeServer(config)
     await openCodeServer.start()
 
     const github = new GitHubAPI(config)
     const opencode = new OpenCodeClientImpl(
-      OPENCODE_SERVER_URL,
+      openCodeServer.getUrl(),
       config.opencode.debugLogging,
       config.review.timeoutMs
     )

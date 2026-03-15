@@ -23,8 +23,8 @@ importers:
         specifier: ^22.0.1
         version: 22.0.1
       '@opencode-ai/sdk':
-        specifier: ^1.0.203
-        version: 1.0.203
+        specifier: 1.2.26
+        version: 1.2.26
       '@trpc/client':
         specifier: ^11.8.1
         version: 11.8.1(@trpc/server@11.8.1(typescript@5.9.3))(typescript@5.9.3)
@@ -32,8 +32,8 @@ importers:
         specifier: ^11.8.1
         version: 11.8.1(typescript@5.9.3)
       opencode-ai:
-        specifier: ^1.0.203
-        version: 1.0.203
+        specifier: 1.2.26
+        version: 1.2.26
       superjson:
         specifier: ^2.2.6
         version: 2.2.6
@@ -1553,10 +1553,10 @@ packages:
         integrity: sha512-eJ2jbzjdijiL3B4PrSQaSjuF2sPEQPVCPzBvTHJD9Nz+9dw2SGH4K4xeQJ77YfTq5bRQ+bD8wT11JbeDPmxmGg==
       }
 
-  '@opencode-ai/sdk@1.0.203':
+  '@opencode-ai/sdk@1.2.26':
     resolution:
       {
-        integrity: sha512-Chr/eWlb5jB+aluf70t9H0zv0tkb+otVnnkZQg3xrB7dtHJc6SxqsixAjTGnND6v3mURwchYb0UdcnGM7dOcng==
+        integrity: sha512-HPB+0pfvTMPj2KEjNLF3oqgldKW8koTJ7ssqXwzndazqxS+gUynzvdIKIQP4+QIInNcc5nJMG9JtfLcePGgTLQ==
       }
 
   '@pkgjs/parseargs@0.11.0':
@@ -1718,6 +1718,7 @@ packages:
       }
     cpu: [arm]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-arm-musleabihf@4.54.0':
     resolution:
@@ -1726,6 +1727,7 @@ packages:
       }
     cpu: [arm]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-arm64-gnu@4.54.0':
     resolution:
@@ -1734,6 +1736,7 @@ packages:
       }
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-arm64-musl@4.54.0':
     resolution:
@@ -1742,6 +1745,7 @@ packages:
       }
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-loong64-gnu@4.54.0':
     resolution:
@@ -1750,6 +1754,7 @@ packages:
       }
     cpu: [loong64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-ppc64-gnu@4.54.0':
     resolution:
@@ -1758,6 +1763,7 @@ packages:
       }
     cpu: [ppc64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-riscv64-gnu@4.54.0':
     resolution:
@@ -1766,6 +1772,7 @@ packages:
       }
     cpu: [riscv64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-riscv64-musl@4.54.0':
     resolution:
@@ -1774,6 +1781,7 @@ packages:
       }
     cpu: [riscv64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-s390x-gnu@4.54.0':
     resolution:
@@ -1782,6 +1790,7 @@ packages:
       }
     cpu: [s390x]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-x64-gnu@4.54.0':
     resolution:
@@ -1790,6 +1799,7 @@ packages:
       }
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-x64-musl@4.54.0':
     resolution:
@@ -1798,6 +1808,7 @@ packages:
       }
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-openharmony-arm64@4.54.0':
     resolution:
@@ -2213,6 +2224,7 @@ packages:
       }
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@unrs/resolver-binding-linux-arm64-musl@1.11.1':
     resolution:
@@ -2221,6 +2233,7 @@ packages:
       }
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   '@unrs/resolver-binding-linux-ppc64-gnu@1.11.1':
     resolution:
@@ -2229,6 +2242,7 @@ packages:
       }
     cpu: [ppc64]
     os: [linux]
+    libc: [glibc]
 
   '@unrs/resolver-binding-linux-riscv64-gnu@1.11.1':
     resolution:
@@ -2237,6 +2251,7 @@ packages:
       }
     cpu: [riscv64]
     os: [linux]
+    libc: [glibc]
 
   '@unrs/resolver-binding-linux-riscv64-musl@1.11.1':
     resolution:
@@ -2245,6 +2260,7 @@ packages:
       }
     cpu: [riscv64]
     os: [linux]
+    libc: [musl]
 
   '@unrs/resolver-binding-linux-s390x-gnu@1.11.1':
     resolution:
@@ -2253,6 +2269,7 @@ packages:
       }
     cpu: [s390x]
     os: [linux]
+    libc: [glibc]
 
   '@unrs/resolver-binding-linux-x64-gnu@1.11.1':
     resolution:
@@ -2261,6 +2278,7 @@ packages:
       }
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@unrs/resolver-binding-linux-x64-musl@1.11.1':
     resolution:
@@ -2269,6 +2287,7 @@ packages:
       }
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@unrs/resolver-binding-wasm32-wasi@1.11.1':
     resolution:
@@ -4916,97 +4935,105 @@ packages:
       }
     engines: { node: '>=6' }
 
-  opencode-ai@1.0.203:
+  opencode-ai@1.2.26:
     resolution:
       {
-        integrity: sha512-qrzGxXlBLgx4CYQwBwpOK6nOzyYjeZCPoO3wBwbSK8PJ26969+vqz2aRKmPe/yE9GD8xBuUfx0D9KbEarAsN5w==
+        integrity: sha512-dcBNK/wD5Z7bRp/MHlyHf195gkP5gxm7271C3YTS/HhavjEr1f5kVtlOvwGbm0Mmvw/ukQMi0xGHuf/RwWKrfg==
       }
     hasBin: true
 
-  opencode-darwin-arm64@1.0.203:
+  opencode-darwin-arm64@1.2.26:
     resolution:
       {
-        integrity: sha512-iKxuUg8NBfMoh+xbSj0/NG/xTbU9Y31MSwFpcSm2ZA1qC9OY5N9UzDnIRzd9TpPCXafOcewZ1RnuemIN/laVqA==
+        integrity: sha512-8gKkjPfqg2o86kZhgmDe4CSD1Se56uZNHXquWrp0J+vi6ZbCX9tM6aPcJtj1iSlaHe8KAq6yI6L/aHcVKgGncw==
       }
     cpu: [arm64]
     os: [darwin]
 
-  opencode-darwin-x64-baseline@1.0.203:
+  opencode-darwin-x64-baseline@1.2.26:
     resolution:
       {
-        integrity: sha512-NXrWO83HIrZmwQI2BRWQWgp6eMMkYfydaUadNHAx+jPQarsOEwkblA+KLbC80C399KfiK3tNYKwYFGsDMlqsaA==
+        integrity: sha512-pRv3qHj9rnflony9eQOgVFnrDZXW/XMozZ3MZx2hb4bzG33RY6t9DQ+AW3Dv+lHz2I2iMA+OYEKr6RXyxZiusw==
       }
     cpu: [x64]
     os: [darwin]
 
-  opencode-darwin-x64@1.0.203:
+  opencode-darwin-x64@1.2.26:
     resolution:
       {
-        integrity: sha512-GmCZaBVa53e0FK8sOwU1v7QppXducjoRr6cMlMe04fHzvKZUsuZoJFMtY1DrNHWVENLQhQqB5LR8qe1Ae3TsMg==
+        integrity: sha512-FHZL0EF5e30DuqWEejiFJ6sy8f/uaiPBVrzhVjmS3GhTqeJHJwOhJ/1KanzRtTmLwp3PoTx0NkQ055J61E5WDQ==
       }
     cpu: [x64]
     os: [darwin]
 
-  opencode-linux-arm64-musl@1.0.203:
+  opencode-linux-arm64-musl@1.2.26:
     resolution:
       {
-        integrity: sha512-MN5RXkDv5HoLGNM2LIFmvuEb5fHtTXQ5NGx38Wjp8ZqZJO9vKDytNAI0A0rAD1dXR9uLONU32bp3b6VeIoTu0A==
+        integrity: sha512-WB/aDSQX+S5XkKXfkKl7AmIePC2kGoKatdsxBEtpg1EgC/3llqHKZXxrFA5ulzlxEt7VongiyfzFFAxIzo8o1w==
       }
     cpu: [arm64]
     os: [linux]
 
-  opencode-linux-arm64@1.0.203:
+  opencode-linux-arm64@1.2.26:
     resolution:
       {
-        integrity: sha512-/mavDhe9horX539K3qxKx7kAIE13aPS6mlfKX7kg30ytAheyDtzY80htUhX5JuwKiXWmczOfK62rBjUaYiTBUw==
+        integrity: sha512-GTXwn0u1flhAOSFNEY8SZmYSLmhBCfeBPE3+9TtWfznri7tWdXtJIrfcodYtQ+7C03uK1tHJSyFBJ/8TmyD2CQ==
       }
     cpu: [arm64]
     os: [linux]
 
-  opencode-linux-x64-baseline-musl@1.0.203:
+  opencode-linux-x64-baseline-musl@1.2.26:
     resolution:
       {
-        integrity: sha512-kbeMmrzn3WvxP90ehx0zY/5+vFK2fKKRjgWCGqkNTPKP22B1xgm1Mi/KtFC/xIgj3KJnCGbEP32/rRSTDMgyIQ==
+        integrity: sha512-al/kb5hN7YpYSz4NpAar8fZpjTLwTT+vsjTm8lgYRLxQATmHZtN1BCD6GQAuH6a4EisVDZwgYZgYIOEXL0nAwQ==
       }
     cpu: [x64]
     os: [linux]
 
-  opencode-linux-x64-baseline@1.0.203:
+  opencode-linux-x64-baseline@1.2.26:
     resolution:
       {
-        integrity: sha512-+cxOZMbW+bZ+yaDHz0AnCasPcj+zd/CL+SZLreNeD5BexR4vRj+NgzdrwK5WT1Dh821qBz+Kz8G7fi5oFVcpKg==
+        integrity: sha512-VDfR2o2FRwAP4x/LkgmfwDlSPUKSVTMRb+9w9eKhu7gTdGEzmjAkAt4rfgL7lo/K+WmwJiVY7r0IZncRU3fZIA==
       }
     cpu: [x64]
     os: [linux]
 
-  opencode-linux-x64-musl@1.0.203:
+  opencode-linux-x64-musl@1.2.26:
     resolution:
       {
-        integrity: sha512-qd0EcASO7GN/HNjOMuWTSw2EWrl86psNGVEn3xawVkmaY1iItTQvfXh9z8WROxKTF2EsSzQayx5ngcynEVPYpg==
+        integrity: sha512-mFy4v/H3B+CsujYdqAgD91SVoxg42cyQkOgZqGuAqvlB1kxvpyGt6NqeKSRIkUZNO9XoF5wSZ8S/CiWrN0Z0uA==
       }
     cpu: [x64]
     os: [linux]
 
-  opencode-linux-x64@1.0.203:
+  opencode-linux-x64@1.2.26:
     resolution:
       {
-        integrity: sha512-ZnSq/4g3HTx/OnwlieM2/31htTB0Cy45+9sc8cmbXTyb6lkOuUPTQnBK/QOcwxgo9FFPckqeoUA5L5QuSYXX/w==
+        integrity: sha512-8PvGk4tQ6VlG0Csiz6Er/h0QIrdkbCqSHfLf7vU+JtlscjST2z2NTOfG4aC+yJQkm0PZ9ZB8V4xsGkpye9u4wQ==
       }
     cpu: [x64]
     os: [linux]
 
-  opencode-windows-x64-baseline@1.0.203:
+  opencode-windows-arm64@1.2.26:
     resolution:
       {
-        integrity: sha512-srkfTSd2Lh1f+tocCIvisZ4cWc+pWk8a7GVkuS5DpkBrUNOdLiXD+zDVibP/iPSqTc6pIfISMFdGZvkGKaJ3PQ==
+        integrity: sha512-x5UPLsjenGbpJT6rzi+c01ojfp5UrM6XxqSHDfH4+ALGDz1ojBJkKtdmHMhn7NYTlmGlZpVIgIdr0Exg5OVguQ==
+      }
+    cpu: [arm64]
+    os: [win32]
+
+  opencode-windows-x64-baseline@1.2.26:
+    resolution:
+      {
+        integrity: sha512-murif0cXJm7vLQXPJwf793H5PH5izK3xQR/Y5Bhn3UiVso2Xsy85QPYB2Ut4O+cU1T6IbRwXtbcN+f6c4j7hHA==
       }
     cpu: [x64]
     os: [win32]
 
-  opencode-windows-x64@1.0.203:
+  opencode-windows-x64@1.2.26:
     resolution:
       {
-        integrity: sha512-fCnEs3jRDnKGXhfC7u/JAal2KTKjZ14TlU3LQX8nIQDV+5WBEsgiA9MlrM7xKQYoWhj7tGZSvmZD2RN5ynkSrA==
+        integrity: sha512-/KIuzoYja+fS/HrIZBiO7vMnPFjAyp0nZVV5XZtA5LyJ0M3+WrsCFwcG1DN3qslEeBqTzW1YOondeU5OJNcTrQ==
       }
     cpu: [x64]
     os: [win32]
@@ -7371,7 +7398,7 @@ snapshots:
     dependencies:
       '@octokit/openapi-types': 12.11.0
 
-  '@opencode-ai/sdk@1.0.203': {}
+  '@opencode-ai/sdk@1.2.26': {}
 
   '@pkgjs/parseargs@0.11.0':
     optional: true
@@ -9671,51 +9698,55 @@ snapshots:
     dependencies:
       mimic-fn: 2.1.0
 
-  opencode-ai@1.0.203:
+  opencode-ai@1.2.26:
     optionalDependencies:
-      opencode-darwin-arm64: 1.0.203
-      opencode-darwin-x64: 1.0.203
-      opencode-darwin-x64-baseline: 1.0.203
-      opencode-linux-arm64: 1.0.203
-      opencode-linux-arm64-musl: 1.0.203
-      opencode-linux-x64: 1.0.203
-      opencode-linux-x64-baseline: 1.0.203
-      opencode-linux-x64-baseline-musl: 1.0.203
-      opencode-linux-x64-musl: 1.0.203
-      opencode-windows-x64: 1.0.203
-      opencode-windows-x64-baseline: 1.0.203
+      opencode-darwin-arm64: 1.2.26
+      opencode-darwin-x64: 1.2.26
+      opencode-darwin-x64-baseline: 1.2.26
+      opencode-linux-arm64: 1.2.26
+      opencode-linux-arm64-musl: 1.2.26
+      opencode-linux-x64: 1.2.26
+      opencode-linux-x64-baseline: 1.2.26
+      opencode-linux-x64-baseline-musl: 1.2.26
+      opencode-linux-x64-musl: 1.2.26
+      opencode-windows-arm64: 1.2.26
+      opencode-windows-x64: 1.2.26
+      opencode-windows-x64-baseline: 1.2.26
 
-  opencode-darwin-arm64@1.0.203:
+  opencode-darwin-arm64@1.2.26:
     optional: true
 
-  opencode-darwin-x64-baseline@1.0.203:
+  opencode-darwin-x64-baseline@1.2.26:
     optional: true
 
-  opencode-darwin-x64@1.0.203:
+  opencode-darwin-x64@1.2.26:
     optional: true
 
-  opencode-linux-arm64-musl@1.0.203:
+  opencode-linux-arm64-musl@1.2.26:
     optional: true
 
-  opencode-linux-arm64@1.0.203:
+  opencode-linux-arm64@1.2.26:
     optional: true
 
-  opencode-linux-x64-baseline-musl@1.0.203:
+  opencode-linux-x64-baseline-musl@1.2.26:
     optional: true
 
-  opencode-linux-x64-baseline@1.0.203:
+  opencode-linux-x64-baseline@1.2.26:
     optional: true
 
-  opencode-linux-x64-musl@1.0.203:
+  opencode-linux-x64-musl@1.2.26:
     optional: true
 
-  opencode-linux-x64@1.0.203:
+  opencode-linux-x64@1.2.26:
     optional: true
 
-  opencode-windows-x64-baseline@1.0.203:
+  opencode-windows-arm64@1.2.26:
     optional: true
 
-  opencode-windows-x64@1.0.203:
+  opencode-windows-x64-baseline@1.2.26:
+    optional: true
+
+  opencode-windows-x64@1.2.26:
     optional: true
 
   optionator@0.9.4:

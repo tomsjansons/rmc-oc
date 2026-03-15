@@ -1,6 +1,8 @@
-export const OPENCODE_SERVER_PORT = 4096
 export const OPENCODE_SERVER_HOST = '127.0.0.1'
-export const OPENCODE_SERVER_URL = `http://${OPENCODE_SERVER_HOST}:${OPENCODE_SERVER_PORT}`
+
+export function createOpenCodeServerUrl(port: number): string {
+  return `http://${OPENCODE_SERVER_HOST}:${port}`
+}
 
 export const TRPC_SERVER_PORT = 38291
 export const TRPC_SERVER_HOST = '127.0.0.1'

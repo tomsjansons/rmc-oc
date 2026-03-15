@@ -9,15 +9,15 @@ export async function setupToolsInWorkspace(): Promise<void> {
   const __dirname = dirname(__filename)
 
   // When bundled, dist/index.js runs and __dirname is 'dist/'
-  // Tools are at 'dist/.opencode/tools/', so we go down from __dirname
-  const actionToolsDir = join(__dirname, '.opencode', 'tools')
+  // Tools are at 'dist/.opencode/tool/', so we go down from __dirname
+  const actionToolsDir = join(__dirname, '.opencode', 'tool')
 
   const workspaceDir = process.env.GITHUB_WORKSPACE || process.cwd()
-  const workspaceToolsDir = join(workspaceDir, '.opencode', 'tools')
+  const workspaceToolsDir = join(workspaceDir, '.opencode', 'tool')
 
   logger.info('Setting up OpenCode tools in workspace')
   logger.debug(`Action tools dir: ${actionToolsDir}`)
-  logger.debug(`Workspace tools dir: ${workspaceToolsDir}`)
+  logger.debug(`Workspace tool dir: ${workspaceToolsDir}`)
 
   await mkdir(workspaceToolsDir, { recursive: true })
 
